@@ -101,6 +101,7 @@ prefix = [
 classification = "release"
 closure = "public-github-contracts"
 exact = [
+  ".github/actionlint.yaml",
   ".github/workflows/engine.yml",
   ".github/workflows/public-export-contract.yml",
   ".github/workflows/public-export-provenance.yml",
