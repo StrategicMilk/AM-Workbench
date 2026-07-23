@@ -6,8 +6,8 @@
   "copied_count": 6102,
   "executable_paths": [],
   "export_digest_spec": "sha256:path-length,path,git-mode,byte-length,content-sha256:v2",
-  "export_tree_sha256": "a20aa662ebeceff72f1b6e69d6bfadf5f0ba918e46e5320b09b6b69186977714",
-  "generated_at": "2026-07-23T09:54:00+00:00",
+  "export_tree_sha256": "6dc2b06bbde79e8b0dd8f17fe508a961e3cd8cff483bd48fa46677ed1109686a",
+  "generated_at": "2026-07-23T10:17:09+00:00",
   "manifest_version": 3,
   "path_contract_version": 1,
   "scope_policy_path": "config/public_export_scope.toml",
@@ -19,9 +19,9 @@
       "positive-public-scope": 21737
     }
   },
-  "source_commit": "048e88e7cd7fac58088f3d8cfb2d4550e0dcc71c",
+  "source_commit": "c3c459041303ac87dc56a75bfa27847b318a8072",
   "source_root_redacted": true,
   "source_tracked_dirty": false,
-  "source_tree": "2175ed184423d581175875b0787c8c53508b79fd",
+  "source_tree": "5750e556f8b35c605b0e73989bf1cebd713d501c",
   "target_root_redacted": true
 }

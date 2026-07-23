@@ -30,6 +30,9 @@ MANIFEST.in text eol=lf
 crates/amw-engine/legal/cargo-supplemental/* -text
 crates/amw-engine/legal/converter-supplemental/* -text
 
-# Windows launchers keep CRLF for maximum compatibility with cmd.exe.
-*.bat text eol=crlf
-*.cmd text eol=crlf
+# Store public Windows launchers as authoritative CRLF blobs. The public
+# provenance digest binds Git bytes, so checkout-time EOL rewriting is unsafe.
+/start.bat -text
+/python.cmd -text
+/crates/amw-engine/vendor/llama.cpp/examples/sycl/*.bat -text
+/crates/amw-engine/vendor/llama.cpp/scripts/install-oneapi.bat -text
