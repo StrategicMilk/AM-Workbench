@@ -1,0 +1,49 @@
+schema_version: 1
+support_matrix:
+  - id: cpu_only_local_absent
+    label: CPU-only without a local runtime
+    status: unsupported
+    operator_action: use_cloud_or_install_gpu
+    reason: CPU-only hosts without a reachable local runtime cannot run the private appliance path.
+    conditions:
+      hardware_profile: cpu-only
+      local_runtime: absent
+  - id: single_gpu_local_runtime
+    label: Single GPU local runtime
+    status: validated
+    operator_action: keep_local_runtime_primary
+    reason: A single detected GPU with a reachable local runtime can serve the local-first workbench path.
+    conditions:
+      hardware_profile: single-gpu
+      local_runtime: present
+  - id: multi_gpu_wsl_runtime
+    label: Multi-GPU WSL/Linux runtime
+    status: promotion-eligible
+    operator_action: promote_local_first_routing
+    reason: Multi-GPU Linux-preferred substrate with local runtime support can be promoted for private appliance routing.
+    conditions:
+      hardware_profile: multi-gpu
+      substrate: wsl-linux
+      local_runtime: present
+  - id: wsl_linux_ready_runtime_unknown
+    label: WSL/Linux substrate ready but runtime unknown
+    status: experimental
+    operator_action: validate_runtime_before_promotion
+    reason: Linux-preferred substrate is available, but runtime health must be proven before promotion.
+    conditions:
+      substrate: wsl-linux
+      local_runtime: unknown
+  - id: local_runtime_absent
+    label: Local runtime absent
+    status: action-required
+    operator_action: install_or_start_local_runtime
+    reason: LM Studio, Jan, or Open WebUI must be installed and reachable before the local path is trusted.
+    conditions:
+      local_runtime: absent
+  - id: hybrid_cloud_fallback_enabled
+    label: Hybrid cloud fallback enabled
+    status: experimental
+    operator_action: keep_cloud_fallback_as_escape_hatch
+    reason: Cloud fallback can keep work moving while local runtime evidence is incomplete.
+    conditions:
+      cloud_fallback: enabled

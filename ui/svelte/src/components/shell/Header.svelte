@@ -1,5 +1,6 @@
 <script>
   import { appState } from '$lib/stores/app.svelte.js';
+  import Icon from '$lib/a11y/Icon.svelte';
   import { integer } from '$lib/utils/format.js';
 
   function toggleSidebar() {
@@ -15,6 +16,10 @@
   }
 
   let searchQuery = $state('');
+
+  $effect(() => {
+    appState.commandPaletteQuery = searchQuery;
+  });
 </script>
 
 <header class="header">
@@ -24,16 +29,17 @@
       id="sidebarToggle"
       onclick={toggleSidebar}
       aria-expanded={!appState.sidebarCollapsed}
+      aria-controls="main-sidebar"
       aria-label="Toggle sidebar"
       title="Toggle sidebar (Ctrl+B)"
     >
-      <i class="fas fa-bars"></i>
+      <Icon name="bars" aria-hidden="true" />
     </button>
   </div>
 
   <div class="header-center">
     <div class="search-container">
-      <i class="fas fa-search search-icon"></i>
+      <Icon name="search" class="search-icon" aria-hidden="true" />
       <input
         type="text"
         class="input search-input"
@@ -46,8 +52,8 @@
   </div>
 
   <div class="header-right">
-    <span class="token-counter" title="Session tokens used">
-      <i class="fas fa-coins"></i>
+    <span class="token-counter" title="Session tokens used" role="status" aria-label={`Session tokens used: ${integer(appState.sessionTokens)}`}>
+      <Icon name="coins" aria-hidden="true" />
       {integer(appState.sessionTokens)}
     </span>
 
@@ -57,7 +63,7 @@
       title="Toggle theme"
       aria-label="Toggle light/dark theme"
     >
-      <i class="fas" class:fa-moon={appState.theme === 'dark'} class:fa-sun={appState.theme === 'light'}></i>
+      <Icon name={appState.theme === 'dark' ? 'moon' : 'sun'} aria-hidden="true" />
     </button>
 
     <button
@@ -66,7 +72,7 @@
       title="Discover models"
       aria-label="Discover models"
     >
-      <i class="fas fa-compass"></i>
+      <Icon name="compass" aria-hidden="true" />
     </button>
   </div>
 </header>

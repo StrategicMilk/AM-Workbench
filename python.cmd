@@ -8,7 +8,7 @@ rem the virtual environment in their shell.
 rem
 rem Usage:
 rem   python.cmd -m vetinari serve
-rem   python.cmd scripts/dev/run_tests.py
+rem   python.cmd scripts/memory_cli.py search "query"
 setlocal
 set "SCRIPT_DIR=%~dp0"
 set "VETINARI_PYTHON=%SCRIPT_DIR%.venv312\Scripts\python.exe"

@@ -25,7 +25,6 @@ from vetinari.validation.document_types import DocumentProfile, get_profile_for_
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_DIR = resolve_config_path()
 
 # ── Quality Dimensions ──────────────────────────────────────────────
 
@@ -120,7 +119,107 @@ class QualityReport:
         }
 
 
+def validate_program_pack_closure_status(
+    payload: object,
+    *,
+    expected_pack_slug: str,
+    expected_source_ids: set[str],
+    required_evidence_refs: set[str] | None = None,
+    validation_command: str | None = None,
+) -> list[str]:
+    """Validate a program-pack closure ledger and fail closed on overclaiming.
+
+    The program packs use closure ledgers as the durable handoff between source
+    remediation and pack-level evidence. This validator keeps the ledger honest:
+    every expected source row must be terminal, evidence-backed, and attached to
+    at least one proof row before a pack may be marked passed.
+
+    Returns:
+        List of validation errors; an empty list means the closure payload is
+        consistent with the expected pack slug, source IDs, and evidence refs.
+    """
+    errors: list[str] = []
+    if not isinstance(payload, dict):
+        return ["closure payload is not a JSON object"]
+    if not expected_pack_slug:
+        errors.append("expected_pack_slug is required")
+    if not expected_source_ids:
+        errors.append("expected_source_ids is required")
+
+    if payload.get("pack_slug") != expected_pack_slug:
+        errors.append("pack_slug mismatch")
+    if payload.get("status") != "passed" or payload.get("passed") is not True:
+        errors.append("closure is not passed")
+
+    errors.extend(
+        f"{counter} is nonzero"
+        for counter in (
+            "open_rows",
+            "partial_rows",
+            "deferred_rows",
+            "blocked_rows",
+            "regressed_rows",
+            "ownership_exception_rows",
+        )
+        if payload.get(counter) != 0
+    )
+    if payload.get("source_rows_total") != len(expected_source_ids):
+        errors.append("source row total mismatch")
+
+    raw_promise_rows = payload.get("promise_rows", [])
+    if not isinstance(raw_promise_rows, list):
+        errors.append("promise rows must be a list")
+        raw_promise_rows = []
+    promise_rows = {str(row.get("id")): row for row in raw_promise_rows if isinstance(row, dict)}
+    if not promise_rows:
+        errors.append("missing promise rows")
+    elif validation_command and not any(
+        validation_command in (_string_list_field(row, "verification") or []) for row in promise_rows.values()
+    ):
+        errors.append("promise rows missing validation command")
+
+    required_refs = required_evidence_refs or set()
+    raw_source_findings = payload.get("source_findings", [])
+    if not isinstance(raw_source_findings, list):
+        errors.append("source findings must be a list")
+        raw_source_findings = []
+    rows = {str(row.get("id")): row for row in raw_source_findings if isinstance(row, dict)}
+    missing = sorted(expected_source_ids - rows.keys())
+    extra = sorted(rows.keys() - expected_source_ids)
+    if missing:
+        errors.append(f"missing source ids: {', '.join(missing)}")
+    if extra:
+        errors.append(f"extra source ids: {', '.join(extra)}")
+
+    for source_id in sorted(expected_source_ids & rows.keys()):
+        row = rows[source_id]
+        if row.get("status") != "passed":
+            errors.append(f"{source_id} is not passed")
+        proof_rows = _string_list_field(row, "proof_rows")
+        if not proof_rows:
+            errors.append(f"{source_id} missing proof rows")
+        raw_refs = _string_list_field(row, "evidence_refs")
+        if raw_refs is None:
+            errors.append(f"{source_id} evidence refs must be a list of strings")
+            raw_refs = []
+        refs = set(raw_refs)
+        missing_refs = sorted(required_refs - refs)
+        if missing_refs:
+            errors.append(f"{source_id} missing evidence refs: {', '.join(missing_refs)}")
+        note = str(row.get("notes", ""))
+        if source_id not in note or len(note) < 80:
+            errors.append(f"{source_id} note is not source-specific")
+    return errors
+
+
 # ── Heuristic Scorers ───────────────────────────────────────────────
+
+
+def _string_list_field(row: dict[str, Any], field: str) -> list[str] | None:
+    raw = row.get(field, [])
+    if not isinstance(raw, list) or any(not isinstance(item, str) or not item for item in raw):
+        return None
+    return raw
 
 
 def _score_accuracy(text: str) -> tuple[float, list[str]]:
@@ -322,12 +421,16 @@ _SCORERS: dict[str, Any] = {
 _style_config: dict[str, Any] | None = None
 
 
+def _config_dir() -> Path:
+    return resolve_config_path()
+
+
 def _load_writing_style(config_path: Path | None = None) -> dict[str, Any]:
     """Load writing style configuration from YAML."""
     global _style_config
     if _style_config is not None:
         return _style_config
-    path = config_path or (_CONFIG_DIR / "writing_style.yaml")
+    path = config_path or (_config_dir() / "writing_style.yaml")
     if not path.exists():
         logger.debug("Writing style config not found at %s", path)
         _style_config = {}

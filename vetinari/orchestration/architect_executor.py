@@ -11,189 +11,16 @@ from __future__ import annotations
 import json
 import logging
 import time
-import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import Any
 
+from vetinari.adapters.adapter_cache import get_local_inference_adapter
+from vetinari.boundary_guards import assert_dependency_success
 from vetinari.constants import INFERENCE_STATUS_OK, TRUNCATE_OUTPUT_PREVIEW
+from vetinari.orchestration.architect_executor_models import ArchitectPlan, PipelineConfig
 from vetinari.types import StatusEnum
-from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class PipelineConfig:
-    """Configuration for the architect-executor pipeline."""
-
-    enabled: bool = True
-    architect_model: str = "qwen2.5-coder-32b"
-    executor_model: str = "qwen2.5-coder-7b"
-    auto_commit: bool = False
-    commit_style: str = "conventional"  # conventional, descriptive
-    max_steps: int = 20
-    fallback_to_single: bool = True  # Fall back to single model if architect fails
-    architect_temperature: float = 0.4
-    executor_temperature: float = 0.2
-    architect_max_tokens: int = 4096
-    executor_max_tokens: int = 2048
-
-    def __repr__(self) -> str:
-        """Show key identifying fields for debugging."""
-        return (
-            f"PipelineConfig(architect_model={self.architect_model!r},"
-            f" executor_model={self.executor_model!r},"
-            f" max_steps={self.max_steps!r})"
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        """Converts pipeline configuration to a JSON-serializable dictionary."""
-        return dataclass_to_dict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> PipelineConfig:
-        """Create from dictionary, ignoring unknown keys.
-
-        Returns:
-            A PipelineConfig populated from the known fields in ``data``.
-            Unrecognised keys are silently dropped so callers can pass
-            raw config blobs without stripping unknown fields first.
-        """
-        known = {f.name for f in cls.__dataclass_fields__.values()}
-        filtered = {k: v for k, v in data.items() if k in known}
-        return cls(**filtered)
-
-    def validate(self) -> list[str]:
-        """Validate configuration and return list of errors (empty if valid).
-
-        Returns:
-            List of human-readable error strings describing constraint
-            violations; empty list when the configuration is valid.
-        """
-        errors: list[str] = []
-        if self.max_steps < 1:
-            errors.append("max_steps must be >= 1")
-        if self.max_steps > 100:
-            errors.append("max_steps must be <= 100")
-        if self.architect_temperature < 0 or self.architect_temperature > 2:
-            errors.append("architect_temperature must be between 0 and 2")
-        if self.executor_temperature < 0 or self.executor_temperature > 2:
-            errors.append("executor_temperature must be between 0 and 2")
-        if self.commit_style not in ("conventional", "descriptive"):
-            errors.append("commit_style must be 'conventional' or 'descriptive'")
-        if self.architect_max_tokens < 1:
-            errors.append("architect_max_tokens must be >= 1")
-        if self.executor_max_tokens < 1:
-            errors.append("executor_max_tokens must be >= 1")
-        return errors
-
-
-# ---------------------------------------------------------------------------
-# Architect Plan
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class ArchitectPlan:
-    """Plan created by the architect model."""
-
-    plan_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
-    goal: str = ""
-    steps: list[dict[str, Any]] = field(default_factory=list)
-    # Each step: {id, description, files, agent_type, complexity}
-    dependencies: dict[str, list[str]] = field(default_factory=dict)
-    # step_id -> [dependency_ids]
-    estimated_tokens: int = 0
-    architect_model: str = ""
-    created_at: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%S"))
-
-    def __repr__(self) -> str:
-        """Show key identifying fields for debugging."""
-        return (
-            f"ArchitectPlan(plan_id={self.plan_id!r},"
-            f" architect_model={self.architect_model!r},"
-            f" steps={len(self.steps)!r})"
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        """Converts the architect plan to a JSON-serializable dictionary."""
-        return dataclass_to_dict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ArchitectPlan:
-        """Deserialize from dictionary.
-
-        Returns:
-            An ArchitectPlan populated from the known fields in ``data``.
-            Unrecognised keys are silently dropped.
-        """
-        known = {f.name for f in cls.__dataclass_fields__.values()}
-        filtered = {k: v for k, v in data.items() if k in known}
-        return cls(**filtered)
-
-    def get_step(self, step_id: str) -> dict[str, Any] | None:
-        """Get a step by its ID.
-
-        Returns:
-            The step dict matching ``step_id``, or None if no such step exists.
-        """
-        for step in self.steps:
-            if step.get("id") == step_id:
-                return step
-        return None
-
-    def get_ready_steps(self, completed_ids: set) -> list[dict[str, Any]]:
-        """Get steps whose dependencies have all been completed.
-
-        Returns:
-            List of step dicts that are not yet in ``completed_ids`` and
-            whose every declared dependency is already in ``completed_ids``.
-            Empty when no further steps can be scheduled.
-        """
-        ready = []
-        for step in self.steps:
-            sid = step.get("id", "")
-            if sid in completed_ids:
-                continue
-            deps = self.dependencies.get(sid, [])
-            if all(d in completed_ids for d in deps):
-                ready.append(step)
-        return ready
-
-    def step_count(self) -> int:
-        """Return number of steps in the plan."""
-        return len(self.steps)
-
-    def validate(self) -> list[str]:
-        """Validate the plan and return list of errors.
-
-        Returns:
-            List of human-readable error strings describing structural
-            problems (missing goal, empty steps, unknown dependency IDs,
-            self-referential dependencies); empty list when the plan is valid.
-        """
-        errors: list[str] = []
-        if not self.goal:
-            errors.append("Plan must have a goal")
-        if not self.steps:
-            errors.append("Plan must have at least one step")
-
-        step_ids = {s.get("id") for s in self.steps}
-        for sid, deps in self.dependencies.items():
-            if sid not in step_ids:
-                errors.append(f"Dependency key '{sid}' is not a valid step ID")
-            for dep in deps:
-                if dep not in step_ids:
-                    errors.append(f"Dependency '{dep}' for step '{sid}' is not a valid step ID")
-                if dep == sid:
-                    errors.append(f"Step '{sid}' cannot depend on itself")
-        return errors
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +98,7 @@ class ArchitectExecutorPipeline:
         Raises:
             RuntimeError: If the operation fails.
         """
-        context = context or {}  # noqa: VET112 - empty fallback preserves optional request metadata contract
+        context = context or {}
         logger.info("[Architect] Creating plan for: %s", goal[:80])
         start = time.time()
 
@@ -356,7 +183,19 @@ class ArchitectExecutorPipeline:
                 logger.error("[Executor] Exceeded max iterations, aborting")
                 break
 
-            ready = plan.get_ready_steps(completed_ids | failed_ids)
+            ready_candidates = plan.get_ready_steps(completed_ids | failed_ids)
+            ready = []
+            for candidate in ready_candidates:
+                candidate_id = candidate.get("id", "")
+                try:
+                    for dep_id in plan.dependencies.get(candidate_id, []):
+                        assert_dependency_success(dep_id, failed_ids)
+                except RuntimeError as exc:
+                    failed_ids.add(candidate_id)
+                    results.append({"step_id": candidate_id, "success": False, "error": str(exc)})
+                    logger.warning("[Executor] Step %s blocked by failed dependency: %s", candidate_id, exc)
+                    continue
+                ready.append(candidate)
             if not ready:
                 # Check for deadlock
                 remaining = plan.step_count() - len(completed_ids) - len(failed_ids)
@@ -459,7 +298,8 @@ class ArchitectExecutorPipeline:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_architect_prompt(self, goal: str, context: dict) -> str:
+    @staticmethod
+    def _build_architect_prompt(goal: str, context: dict) -> str:
         """Build the prompt for the architect model."""
         parts = [f"## Goal\n{goal}"]
 
@@ -494,8 +334,8 @@ class ArchitectExecutorPipeline:
 
         return "\n\n".join(parts)
 
+    @staticmethod
     def _call_model(
-        self,
         model: str,
         prompt: str,
         system_prompt: str = "",
@@ -508,7 +348,7 @@ class ArchitectExecutorPipeline:
         Tries adapter_manager from context first, then falls back to
         the local inference adapter.
         """
-        context = context or {}  # noqa: VET112 - empty fallback preserves optional request metadata contract
+        context = context or {}
 
         # Try adapter_manager if available in context
         adapter_manager = context.get("adapter_manager")
@@ -530,13 +370,12 @@ class ArchitectExecutorPipeline:
                 logger.warning("adapter_manager inference failed: %s", e)
 
         # Fallback: local inference adapter
-        from vetinari.adapters.llama_cpp_local_adapter import LocalInferenceAdapter
-
-        adapter = LocalInferenceAdapter()
+        adapter = get_local_inference_adapter(model)
         result = adapter.chat(
             model_id=model,
             system_prompt=system_prompt,
             input_text=prompt,
+            task_type="coding",
         )
         return result.get("output", "")
 
@@ -581,7 +420,8 @@ class ArchitectExecutorPipeline:
             architect_model=self.architect_model,
         )
 
-    def _make_fallback_plan(self, goal: str, context: dict | None = None) -> ArchitectPlan:
+    @staticmethod
+    def _make_fallback_plan(goal: str, context: dict | None = None) -> ArchitectPlan:
         """Create a simple single-step fallback plan."""
         return ArchitectPlan(
             goal=goal,

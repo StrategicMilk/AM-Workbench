@@ -1,0 +1,23 @@
+lanes:
+  interactive:
+    max_concurrent_inferences: 1
+  hub_agent:
+    max_concurrent_inferences: 1
+  training:
+    max_concurrent_inferences: 1
+    preempt_on_interactive: true
+preemption:
+  checkpoint_timeout_s: 30.0
+  on_timeout: abort
+  warning_only_after_timeout: false
+  capacity_retry_attempts: 3
+vram_shares:
+  interactive: 0.45
+  hub_agent: 0.30
+  training: 0.25
+training_allowed_windows: []
+# Example:
+# training_allowed_windows:
+#   - start: "00:00"
+#     end: "23:59"
+#     timezone: "UTC"

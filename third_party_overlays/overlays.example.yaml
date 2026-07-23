@@ -1,0 +1,14 @@
+overlays:
+  - backend: vllm
+    upstream_version: "0.15.1"
+    patch_queue_path: third_party_overlays/example/noop-vllm-overlay.patch
+    purpose: "Example-only overlay manifest for governance checks; not applied."
+    known_bad_repro_command: "python -m pytest tests/test_backend_overlays.py::test_overlay_manifest_schema_requires_repro_benchmark_rollback_and_rebase_status -q"
+    known_good_proof_command: "python -m pytest tests/test_backend_overlays.py::test_overlay_requires_explicit_approval_and_records_reversible_manifest -q"
+    benchmark_evidence: "docs/reference/cli.md"
+    rollback_command: "git apply -R third_party_overlays/example/noop-vllm-overlay.patch"
+    approval_status: approved
+    approval_actor: roadmap-LW-DEPS-03-plan
+    approval_timestamp: "2026-04-25T00:00:00Z"
+    rebase_status: clean
+    last_checked_upstream_version: "0.15.1"

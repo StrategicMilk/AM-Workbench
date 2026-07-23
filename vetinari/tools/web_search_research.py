@@ -23,6 +23,7 @@ from vetinari.tools.web_search_types import SearchResult
 
 logger = logging.getLogger(__name__)
 
+
 __all__ = [
     "multi_source_search",
     "research_topic",
@@ -120,12 +121,15 @@ def multi_source_search(
         try:
             tool.backend_name = backend
             response = tool.search(query, max_results=max_results)
+            actual_backend = response.backend or backend
             for r in response.results:
                 if r.url not in seen_urls:
                     seen_urls.add(r.url)
                     all_results.append(r)
             provenance.append({
                 "backend": backend,
+                "actual_backend": actual_backend,
+                "backend_matched": actual_backend == backend,
                 "result_count": len(response.results),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })

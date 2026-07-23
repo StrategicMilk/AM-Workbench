@@ -34,15 +34,22 @@ class WorkReceiptKind(str, Enum):
     once per Worker task completion; INSPECTOR_PASS fires once per
     Inspector verification cascade; TRAINING_STEP fires per checkpoint
     or epoch in the training runner; RELEASE_STEP fires per release
-    pipeline stage that produces a verifiable artifact.
+    pipeline stage that produces a verifiable artifact. PLAN_RUNTIME_EDIT
+    records live plan diffs applied between execution layers.
     """
 
     PLAN_ROUND = "plan_round"
     WORKER_TASK = "worker_task"
-    INSPECTOR_PASS = "inspector_pass"  # noqa: S105 — enum value, not a credential
+    INSPECTOR_PASS = "inspector_pass"
     TRAINING_STEP = "training_step"
     RELEASE_STEP = "release_step"
     DESTRUCTIVE_OP = "destructive_op"  # Lifecycle-guarded destructive operations (recycle/purge/delete)
+    SPINE_EVENT = "spine_event"  # Workbench metadata-spine append events
+    PLAN_RUNTIME_EDIT = "plan_runtime_edit"
+    TRACE_EXPORT = "trace_export"  # OTel/OpenInference trace export emissions (success or typed failure)
+    DURABLE_STEP = "durable_step"  # Workbench durable workflow step boundary events
+    POLICY_DECISION = "policy_decision"  # Workbench gateway-policy decision records
+    WORKBENCH_EVENT = "workbench_event"  # General Workbench subsystem receipts (ADR-0103)
 
 
 def _new_receipt_id() -> str:

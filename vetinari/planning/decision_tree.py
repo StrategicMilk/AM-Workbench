@@ -17,6 +17,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 # -- Constants ----------------------------------------------------------------
 
 # Confidence threshold above which decisions are auto-resolved when care_level="auto"
@@ -153,6 +154,7 @@ class DecisionNode:
         options: Available choices with descriptions and trade-offs.
         resolution: Name of the chosen option, or None if unresolved.
         confidence: How confident the auto-resolver is in the recommended choice (0.0-1.0).
+        confidence_source: Provenance for the confidence value.
         auto_resolved: Whether this decision was resolved automatically vs. by user.
     """
 
@@ -161,6 +163,7 @@ class DecisionNode:
     options: list[Option] = field(default_factory=list)
     resolution: str | None = None
     confidence: float = 0.0
+    confidence_source: str = "unknown"
     auto_resolved: bool = False
 
     def __repr__(self) -> str:
@@ -209,7 +212,8 @@ def _extract_decisions_llm(goal: str) -> list[DecisionNode] | None:
         List of DecisionNode objects, or None if LLM is unavailable.
     """
     try:
-        from vetinari.inference.cascade_router import get_cascade_router
+        # Fix: import path corrected from vetinari.inference.cascade_router to vetinari.cascade_router (FSA-0516)
+        from vetinari.cascade_router import get_cascade_router
 
         router = get_cascade_router()
     except Exception:
@@ -260,6 +264,7 @@ Example: [{{"question": "Which database?", "domain": "database", "options": [...
                     domain=item.get("domain", "other"),
                     options=options,
                     confidence=float(item.get("confidence", 0.5)),
+                    confidence_source="llm_uncalibrated",
                 )
             )
         return decisions
@@ -318,6 +323,7 @@ def _extract_decisions_keyword(goal: str) -> list[DecisionNode]:
                     domain=domain,
                     options=options,
                     confidence=confidence,
+                    confidence_source="heuristic",
                 )
             )
 
@@ -382,6 +388,17 @@ def extract_decisions(
     )
 
 
+class DecisionTreeExtractor:
+    """Compatibility wrapper exposing decision extraction as an object."""
+
+    def extract(
+        self,
+        goal: str,
+        domain_care_levels: dict[str, str] | None = None,
+    ) -> DecisionTreeResult:
+        return extract_decisions(goal, domain_care_levels)
+
+
 def auto_resolve_decisions(
     decisions: list[DecisionNode],
     care_levels: dict[str, str],
@@ -405,7 +422,8 @@ def auto_resolve_decisions(
 
         care_level = care_levels.get(decision.domain, "auto")
 
-        if care_level == "auto" and decision.confidence >= _AUTO_RESOLVE_THRESHOLD:
+        confidence_calibrated = decision.confidence_source != "llm_uncalibrated"
+        if care_level == "auto" and confidence_calibrated and decision.confidence >= _AUTO_RESOLVE_THRESHOLD:
             recommended = next((o for o in decision.options if o.recommended), None)
             if recommended:
                 decision.resolution = recommended.name
@@ -416,6 +434,12 @@ def auto_resolve_decisions(
                     recommended.name,
                     decision.confidence,
                 )
+        elif care_level == "auto" and not confidence_calibrated:
+            logger.info(
+                "Decision '%s' requires review because confidence source %s is not calibrated",
+                decision.question,
+                decision.confidence_source,
+            )
         elif care_level in ("review", "manual"):
             logger.info(
                 "Decision '%s' requires %s — blocking decomposition",

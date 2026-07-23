@@ -23,11 +23,13 @@ from functools import lru_cache
 from pathlib import Path
 
 from vetinari.constants import GREP_TIMEOUT
+from vetinari.security.redaction import redact_text
+
+logger = logging.getLogger(__name__)
+
 
 # Static patterns compiled at module level
 _RG_LINE_RE = re.compile(r"^(.+?):(\d+)[:|-](.*)$")
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -42,6 +44,16 @@ class GrepMatch:
 
     def __repr__(self) -> str:
         return f"GrepMatch(file_path={self.file_path!r}, line_number={self.line_number!r})"
+
+    def redacted(self) -> GrepMatch:
+        """Return a prompt-safe copy with sensitive values removed."""
+        return GrepMatch(
+            file_path=redact_text(self.file_path),
+            line_number=self.line_number,
+            line_content=redact_text(self.line_content),
+            context_before=[redact_text(line) for line in self.context_before],
+            context_after=[redact_text(line) for line in self.context_after],
+        )
 
 
 @lru_cache(maxsize=256)
@@ -162,8 +174,8 @@ class GrepContext:
                         ):
                             end = j
                             break
-                    block = "\n".join(lines[i:end])
-                    results.append(f"# {file_path}:{i + 1}\n{block}")
+                    block = redact_text("\n".join(lines[i:end]))
+                    results.append(f"# {redact_text(file_path)}:{i + 1}\n{block}")
                     break
         return "\n\n".join(results)
 
@@ -180,7 +192,7 @@ class GrepContext:
         if not Path(file_path).is_file():
             return ""
         lines = Path(file_path).read_text(encoding="utf-8", errors="replace").splitlines()
-        imports = [line for line in lines if line.strip().startswith(("import ", "from "))]
+        imports = [redact_text(line) for line in lines if line.strip().startswith(("import ", "from "))]
         return "\n".join(imports)
 
     def extract_security_patterns(self, file_paths: list[str]) -> list[GrepMatch]:
@@ -261,7 +273,7 @@ class GrepContext:
                     break
                 parts.append(marker)
                 total += len(marker)
-            line_text = lines[idx]
+            line_text = redact_text(lines[idx])
             if total + len(line_text) + 1 > budget_chars:
                 break
             parts.append(line_text)
@@ -290,7 +302,8 @@ class GrepContext:
         """
         parts = []
         total = 0
-        for m in matches:
+        for raw_match in matches:
+            m = raw_match.redacted()
             block = f"--- {m.file_path}:{m.line_number} ---\n"
             for ctx in m.context_before:
                 block += f"  {ctx}\n"
@@ -307,7 +320,8 @@ class GrepContext:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _find_enclosing_scope(self, lines: list[str], line_idx: int) -> int:
+    @staticmethod
+    def _find_enclosing_scope(lines: list[str], line_idx: int) -> int:
         """Scan backwards to find the enclosing def/class."""
         for i in range(line_idx, -1, -1):
             stripped = lines[i].lstrip()
@@ -315,7 +329,8 @@ class GrepContext:
                 return i
         return max(0, line_idx - 3)
 
-    def _find_scope_end(self, lines: list[str], scope_start: int) -> int:
+    @staticmethod
+    def _find_scope_end(lines: list[str], scope_start: int) -> int:
         """Find end of a scope block by indentation."""
         if scope_start >= len(lines):
             return scope_start
@@ -352,7 +367,7 @@ class GrepContext:
             *file_paths,
         ]
         try:
-            result = subprocess.run(  # noqa: S603 - argv is controlled and shell interpolation is not used
+            result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
@@ -363,7 +378,8 @@ class GrepContext:
             logger.warning("Ripgrep failed, falling back to Python: %s", e)
             return self._python_extract(file_paths, patterns, context_lines, max_matches)
 
-    def _parse_rg_output(self, output: str, context_lines: int) -> list[GrepMatch]:
+    @staticmethod
+    def _parse_rg_output(output: str, context_lines: int) -> list[GrepMatch]:
         """Parse ripgrep output into GrepMatch objects."""
         matches = []
         if not output:
@@ -396,8 +412,8 @@ class GrepContext:
             matches.append(current_match)
         return matches
 
+    @staticmethod
     def _python_extract(
-        self,
         file_paths: list[str],
         patterns: list[str],
         context_lines: int,

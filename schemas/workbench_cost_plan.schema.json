@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_cost_plan.schema.json",
+  "title": "Workbench Cost Resource Plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "plan_id",
+    "project_id",
+    "workload_kind",
+    "recommended_backend",
+    "recommended_model_id",
+    "budget_status",
+    "approval_required",
+    "changed_by_cost_pressure",
+    "decision_reasons",
+    "pressure_adjustments",
+    "candidates"
+  ],
+  "properties": {
+    "plan_id": { "$ref": "#/$defs/nonEmptyString" },
+    "project_id": { "$ref": "#/$defs/nonEmptyString" },
+    "workload_kind": {
+      "enum": ["run", "sweep", "training_job", "automation", "deployment"]
+    },
+    "recommended_backend": { "$ref": "#/$defs/nonEmptyString" },
+    "recommended_model_id": { "$ref": "#/$defs/nonEmptyString" },
+    "budget_status": {
+      "enum": ["within_budget", "approval_required", "blocked"]
+    },
+    "approval_required": { "type": "boolean" },
+    "changed_by_cost_pressure": { "type": "boolean" },
+    "decision_reasons": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonEmptyString" },
+      "minItems": 1,
+      "maxItems": 8
+    },
+    "pressure_adjustments": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/pressureAdjustment" },
+      "maxItems": 5
+    },
+    "rcg_0021_p05_receipt": { "$ref": "#/$defs/closureReceipt" },
+    "candidates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/candidate" },
+      "minItems": 1,
+      "maxItems": 100
+    }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "nonNegativeNumber": { "type": "number", "minimum": 0 },
+    "pressureAdjustment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "reason", "before", "after"],
+      "properties": {
+        "action": {
+          "enum": [
+            "select_lower_cost_model",
+            "use_local_backend",
+            "reduce_dataset_size",
+            "queue_for_capacity",
+            "require_approval"
+          ]
+        },
+        "reason": { "$ref": "#/$defs/nonEmptyString" },
+        "before": { "$ref": "#/$defs/nonEmptyString" },
+        "after": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backend",
+        "model_id",
+        "total_cost_usd",
+        "token_cost_usd",
+        "total_latency_ms",
+        "gpu_hours",
+        "cpu_core_hours",
+        "ram_gb",
+        "storage_gb",
+        "network_gb",
+        "queue_minutes",
+        "quality_score",
+        "budget_status",
+        "blocking_reasons"
+      ],
+      "properties": {
+        "backend": { "$ref": "#/$defs/nonEmptyString" },
+        "model_id": { "$ref": "#/$defs/nonEmptyString" },
+        "total_cost_usd": { "$ref": "#/$defs/nonNegativeNumber" },
+        "token_cost_usd": { "$ref": "#/$defs/nonNegativeNumber" },
+        "total_latency_ms": { "$ref": "#/$defs/nonNegativeNumber" },
+        "gpu_hours": { "$ref": "#/$defs/nonNegativeNumber" },
+        "cpu_core_hours": { "$ref": "#/$defs/nonNegativeNumber" },
+        "ram_gb": { "$ref": "#/$defs/nonNegativeNumber" },
+        "storage_gb": { "$ref": "#/$defs/nonNegativeNumber" },
+        "network_gb": { "$ref": "#/$defs/nonNegativeNumber" },
+        "queue_minutes": { "$ref": "#/$defs/nonNegativeNumber" },
+        "quality_score": { "$ref": "#/$defs/nonNegativeNumber" },
+        "budget_status": {
+          "enum": ["within_budget", "approval_required", "blocked"]
+        },
+        "blocking_reasons": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" },
+          "maxItems": 16
+        }
+      }
+    },
+    "closureReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receipt_id", "status", "source_refs", "fail_closed"],
+      "properties": {
+        "receipt_id": { "$ref": "#/$defs/nonEmptyString" },
+        "status": { "enum": ["ready", "blocked"] },
+        "source_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" },
+          "minItems": 1,
+          "maxItems": 20
+        },
+        "fail_closed": { "type": "boolean" },
+        "recovery": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    }
+  }
+}

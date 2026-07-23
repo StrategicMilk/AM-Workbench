@@ -7,7 +7,7 @@ exception_types:
   TimeoutError: "The model took too long to respond (>30s). Try a smaller model or simpler task."
   TimeoutExpired: "The model took too long to respond (>30s). Try a smaller model or simpler task."
   subprocess.TimeoutExpired: "The model took too long to respond (>30s). Try a smaller model or simpler task."
-  ConnectionRefusedError: "Could not connect to the model server. Is LM Studio/Ollama running?"
+  ConnectionRefusedError: "Could not connect to the model server. Is LM Studio or the configured OpenAI-compatible server running?"
   ConnectionError: "Could not connect to the model server. Check that the inference backend is running."
   MemoryError: "Not enough memory to complete this operation. Try a smaller model or simpler task."
   FileNotFoundError: "A required file was not found. Check server configuration."
@@ -22,8 +22,10 @@ message_patterns:
   "model not found": "The requested model was not found. Check available models in the Models panel."
   "context length exceeded": "The input is too long for this model. Try a shorter prompt or a model with a larger context window."
   "rate limit": "Too many requests. Please wait a moment and try again."
-  "connection refused": "Could not connect to the model server. Is LM Studio/Ollama running?"
+  "connection refused": "Could not connect to the model server. Is LM Studio or the configured OpenAI-compatible server running?"
   "timed out": "The operation timed out. Try a simpler task or check server load."
+  "accessibility": "The accessibility contract could not be satisfied. Add labels, keyboard handling, and text alternatives before retrying."
+  "raw identifier": "A user-facing value is missing a display label. Add a display-label mapping before showing it to users."
 
 # Default message when no pattern matches
-default: "An unexpected error occurred. Check server logs for details."
+default: "An unexpected error occurred. Open diagnostics for details, then retry or report the operation that failed."

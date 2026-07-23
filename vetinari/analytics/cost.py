@@ -35,124 +35,22 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from collections import deque
-from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 
-from vetinari.utils.serialization import dataclass_to_dict
+from vetinari.analytics.cost_models import _DEFAULT_PRICING, CostEntry, CostReport, ModelPricing, require_model_pricing
+from vetinari.analytics.cost_storage import (
+    annotate_correlated_span,
+    build_cost_persistence_config,
+    entry_with_correlation,
+    load_persisted_cost_entries,
+    persist_budget_alert,
+    persist_cost_entry,
+)
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Pricing table
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class ModelPricing:
-    """USD cost per 1 000 tokens and per request."""
-
-    input_per_1k: float = 0.0  # cost per 1k input tokens
-    output_per_1k: float = 0.0  # cost per 1k output tokens
-    per_request: float = 0.0  # flat fee per API call
-
-    def compute(self, input_tokens: int, output_tokens: int) -> float:
-        """Calculate the total USD cost for a given number of input and output tokens.
-
-        Args:
-            input_tokens: Number of input tokens consumed.
-            output_tokens: Number of output tokens generated.
-
-        Returns:
-            Total cost in USD combining input, output, and per-request fees.
-        """
-        return input_tokens / 1000 * self.input_per_1k + output_tokens / 1000 * self.output_per_1k + self.per_request
-
-
-# Built-in defaults (approximate public pricing as of early 2026)
-_DEFAULT_PRICING: dict[str, ModelPricing] = {
-    # OpenAI family
-    "openai:gpt-4o": ModelPricing(input_per_1k=0.005, output_per_1k=0.015),
-    "openai:gpt-4o-mini": ModelPricing(input_per_1k=0.0006, output_per_1k=0.0024),
-    "openai:o3-mini": ModelPricing(input_per_1k=0.0011, output_per_1k=0.0044),
-    # Claude family (current generation)
-    "anthropic:claude-opus-4": ModelPricing(input_per_1k=0.015, output_per_1k=0.075),
-    "anthropic:claude-sonnet-4": ModelPricing(input_per_1k=0.003, output_per_1k=0.015),
-    "anthropic:claude-haiku-4": ModelPricing(input_per_1k=0.0008, output_per_1k=0.004),
-    # Gemini family
-    "google:gemini-2.5-pro": ModelPricing(input_per_1k=0.00625, output_per_1k=0.025),
-    "google:gemini-2.5-flash": ModelPricing(input_per_1k=0.0015, output_per_1k=0.006),
-    # Local models — zero cost by default
-    "local:*": ModelPricing(input_per_1k=0.0, output_per_1k=0.0),
-}
-
-
-# ---------------------------------------------------------------------------
-# Cost entry
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class CostEntry:
-    """A single billable inference call."""
-
-    provider: str
-    model: str
-    input_tokens: int = 0
-    output_tokens: int = 0
-    agent: str | None = None
-    task_id: str | None = None
-    timestamp: float = field(default_factory=time.time)
-    cost_usd: float | None = None  # populated automatically by record() when None
-    latency_ms: float = 0.0
-
-    def __repr__(self) -> str:
-        return (
-            f"CostEntry(provider={self.provider!r}, model={self.model!r}, "
-            f"agent={self.agent!r}, task_id={self.task_id!r}, cost_usd={self.cost_usd!r})"
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize this cost entry to a plain dictionary for JSON export.
-
-        Returns:
-            Dictionary containing all cost entry fields.
-        """
-        return cast(dict[str, Any], dataclass_to_dict(self))
-
-
-# ---------------------------------------------------------------------------
-# Report
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class CostReport:
-    """Aggregated cost breakdown."""
-
-    total_cost_usd: float
-    total_tokens: int
-    total_requests: int
-    by_agent: dict[str, float]  # agent  -> total USD
-    by_provider: dict[str, float]  # provider -> total USD
-    by_model: dict[str, float]  # "provider:model" -> total USD
-    by_task: dict[str, float]  # task_id -> total USD
-    entries: int  # raw entry count
-
-    def __repr__(self) -> str:
-        return (
-            f"CostReport(total_cost_usd={self.total_cost_usd!r}, "
-            f"total_tokens={self.total_tokens!r}, total_requests={self.total_requests!r})"
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize this cost report to a plain dictionary for JSON export.
-
-        Returns:
-            Dictionary containing aggregated cost breakdowns by agent, provider, model, and task.
-        """
-        return cast(dict[str, Any], dataclass_to_dict(self))
+_COST_HISTORY_MAX_ENTRIES = 1000  # In-memory report window; durable JSONL keeps restart history.
 
 
 # ---------------------------------------------------------------------------
@@ -176,8 +74,12 @@ class CostTracker:
 
     def _setup(self) -> None:
         self._lock = threading.RLock()
-        self._entries: deque[CostEntry] = deque(maxlen=1000)
+        self._persistence = build_cost_persistence_config()
+        self._entries_path = self._persistence.entries_path
+        self._budget_limit_usd = self._persistence.budget_limit_usd
+        self._entries: deque[CostEntry] = deque(maxlen=_COST_HISTORY_MAX_ENTRIES)
         self._pricing: dict[str, ModelPricing] = dict(_DEFAULT_PRICING)
+        load_persisted_cost_entries(self._entries, self._entries_path, self._persistence.backup_count)
 
     # ------------------------------------------------------------------
     # Pricing
@@ -207,11 +109,11 @@ class CostTracker:
         with self._lock:
             key = f"{provider}:{model}"
             if key in self._pricing:
-                return self._pricing[key]
+                return require_model_pricing(key, self._pricing)
             # Try wildcard for provider
             wildcard = f"{provider}:*"
             if wildcard in self._pricing:
-                return self._pricing[wildcard]
+                return require_model_pricing(wildcard, self._pricing)
             return ModelPricing()  # free / unknown
 
     # ------------------------------------------------------------------
@@ -227,6 +129,7 @@ class CostTracker:
             The CostEntry result.
         """
         with self._lock:
+            entry = entry_with_correlation(entry)
             if entry.cost_usd is None:
                 # Only recalculate when caller did not provide an explicit cost.
                 # A caller-supplied cost_usd=0.0 is preserved as-is.
@@ -238,11 +141,26 @@ class CostTracker:
                     output_tokens=entry.output_tokens,
                     agent=entry.agent,
                     task_id=entry.task_id,
+                    project_id=entry.project_id,
+                    trace_id=entry.trace_id,
+                    span_id=entry.span_id,
                     timestamp=entry.timestamp,
                     cost_usd=pricing.compute(entry.input_tokens, entry.output_tokens),
                     latency_ms=entry.latency_ms,
                 )
+            projected_total = self._current_total_cost_locked() + (entry.cost_usd or 0.0)
+            persist_cost_entry(entry, self._persistence)
             self._entries.append(entry)
+            annotate_correlated_span(entry)
+            if projected_total > self._budget_limit_usd:
+                persist_budget_alert(entry, projected_total, self._persistence)
+                logger.warning(
+                    "Cost budget exceeded: projected_total_usd=%.6f budget_limit_usd=%.6f provider=%s model=%s",
+                    projected_total,
+                    self._budget_limit_usd,
+                    entry.provider,
+                    entry.model,
+                )
             logger.debug(
                 "Cost recorded: %s/%s  in=%d out=%d  $%.6f  agent=%s",
                 entry.provider,
@@ -254,6 +172,10 @@ class CostTracker:
             )
             return entry
 
+    def _current_total_cost_locked(self) -> float:
+        """Return the current in-memory cost total while the caller holds the lock."""
+        return sum(e.cost_usd or 0.0 for e in self._entries)
+
     # ------------------------------------------------------------------
     # Reporting
     # ------------------------------------------------------------------
@@ -262,6 +184,7 @@ class CostTracker:
         self,
         agent: str | None = None,
         task_id: str | None = None,
+        project_id: str | None = None,
         since: float | None = None,
     ) -> CostReport:
         """Build an aggregated cost report, optionally filtered.
@@ -269,6 +192,7 @@ class CostTracker:
         Args:
             agent:   Only include entries from this agent.
             task_id: Only include entries for this task.
+            project_id: Only include entries for this project.
             since:   Only include entries with timestamp >= since (unix epoch).
 
         Returns:
@@ -283,6 +207,8 @@ class CostTracker:
             entries = [e for e in entries if e.agent == agent]
         if task_id:
             entries = [e for e in entries if e.task_id == task_id]
+        if project_id:
+            entries = [e for e in entries if e.project_id == project_id]
         if since is not None:
             entries = [e for e in entries if e.timestamp >= since]
 
@@ -293,18 +219,21 @@ class CostTracker:
         by_provider: dict[str, float] = {}
         by_model: dict[str, float] = {}
         by_task: dict[str, float] = {}
+        by_project: dict[str, float] = {}
 
         for e in entries:
             key_a = e.agent or "unknown"
             key_p = e.provider or "unknown"
             key_m = f"{e.provider}:{e.model}"
             key_t = e.task_id or "unknown"
+            key_project = e.project_id or "unknown"
             cost = e.cost_usd or 0.0
 
             by_agent[key_a] = by_agent.get(key_a, 0.0) + cost
             by_provider[key_p] = by_provider.get(key_p, 0.0) + cost
             by_model[key_m] = by_model.get(key_m, 0.0) + cost
             by_task[key_t] = by_task.get(key_t, 0.0) + cost
+            by_project[key_project] = by_project.get(key_project, 0.0) + cost
 
         return CostReport(
             total_cost_usd=total_cost,
@@ -314,11 +243,12 @@ class CostTracker:
             by_provider=by_provider,
             by_model=by_model,
             by_task=by_task,
+            by_project=by_project,
             entries=len(entries),
         )
 
     def get_top_agents(self, n: int = 5) -> list[dict[str, Any]]:
-        """Return the N most expensive agents.
+        """Rank agents by accumulated metered cost.
 
         Returns:
             List of dicts sorted by descending cost, each with ``agent``
@@ -329,7 +259,7 @@ class CostTracker:
         return [{"agent": k, "cost_usd": v} for k, v in ranked[:n]]
 
     def get_top_models(self, n: int = 5) -> list[dict[str, Any]]:
-        """Return the N most expensive provider/model combos.
+        """Rank provider/model combinations by accumulated metered cost.
 
         Returns:
             List of dicts sorted by descending cost, each with ``model``
@@ -348,12 +278,19 @@ class CostTracker:
 
         Returns:
             Dictionary with ``total_entries`` (number of recorded cost entries)
-            and ``configured_models`` (number of pricing rules loaded).
+            ``configured_models`` (number of pricing rules loaded), and
+            budget and persistence fields so callers can distinguish healthy
+            accounting from cap crossings without treating unknown state as
+            free usage.
         """
         with self._lock:
+            total_cost = self._current_total_cost_locked()
             return {
                 "total_entries": len(self._entries),
                 "configured_models": len(self._pricing),
+                "budget_limit_usd": self._budget_limit_usd,
+                "budget_exceeded": total_cost > self._budget_limit_usd,
+                "persistence_path": str(self._entries_path),
             }
 
     def get_summary(self) -> dict[str, Any]:

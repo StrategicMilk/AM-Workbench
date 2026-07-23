@@ -1,0 +1,276 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/shard.schema.json",
+  "title": "Vetinari SHARD Frontmatter Schema",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Shard filename stem without the .md extension."
+    },
+    "plan_type": {
+      "const": "agent-shard",
+      "description": "Generated-plan discriminator; SHARD files must use agent-shard."
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["standard", "discovery", "spike", "refactor", "migration"],
+      "description": "Work-instruction kind that selects the required evidence contract."
+    },
+    "owned_write_scope": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Files or directories the shard may modify."
+    },
+    "verification_commands": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Commands the worker or coordinator must run to prove completion."
+    },
+    "adr_refs": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Accepted ADR identifiers that authorize or constrain the shard."
+    },
+    "research_questions": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Questions a discovery shard must answer before implementation work exists."
+    },
+    "sources_to_consult": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Primary repo, local, or external sources that bound discovery work."
+    },
+    "deliverable_artifact_path": {
+      "type": "string",
+      "description": "Path where a discovery shard records its evidence-backed result."
+    },
+    "stop_conditions": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Conditions under which discovery must stop and report back."
+    },
+    "hypothesis": {
+      "type": "string",
+      "description": "The falsifiable claim a spike is testing."
+    },
+    "success_criteria": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Concrete outcomes that would promote or keep the spike result."
+    },
+    "fail_criteria": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Concrete outcomes that prove the spike should be deleted or abandoned."
+    },
+    "scope_limit_files": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Maximum file set the spike may touch."
+    },
+    "scope_limit_loc": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Maximum line-count budget for throwaway spike code."
+    },
+    "promotion_or_deletion_step": {
+      "type": "string",
+      "description": "Required next action that either promotes the spike into planned work or deletes it."
+    },
+    "named_invariant": {
+      "type": "string",
+      "description": "Behavior-preserving invariant a refactor must protect."
+    },
+    "regression_test_set": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Tests that must pass before and after the refactor."
+    },
+    "no_new_public_api_confirmation": {
+      "type": "boolean",
+      "description": "True only when the refactor introduces no new public API surface."
+    },
+    "legacy_path": {
+      "type": "string",
+      "description": "Existing path, behavior, or storage location being migrated away from."
+    },
+    "new_path": {
+      "type": "string",
+      "description": "Target path, behavior, or storage location after migration."
+    },
+    "default_runtime_statement": {
+      "type": "string",
+      "description": "Statement of which runtime remains default during and after cutover."
+    },
+    "cutover_criterion": {
+      "type": "string",
+      "description": "Observable condition that allows the migration to flip defaults or remove the old path."
+    },
+    "routing_manifest": {
+      "type": "string",
+      "description": "Path to the routing manifest used for model and agent validation."
+    },
+    "agent": {
+      "type": "string",
+      "description": "Declared worker agent for the shard."
+    },
+    "model": {
+      "type": "string",
+      "description": "Declared model for the shard."
+    },
+    "effort": {
+      "type": "string",
+      "description": "Declared reasoning effort for the shard."
+    },
+    "parallel_group": {
+      "type": "string",
+      "description": "Parallel execution group for dependency-safe scheduling."
+    },
+    "depends_on": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Shard, session, or external dependency list required before execution."
+    },
+    "evidence": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Evidence pointers the shard must use or produce."
+    },
+    "anti_goals": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Explicit non-goals that prevent scope creep or known failure modes."
+    },
+    "context_bundle": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "entity": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Semantic entity or symbol that bounds the pre-assembled context excerpt."
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repo-relative file path passed to sem context for this bundle item."
+          },
+          "budget_tokens": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum token budget requested from sem context for this bundle item."
+          }
+        },
+        "required": ["entity", "file", "budget_tokens"],
+        "additionalProperties": true
+      },
+      "description": "Optional pre-assembled context bundle entries resolved before worker dispatch."
+    },
+    "orchestrator_model": {
+      "type": "string",
+      "description": "Model declared for parent orchestration context inherited by generated shards."
+    },
+    "orchestrator_effort": {
+      "type": "string",
+      "description": "Reasoning effort declared for parent orchestration context inherited by generated shards."
+    },
+    "default_worker_model": {
+      "type": "string",
+      "description": "Default worker model inherited from the generated-plan template."
+    },
+    "default_worker_effort": {
+      "type": "string",
+      "description": "Default worker effort inherited from the generated-plan template."
+    },
+    "mechanical_worker_model": {
+      "type": "string",
+      "description": "Mechanical worker model inherited from the generated-plan template."
+    },
+    "mechanical_worker_effort": {
+      "type": "string",
+      "description": "Mechanical worker effort inherited from the generated-plan template."
+    },
+    "reviewer_model": {
+      "type": "string",
+      "description": "Reviewer model inherited from the generated-plan template."
+    },
+    "reviewer_effort": {
+      "type": "string",
+      "description": "Reviewer effort inherited from the generated-plan template."
+    },
+    "codex_default_model": {
+      "type": "string",
+      "description": "Codex default model inherited from the generated-plan template."
+    },
+    "codex_mechanical_model": {
+      "type": "string",
+      "description": "Codex mechanical model inherited from the generated-plan template."
+    },
+    "codex_terminal_model": {
+      "type": "string",
+      "description": "Codex terminal model inherited from the generated-plan template."
+    },
+    "codex_reviewer_model": {
+      "type": "string",
+      "description": "Codex reviewer model inherited from the generated-plan template."
+    },
+    "codex_architect_model": {
+      "type": "string",
+      "description": "Codex architect model inherited from the generated-plan template."
+    }
+  },
+  "additionalProperties": true,
+  "description": "Open by design: frontmatter carries routing and governance metadata (orchestrator_model, default_worker_model, etc.) that evolves independently of this validator. Unknown root keys are surfaced as SHARD-005 warnings rather than schema errors so new metadata fields do not break existing shards.",
+  "required": ["name", "plan_type", "kind"],
+  "allOf": [
+    {
+      "if": {
+        "required": ["kind"],
+        "properties": {"kind": {"const": "standard"}}
+      },
+      "then": {
+        "required": ["name", "plan_type", "kind", "owned_write_scope", "verification_commands", "adr_refs"]
+      }
+    },
+    {
+      "if": {
+        "required": ["kind"],
+        "properties": {"kind": {"const": "discovery"}}
+      },
+      "then": {
+        "required": ["name", "plan_type", "kind", "research_questions", "sources_to_consult", "deliverable_artifact_path", "stop_conditions"]
+      }
+    },
+    {
+      "if": {
+        "required": ["kind"],
+        "properties": {"kind": {"const": "spike"}}
+      },
+      "then": {
+        "required": ["name", "plan_type", "kind", "hypothesis", "success_criteria", "fail_criteria", "scope_limit_files", "scope_limit_loc", "promotion_or_deletion_step"]
+      }
+    },
+    {
+      "if": {
+        "required": ["kind"],
+        "properties": {"kind": {"const": "refactor"}}
+      },
+      "then": {
+        "required": ["name", "plan_type", "kind", "named_invariant", "regression_test_set", "no_new_public_api_confirmation"]
+      }
+    },
+    {
+      "if": {
+        "required": ["kind"],
+        "properties": {"kind": {"const": "migration"}}
+      },
+      "then": {
+        "required": ["name", "plan_type", "kind", "legacy_path", "new_path", "default_runtime_statement", "cutover_criterion"]
+      }
+    }
+  ]
+}

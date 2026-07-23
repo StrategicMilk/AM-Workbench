@@ -1,0 +1,241 @@
+{
+  "schema_version": "litestar-retirement.v1",
+  "retirement_status": "retired",
+  "live_api_host": "crates/amw-kernel/src/bin/amw-kernel-server.rs",
+  "live_host_entrypoints": [
+    "vetinari cli serve/start -> cargo run -p amw-kernel --bin amw-kernel-server",
+    "Tauri invoke handlers -> amw-kernel crate commands",
+    "crates/amw-kernel/src/api/routes::build_router"
+  ],
+  "kernel_authority_module": "crates/amw-kernel/src/api/mod.rs",
+  "surface_policy_module": "crates/amw-kernel/src/workbench_surfaces/mod.rs",
+  "retired_python_route_host": "removed",
+  "protected_sibling_surfaces": [],
+  "domains": [
+    {
+      "id": "method_library",
+      "authority": "rust-kernel",
+      "authority_module": "crates/amw-kernel/src/api/mod.rs",
+      "native_route": "/api/workbench/method-library",
+      "native_route_file": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+      "compatibility_mode": "native-rust",
+      "state_store": "metadata_spine",
+      "default_policy": "default-on",
+      "signals": {
+        "authorization": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+        "provenance": "vetinari/workbench/method_library.py",
+        "receipt": "vetinari/workbench/method_library.py",
+        "rollback": "read-only-derived-view"
+      }
+    },
+    {
+      "id": "adaptive_tuning",
+      "authority": "rust-kernel",
+      "authority_module": "crates/amw-kernel/src/api/mod.rs",
+      "native_route": "/api/workbench/adaptive-tuning",
+      "native_route_file": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+      "compatibility_mode": "native-rust",
+      "state_store": "vetinari/workbench/adaptive_tuning/store.py",
+      "default_policy": "default-on",
+      "signals": {
+        "authorization": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+        "provenance": "vetinari/workbench/adaptive_tuning/signals.py",
+        "receipt": "vetinari/workbench/adaptive_tuning/store.py",
+        "rollback": "vetinari/workbench/adaptive_tuning/store.py"
+      }
+    },
+    {
+      "id": "resource_cockpit",
+      "authority": "rust-kernel",
+      "authority_module": "crates/amw-kernel/src/resource_cockpit/mod.rs",
+      "native_route": "/api/workbench/resource-cockpit",
+      "native_route_file": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+      "compatibility_mode": "native-rust",
+      "state_store": "crates/amw-kernel/src/resource_cockpit/mod.rs",
+      "default_policy": "default-on",
+      "signals": {
+        "authorization": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+        "provenance": "crates/amw-kernel/src/resource_cockpit/mod.rs",
+        "receipt": "LiveActionReceipt",
+        "rollback": "LiveActionReceipt.recovery"
+      }
+    },
+    {
+      "id": "capability_packs",
+      "authority": "rust-kernel",
+      "authority_module": "crates/amw-kernel/src/api/mod.rs",
+      "native_route": "/api/workbench/capability-packs",
+      "native_route_file": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+      "compatibility_mode": "native-rust",
+      "state_store": "config/workbench/capability_packs",
+      "default_policy": "default-on",
+      "signals": {
+        "authorization": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+        "provenance": "vetinari/workbench/capability_packs.py",
+        "receipt": "CapabilityEnablementDecision",
+        "rollback": "CapabilityPackService.disable_pack"
+      }
+    },
+    {
+      "id": "domain_kits",
+      "authority": "rust-kernel",
+      "authority_module": "crates/amw-kernel/src/api/mod.rs",
+      "native_route": "/api/workbench/domain-kits",
+      "native_route_file": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+      "compatibility_mode": "native-rust",
+      "state_store": "config/workbench/domain_kits",
+      "default_policy": "default-on",
+      "signals": {
+        "authorization": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+        "provenance": "vetinari/workbench/domain_kits.py",
+        "receipt": "DomainKitSupportVerdict",
+        "rollback": "denied verdict with caveat recovery"
+      }
+    },
+    {
+      "id": "workflow_builder",
+      "authority": "rust-kernel",
+      "authority_module": "crates/amw-kernel/src/api/mod.rs",
+      "native_route": "/api/workbench/workflow-builder",
+      "native_route_file": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+      "compatibility_mode": "native-rust",
+      "state_store": "vetinari/workbench/workflow_builder/persistence.py",
+      "default_policy": "default-on",
+      "signals": {
+        "authorization": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+        "provenance": "vetinari/workbench/workflow_builder/api_service.py",
+        "receipt": "vetinari/workbench/workflow_builder/contracts.py",
+        "rollback": "vetinari/workbench/workflow_builder/persistence.py"
+      }
+    },
+    {
+      "id": "channels",
+      "authority": "rust-kernel",
+      "authority_module": "crates/amw-kernel/src/api/mod.rs",
+      "native_route": "/api/workbench/channels",
+      "native_route_file": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+      "compatibility_mode": "native-rust",
+      "state_store": "vetinari/workbench/channels/registry.py",
+      "default_policy": "default-on",
+      "signals": {
+        "authorization": "vetinari/workbench/channels/approvals.py",
+        "provenance": "vetinari/workbench/channels/contracts.py",
+        "receipt": "vetinari/workbench/channels/delivery.py",
+        "rollback": "vetinari/workbench/channels/commands.py"
+      }
+    },
+    {
+      "id": "benchmark_importer",
+      "authority": "rust-kernel",
+      "authority_module": "crates/amw-kernel/src/api/mod.rs",
+      "native_route": "/api/workbench/benchmark",
+      "native_route_file": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+      "compatibility_mode": "native-rust",
+      "state_store": "config/workbench/benchmark_importers.yaml",
+      "default_policy": "default-on",
+      "signals": {
+        "authorization": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+        "provenance": "vetinari/workbench/benchmark_importer.py",
+        "receipt": "BenchmarkImportResult",
+        "rollback": "catalog validation refusal"
+      }
+    },
+    {
+      "id": "migration_wizard",
+      "authority": "rust-kernel",
+      "authority_module": "crates/amw-kernel/src/api/mod.rs",
+      "native_route": "/api/v1/workbench/migration",
+      "native_route_file": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+      "compatibility_mode": "native-rust",
+      "state_store": "vetinari/workbench/migration/runtime.py",
+      "default_policy": "default-on",
+      "signals": {
+        "authorization": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+        "provenance": "vetinari/workbench/migration/sources.py",
+        "receipt": "vetinari/workbench/migration/contracts.py",
+        "rollback": "vetinari/workbench/migration/runtime.py"
+      }
+    },
+    {
+      "id": "habit_health",
+      "authority": "rust-kernel",
+      "authority_module": "crates/amw-kernel/src/api/mod.rs",
+      "native_route": "/api/workbench/habit-health",
+      "native_route_file": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+      "compatibility_mode": "native-rust",
+      "state_store": "vetinari/workbench/habit_health/store.py",
+      "default_policy": "opt-in",
+      "signals": {
+        "authorization": "vetinari/workbench/habit_health/privacy.py",
+        "provenance": "vetinari/workbench/habit_health/contracts.py",
+        "receipt": "vetinari/workbench/habit_health/store.py",
+        "rollback": "vetinari/workbench/habit_health/store.py"
+      }
+    },
+    {
+      "id": "extensions_marketplace",
+      "authority": "rust-kernel",
+      "authority_module": "crates/amw-kernel/src/api/mod.rs",
+      "native_route": "/api/workbench/extensions",
+      "native_route_file": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+      "compatibility_mode": "native-rust",
+      "migration_status": "native-rust-complete",
+      "state_store": "config/workbench/extension_marketplace.yaml",
+      "default_policy": "opt-in",
+      "signals": {
+        "authorization": "vetinari/workbench/plugin_runtime/registration.py",
+        "provenance": "config/workbench/extension_marketplace.yaml",
+        "receipt": "vetinari/workbench/plugin_runtime/registration.py",
+        "rollback": "vetinari/workbench/plugin_runtime/registration.py"
+      }
+    },
+    {
+      "id": "training_controls",
+      "authority": "rust-kernel",
+      "authority_module": "crates/amw-kernel/src/api/mod.rs",
+      "native_route": "/api/v1/training",
+      "native_route_file": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+      "compatibility_mode": "native-rust",
+      "state_store": "crates/amw-kernel/src/api/routes/workbench_domains.rs::NativeTrainingControl",
+      "default_policy": "default-on",
+      "signals": {
+        "authorization": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+        "provenance": "crates/amw-kernel/src/api/routes/workbench_domains.rs::training_job_payload",
+        "receipt": "crates/amw-kernel/src/api/routes/workbench_domains.rs::training_receipt",
+        "rollback": "crates/amw-kernel/src/api/routes/workbench_domains.rs::training_rejection"
+      }
+    },
+    {
+      "id": "mcp_transport",
+      "authority": "rust-kernel",
+      "authority_module": "crates/amw-kernel/src/api/mod.rs",
+      "native_route": "/mcp",
+      "native_route_file": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+      "compatibility_mode": "native-rust",
+      "state_store": "crates/amw-kernel/src/mcp/mod.rs",
+      "default_policy": "default-on",
+      "signals": {
+        "authorization": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+        "provenance": "crates/amw-kernel/src/mcp/mod.rs",
+        "receipt": "bounded MCP response envelope",
+        "rollback": "session cleanup"
+      }
+    },
+    {
+      "id": "mission_control",
+      "authority": "rust-kernel",
+      "authority_module": "crates/amw-kernel/src/api/mod.rs",
+      "native_route": "/api/v1/projects/:project_id/mission-control",
+      "native_route_file": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+      "compatibility_mode": "native-rust",
+      "state_store": "crates/amw-kernel/src/api/routes/workbench_domains.rs::mission_control_snapshot_payload",
+      "default_policy": "default-on",
+      "signals": {
+        "authorization": "crates/amw-kernel/src/api/routes/workbench_domains.rs",
+        "provenance": "crates/amw-kernel/src/api/routes/workbench_domains.rs::mission_control_lane",
+        "receipt": "crates/amw-kernel/src/api/routes/workbench_domains.rs::mission_control_snapshot_payload",
+        "rollback": "read-only native snapshot"
+      }
+    }
+  ]
+}

@@ -1,0 +1,88 @@
+schema_version: 1
+packs:
+  - pack_id: workbench-trace-eval
+    version: "1.0.0"
+    capability_kind: eval_workflow
+    schemas:
+      - workbench.trace.v1
+      - workbench.eval_result.v1
+    permissions:
+      - read:workbench_trace
+      - write:eval_proposal
+    policy_bindings:
+      - default
+    smoke_evals:
+      - tests/test_cli_capability_packs.py::test_cmd_capability_packs_enable_returns_decision_status
+    examples:
+      - Convert a saved trace into a regression eval proposal.
+    uninstall_command: vetinari capability-packs uninstall workbench-trace-eval
+    disable_command: vetinari capability-packs disable workbench-trace-eval
+    known_limitations:
+      - Requires existing Workbench trace and eval-result schema support.
+      - Installer status is denied until the capability-installer upstream is present.
+    credential_posture: none
+    locality: local
+    source: builtin
+    cost_policy: declared
+    freshness_policy: current
+    tested_status: tested
+    current_status: current
+    metadata:
+      owner: workbench
+      support: trusted-installable-units
+  - pack_id: local-runtime
+    version: "1.0.0"
+    capability_kind: runtime_control
+    schemas:
+      - workbench.runtime.v1
+    permissions:
+      - read:runtime_status
+      - write:runtime_action
+    policy_bindings:
+      - default
+    smoke_evals:
+      - tests/test_cli_capability_packs.py::test_cmd_capability_packs_enable_returns_decision_status
+    examples:
+      - Inspect local runtime status and request bounded control actions.
+    uninstall_command: vetinari capability-packs uninstall local-runtime
+    disable_command: vetinari capability-packs disable local-runtime
+    known_limitations:
+      - Runtime control remains subject to live-action approval gates.
+    credential_posture: none
+    locality: local
+    source: builtin
+    cost_policy: declared
+    freshness_policy: current
+    tested_status: tested
+    current_status: current
+    metadata:
+      owner: workbench
+      support: native-runtime
+  - pack_id: workflow-safety
+    version: "1.0.0"
+    capability_kind: safety_policy
+    schemas:
+      - workbench.workflow_safety.v1
+    permissions:
+      - read:workflow_policy
+      - write:workflow_gate
+    policy_bindings:
+      - default
+    smoke_evals:
+      - tests/test_cli_capability_packs.py::test_cmd_capability_packs_enable_returns_decision_status
+    examples:
+      - Evaluate a workflow action against the native safety gate catalog.
+    uninstall_command: vetinari capability-packs uninstall workflow-safety
+    disable_command: vetinari capability-packs disable workflow-safety
+    known_limitations:
+      - Safety decisions remain fail-closed when required signals are unavailable.
+    credential_posture: none
+    locality: local
+    source: builtin
+    cost_policy: declared
+    freshness_policy: current
+    tested_status: tested
+    current_status: current
+    metadata:
+      owner: workbench
+      support: native-safety

@@ -17,21 +17,21 @@ lead to better outcomes for each task type.
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from vetinari.constants import VETINARI_STATE_DIR
 from vetinari.types import AgentType
-from vetinari.utils.math_helpers import cosine_similarity
+from vetinari.utils.bounded_collections import BoundedDict
 from vetinari.utils.serialization import dataclass_to_dict
 
+from .meta_adapter_internals import _MetaAdapterInternals
+
 logger = logging.getLogger(__name__)
+
 
 # Minimum similarity score to consider a prototype match
 _PROTOTYPE_MATCH_THRESHOLD = 0.6
@@ -46,7 +46,7 @@ _MAX_PROTOTYPES = 200
 # ── Data models ──────────────────────────────────────────────────────
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class StrategyBundle:
     """A complete set of strategy parameters for task execution.
 
@@ -103,7 +103,7 @@ class TaskPrototype:
     avg_quality: float = 0.0
     sample_count: int = 0
     representative_query: str = ""
-    embedding: list[float] = field(default_factory=list)  # noqa: VET220 — fixed-length embedding vector, not a growing buffer
+    embedding: list[float] = field(default_factory=list)
     last_updated: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def __repr__(self) -> str:
@@ -127,7 +127,7 @@ class TaskPrototype:
 # ── MetaAdapter ──────────────────────────────────────────────────────
 
 
-class MetaAdapter:
+class MetaAdapter(_MetaAdapterInternals):
     """Selects strategy parameters for new tasks based on episode memory similarity.
 
     Combines prototype matching (experience-based) with Thompson Sampling
@@ -143,7 +143,7 @@ class MetaAdapter:
     EMA_ALPHA = 0.2
 
     def __init__(self, state_path: Path | None = None) -> None:
-        self._prototypes: dict[str, TaskPrototype] = {}
+        self._prototypes: BoundedDict[str, TaskPrototype] = BoundedDict(_MAX_PROTOTYPES)
         self._lock = threading.Lock()
         self._state_path = state_path or self._default_state_path()
         self._embedder = self._get_embedder()
@@ -182,7 +182,7 @@ class MetaAdapter:
             prototype, similarity = best_match
             if prototype.sample_count >= _MIN_PROTOTYPE_SAMPLES:
                 bundle = self._bundle_from_prototype(prototype)
-                bundle.source = f"prototype_match:{prototype.prototype_id}:{similarity:.3f}"
+                bundle = replace(bundle, source=f"prototype_match:{prototype.prototype_id}:{similarity:.3f}")
                 logger.info(
                     "MetaAdapter: prototype match %s (sim=%.3f, samples=%d) for '%s'",
                     prototype.prototype_id,
@@ -298,253 +298,6 @@ class MetaAdapter:
 
     # ── Internal helpers ─────────────────────────────────────────────
 
-    def _find_best_prototype(
-        self,
-        query_embedding: list[float],
-    ) -> tuple[TaskPrototype, float] | None:
-        """Find the most similar prototype above threshold.
-
-        Args:
-            query_embedding: Embedding vector for the query.
-
-        Returns:
-            Tuple of (prototype, similarity) or None if no match above threshold.
-        """
-        with self._lock:
-            best_score = 0.0
-            best_proto: TaskPrototype | None = None
-
-            for proto in self._prototypes.values():
-                if not proto.embedding:
-                    continue
-                score = cosine_similarity(query_embedding, proto.embedding)
-                if score > best_score:
-                    best_score = score
-                    best_proto = proto
-
-            if best_proto is not None and best_score >= _PROTOTYPE_MATCH_THRESHOLD:
-                return (best_proto, best_score)
-            return None
-
-    def _bundle_from_prototype(self, prototype: TaskPrototype) -> StrategyBundle:
-        """Build a StrategyBundle from a prototype's learned strategies.
-
-        Args:
-            prototype: The matched TaskPrototype.
-
-        Returns:
-            StrategyBundle with best-performing values from the prototype.
-        """
-        temp = prototype.get_best_strategy("temperature")
-        ctx = prototype.get_best_strategy("context_window")
-        gran = prototype.get_best_strategy("decomposition_granularity")
-        tmpl = prototype.get_best_strategy("prompt_template_variant")
-
-        return StrategyBundle(
-            temperature=float(temp) if temp is not None else 0.3,
-            context_window=int(ctx) if ctx is not None else 4096,
-            decomposition_granularity=str(gran) if gran is not None else "medium",
-            prompt_template_variant=str(tmpl) if tmpl is not None else "standard",
-        )
-
-    def _bundle_from_thompson(self, agent_type: str, mode: str) -> StrategyBundle:
-        """Build a StrategyBundle using Thompson Sampling selection.
-
-        Args:
-            agent_type: Agent type string.
-            mode: Agent mode string.
-
-        Returns:
-            StrategyBundle with Thompson-selected values.
-        """
-        try:
-            from vetinari.learning.model_selector import get_thompson_selector
-
-            selector = get_thompson_selector()
-            temp = selector.select_strategy(agent_type, mode, "temperature")
-            ctx = selector.select_strategy(agent_type, mode, "context_window_size")
-            gran = selector.select_strategy(agent_type, mode, "decomposition_granularity")
-            tmpl = selector.select_strategy(agent_type, mode, "prompt_template_variant")
-
-            return StrategyBundle(
-                temperature=float(temp),
-                context_window=int(ctx),
-                decomposition_granularity=str(gran),
-                prompt_template_variant=str(tmpl),
-                source="thompson",
-            )
-        except Exception:
-            logger.warning("Thompson Sampling unavailable, using defaults")
-            return StrategyBundle(source="default")
-
-    def _update_prototype(
-        self,
-        prototype: TaskPrototype,
-        strategy: StrategyBundle,
-        quality: float,
-        mode: str,
-    ) -> None:
-        """Update a prototype with a new observation.
-
-        Args:
-            prototype: The prototype to update.
-            strategy: The strategy that was used.
-            quality: Observed quality score.
-            mode: Agent mode that was used.
-        """
-        # Running average for quality
-        n = prototype.sample_count
-        prototype.avg_quality = (prototype.avg_quality * n + quality) / (n + 1)
-        prototype.sample_count = n + 1
-        prototype.last_updated = datetime.now(timezone.utc).isoformat()
-
-        if mode:
-            prototype.preferred_mode = mode
-
-        self._record_strategy_in_prototype(prototype, strategy, quality)
-
-    @staticmethod
-    def _record_strategy_in_prototype(
-        prototype: TaskPrototype,
-        strategy: StrategyBundle,
-        quality: float,
-    ) -> None:
-        """Record strategy parameter effectiveness in a prototype.
-
-        Args:
-            prototype: The prototype to update.
-            strategy: The strategy bundle used.
-            quality: Quality score achieved.
-        """
-        mappings = {
-            "temperature": str(strategy.temperature),
-            "context_window": str(strategy.context_window),
-            "decomposition_granularity": strategy.decomposition_granularity,
-            "prompt_template_variant": strategy.prompt_template_variant,
-        }
-        for key, value in mappings.items():
-            if key not in prototype.successful_strategies:
-                prototype.successful_strategies[key] = {}
-            strategy_data = prototype.successful_strategies[key]
-            # Exponential moving average for strategy quality tracking
-            if value in strategy_data:
-                old_avg = strategy_data[value]
-                strategy_data[value] = (1 - MetaAdapter.EMA_ALPHA) * old_avg + MetaAdapter.EMA_ALPHA * quality
-            else:
-                strategy_data[value] = quality
-
-    def _evict_least_used(self) -> None:
-        """Remove the prototype with the lowest sample count."""
-        if not self._prototypes:
-            return
-        worst_id = min(
-            self._prototypes,
-            key=lambda pid: self._prototypes[pid].sample_count,
-        )
-        del self._prototypes[worst_id]
-        logger.debug("MetaAdapter: evicted prototype %s", worst_id)
-
-    def _next_prototype_id(self) -> str:
-        """Generate the next sequential prototype ID.
-
-        Uses a monotonically-incrementing counter so that evictions (which
-        decrease ``len(self._prototypes)``) cannot cause ID reuse.
-
-        Returns:
-            String like 'proto_001', 'proto_002', etc.
-        """
-        self._next_proto_counter += 1
-        return f"proto_{self._next_proto_counter:03d}"
-
-    @staticmethod
-    def _get_embedder():
-        """Get an embedding function (reuses episode memory's embedder).
-
-        Returns:
-            A callable that takes a string and returns a list of floats.
-        """
-        try:
-            from vetinari.learning.episode_memory import _simple_embedding
-
-            return _simple_embedding
-        except ImportError:
-            # Inline fallback — should never happen in practice
-            import hashlib
-
-            def _fallback(text: str, dim: int = 256) -> list[float]:
-                vec = [0.0] * dim
-                for i in range(len(text) - 2):
-                    gram = text[i : i + 3].lower()
-                    h = int(hashlib.md5(gram.encode(), usedforsecurity=False).hexdigest(), 16)
-                    vec[h % dim] += 1.0
-                norm = (sum(x * x for x in vec) ** 0.5) or 1.0
-                return [x / norm for x in vec]
-
-            logger.warning("vetinari.learning.episode_memory not importable — using inline trigram fallback embedder")
-            return _fallback
-
-    # ── Persistence ──────────────────────────────────────────────────
-
-    @staticmethod
-    def _default_state_path() -> Path:
-        """Resolve default path for meta-adapter state.
-
-        Returns:
-            Path to meta_adapter_state.json.
-        """
-        state_dir_env = os.environ.get("VETINARI_STATE_DIR", "")
-        if state_dir_env:
-            state_dir = Path(state_dir_env)
-        else:
-            state_dir = VETINARI_STATE_DIR
-        state_dir.mkdir(parents=True, exist_ok=True)
-        return state_dir / "meta_adapter_state.json"
-
-    def _load_state(self) -> None:
-        """Load prototype state from JSON file."""
-        try:
-            if self._state_path.exists():
-                with Path(self._state_path).open(encoding="utf-8") as f:
-                    data = json.load(f)
-                for pid, proto_data in data.items():
-                    self._prototypes[pid] = TaskPrototype(**proto_data)
-                # Seed the monotonic counter from the highest ID seen so that
-                # new IDs never collide with existing ones after a reload.
-                for pid in data:
-                    if pid.startswith("proto_"):
-                        try:
-                            n = int(pid[len("proto_"):])
-                            if n > self._next_proto_counter:
-                                self._next_proto_counter = n
-                        except ValueError:  # noqa: VET022 — non-numeric proto ID suffix is silently skipped by design
-                            pass
-                logger.debug(
-                    "MetaAdapter: loaded %d prototypes from %s",
-                    len(self._prototypes),
-                    self._state_path,
-                )
-        except Exception:
-            logger.warning(
-                "MetaAdapter: could not load state from %s",
-                self._state_path,
-                exc_info=True,
-            )
-
-    def _save_state(self) -> None:
-        """Persist prototype state to JSON file."""
-        try:
-            data = {pid: dataclass_to_dict(proto) for pid, proto in self._prototypes.items()}
-            with Path(self._state_path).open("w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-        except Exception:
-            logger.warning(
-                "MetaAdapter: could not save state to %s",
-                self._state_path,
-                exc_info=True,
-            )
-
-
-# ── Module-level singleton ───────────────────────────────────────────
 
 _meta_adapter: MetaAdapter | None = None
 _meta_adapter_lock = threading.Lock()

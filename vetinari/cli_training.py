@@ -20,8 +20,8 @@ from typing import Any
 from vetinari.constants import (
     KAIZEN_DB_PATH,
     MAIN_LOOP_POLL_INTERVAL,
-    TRAINING_SCHEDULER_DELAY,
 )
+from vetinari.ux import display_label_or_humanize
 
 logger = logging.getLogger(__name__)
 
@@ -56,22 +56,66 @@ def cmd_kaizen(args: Any) -> int:
         print(f"  Reverted:  {report.total_reverted}")
         print(f"  Avg Effect: {report.avg_improvement_effect:+.3f}")
         print(f"  Generated: {report.generated_at.isoformat()}")
+        print("Next actions:")
+        print("  vetinari kaizen gemba")
+        print("  docs/getting-started/kaizen-workflow.md")
         return 0
 
     if action == "gemba":
         from vetinari.kaizen.gemba import AutoGembaWalk
 
         gemba = AutoGembaWalk(log)
+        weekly = log.get_weekly_report()
+        defect_counts = log.get_weekly_defect_counts()
+        top_defect = log.get_top_defect_pattern()
+        total_events = (
+            weekly.total_proposed
+            + weekly.total_active
+            + weekly.total_confirmed
+            + weekly.total_failed
+            + weekly.total_reverted
+        )
+        if total_events == 0 and not defect_counts and top_defect is None:
+            print("Gemba walk requires execution history; no kaizen or defect records are available.")
+            return 1
+        failure_patterns = []
+        if weekly.total_failed:
+            failure_patterns.append({
+                "model": "kaizen-log",
+                "task_type": "failed_improvement",
+                "frequency": weekly.total_failed,
+                "avg_score": 0.0,
+            })
+        rework_stats = {
+            "rework_count": weekly.total_failed + weekly.total_reverted,
+            "total_tasks": max(total_events, 1),
+        }
+        value_stream_stats = {
+            "value_add_ratio": weekly.total_confirmed / max(total_events, 1),
+            "avg_lead_time": 0.0,
+            "bottleneck_station": "kaizen",
+        }
+        defect_distribution = {}
+        if top_defect:
+            category = str(top_defect.get("category") or top_defect.get("defect_type") or "unknown")
+            defect_distribution[category] = 1.0
         try:
-            report = gemba.run()
+            report = gemba.run(
+                failure_patterns=failure_patterns,
+                rework_stats=rework_stats,
+                value_stream_stats=value_stream_stats,
+                defect_distribution=defect_distribution,
+            )
         except Exception:
-            logger.exception("Gemba walk failed - AutoGembaWalk.run() raised an unexpected error; check logs for details")
+            logger.exception(
+                "Gemba walk failed - AutoGembaWalk.run() raised an unexpected error; check logs for details"
+            )
             return 1
         print("=== Gemba Walk Complete ===")
         print(f"  Findings: {len(report.findings)}")
         print(f"  Improvements Proposed: {report.improvements_proposed}")
         for finding in report.findings:
-            print(f"  [{finding.type}] {finding.detail}")
+            print(f"  [{display_label_or_humanize(finding.type)}] {finding.detail}")
             print(f"    -> {finding.proposed_improvement}")
         if not report.findings:
             print("  No issues found - the line is running clean.")
@@ -100,6 +144,174 @@ def _register_kaizen_commands(subparsers: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _cmd_train_status() -> int:
+    from vetinari.training.control import get_training_control_service
+
+    receipt = get_training_control_service().status()
+    print(receipt.message)
+    if receipt.job_id:
+        print(f"Job: {receipt.job_id}")
+    return 0
+
+
+def _cmd_train_start(args: Any) -> int:
+    from vetinari.training.control import get_training_control_service
+
+    skill = getattr(args, "skill", None)
+    receipt = get_training_control_service().start(skill=skill)
+    print(receipt.message)
+    if receipt.job_id:
+        print(f"Job: {receipt.job_id}")
+    if not receipt.passed:
+        return 1
+    return 0
+
+
+def _cmd_train_pause(args: Any) -> int:
+    from vetinari.training.control import get_training_control_service
+
+    receipt = get_training_control_service().pause(job_id=getattr(args, "job_id", None))
+    print(receipt.message)
+    return 0 if receipt.passed else 1
+
+
+def _cmd_train_resume(args: Any) -> int:
+    from vetinari.training.control import get_training_control_service
+
+    receipt = get_training_control_service().resume(job_id=getattr(args, "job_id", None))
+    print(receipt.message)
+    return 0 if receipt.passed else 1
+
+
+def _cmd_train_stop(args: Any) -> int:
+    from vetinari.training.control import get_training_control_service
+
+    receipt = get_training_control_service().stop(job_id=getattr(args, "job_id", None))
+    print(receipt.message)
+    return 0 if receipt.passed else 1
+
+
+def _cmd_train_cancel(args: Any) -> int:
+    from vetinari.training.control import get_training_control_service
+
+    receipt = get_training_control_service().cancel(job_id=getattr(args, "job_id", None))
+    print(receipt.message)
+    return 0 if receipt.passed else 1
+
+
+def _cmd_train_checkpoint(args: Any) -> int:
+    from vetinari.training.control import get_training_control_service
+
+    receipt = get_training_control_service().checkpoint(job_id=getattr(args, "job_id", None))
+    print(receipt.message)
+    return 0 if receipt.passed else 1
+
+
+def _cmd_train_jobs() -> int:
+    from vetinari.training.control import get_training_control_service
+
+    jobs = get_training_control_service().jobs()
+    if not jobs:
+        print("No training jobs recorded.")
+        return 0
+    for job in jobs:
+        print(
+            f"{job.job_id} {display_label_or_humanize(job.status)} "
+            f"progress={job.progress:.2f} activity={job.activity_description}"
+        )
+    return 0
+
+
+def _cmd_train_data() -> int:
+    from vetinari.training.data_seeder import TrainingDataSeeder
+
+    status = TrainingDataSeeder().get_seed_status()
+    print(f"Seed datasets: {status.get('downloaded', 0)}/{status.get('total', 0)} downloaded")
+    try:
+        from vetinari.learning.training_data import get_training_collector
+
+        stats = get_training_collector().get_stats()
+        print(f"Execution records: {stats.get('total_records', 0)}")
+        print(f"Average quality: {stats.get('avg_score', 0):.2f}")
+    except Exception as exc:
+        print(f"Training data collector unavailable: {exc}")
+    return 0
+
+
+def _cmd_train_run(args: Any) -> int:
+    from vetinari.training.pipeline import TrainingPipeline
+
+    pipeline = TrainingPipeline()
+    reqs = pipeline.check_requirements()
+    if not reqs.get("ready_for_training"):
+        print("Training libraries not installed. Run: pip install trl peft bitsandbytes transformers")
+        return 1
+
+    skill = getattr(args, "skill", None)
+    backend = getattr(args, "backend", "vllm")
+    model_format = getattr(args, "model_format", None)
+    base_model = getattr(args, "base_model", "auto")
+    format_label = model_format or ("gguf" if backend == "llama_cpp" else "safetensors")
+    print(
+        "Running training pipeline "
+        f"(task_type={display_label_or_humanize(skill or 'all')}, "
+        f"backend={display_label_or_humanize(backend)}, "
+        f"format={display_label_or_humanize(format_label)}, base_model={base_model})..."
+    )
+    run = pipeline.run(
+        base_model=base_model,
+        task_type=skill,
+        backend=backend,
+        model_format=model_format,
+        model_revision=getattr(args, "model_revision", None),
+    )
+    print(f"Run {run.run_id}: success={run.success}")
+    if run.output_model_path:
+        print(f"  Model: {run.output_model_path}")
+    if getattr(run, "model_manifest_path", ""):
+        print(f"  Manifest: {run.model_manifest_path}")
+    if run.error:
+        print(f"  Error: {run.error}")
+    return 0 if run.success else 1
+
+
+def _cmd_train_seed() -> int:
+    from vetinari.training.data_seeder import TrainingDataSeeder
+
+    count = TrainingDataSeeder().seed_if_empty(authorized=True)
+    print(f"Seeded {count} datasets.")
+    return 0
+
+
+def _cmd_train_curriculum() -> int:
+    from vetinari.training.curriculum import TrainingCurriculum
+
+    curriculum = TrainingCurriculum()
+    status = curriculum.get_status()
+    print(f"Phase: {display_label_or_humanize(status['phase'])}")
+    print(f"Candidates: {status.get('candidate_count', 0)}")
+    activity = curriculum.next_activity()
+    print("\nNext activity:")
+    print(f"  Type: {display_label_or_humanize(activity.type)}")
+    print(f"  Description: {activity.description}")
+    print(f"  Priority: {activity.priority:.2f}")
+    print(f"  Est. duration: {activity.estimated_duration_minutes}m")
+    print(f"  Est. VRAM: {activity.estimated_vram_gb:.1f} GB")
+    return 0
+
+
+def _cmd_train_history() -> int:
+    from vetinari.training.agent_trainer import AgentTrainer
+
+    stats = AgentTrainer().get_stats()
+    if not stats.get("agents"):
+        print("No training history yet.")
+        return 0
+    for agent, info in stats["agents"].items():
+        print(f"  {agent}: last trained {info.get('last_trained', 'never')}, runs: {info.get('run_count', 0)}")
+    return 0
+
+
 def cmd_train(args: Any) -> int:
     """Manage the idle-time training system.
 
@@ -113,130 +325,33 @@ def cmd_train(args: Any) -> int:
         Exit code (0 for success, 1 for error).
     """
     action = args.train_action
-
     if action == "status":
-        from vetinari.training.curriculum import TrainingCurriculum
-        from vetinari.training.idle_scheduler import IdleDetector
-
-        idle = IdleDetector()
-        curriculum = TrainingCurriculum()
-        status = curriculum.get_status()
-        print(f"Phase: {status['phase']}")
-        print(f"Idle: {idle.idle} ({idle.idle_duration_minutes:.1f}m)")
-        print(f"Next activity: {status.get('next_activity_description', 'none')}")
-        return 0
-
+        return _cmd_train_status()
     if action == "start":
-        from vetinari.training.idle_scheduler import IdleDetector, TrainingScheduler
-
-        idle = IdleDetector(min_idle_minutes=0)
-        scheduler = TrainingScheduler(idle_detector=idle)
-        print("Starting manual training cycle...")
-        scheduler.start()
-        time.sleep(TRAINING_SCHEDULER_DELAY)
-        scheduler.stop()
-        print("Training cycle initiated.")
-        return 0
-
+        return _cmd_train_start(args)
     if action == "pause":
-        print("Training pause is unsupported in the CLI: no server-side pause control is wired for this command.")
-        print("Use the running server's training control API after it exists, or stop the scheduler process directly.")
-        return 1
-
+        return _cmd_train_pause(args)
     if action == "resume":
-        print("Training resume is unsupported in the CLI: no server-side resume control is wired for this command.")
-        print("Use the running server's training control API after it exists, or start a new training cycle explicitly.")
-        return 1
-
+        return _cmd_train_resume(args)
+    if action == "stop":
+        return _cmd_train_stop(args)
+    if action == "cancel":
+        return _cmd_train_cancel(args)
+    if action == "checkpoint":
+        return _cmd_train_checkpoint(args)
+    if action == "jobs":
+        return _cmd_train_jobs()
     if action == "data":
-        from vetinari.training.data_seeder import TrainingDataSeeder
-
-        seeder = TrainingDataSeeder()
-        status = seeder.get_seed_status()
-        print(f"Seed datasets: {status.get('downloaded', 0)}/{status.get('total', 0)} downloaded")
-        try:
-            from vetinari.learning.training_data import get_training_collector
-
-            collector = get_training_collector()
-            stats = collector.get_stats()
-            print(f"Execution records: {stats.get('total_records', 0)}")
-            print(f"Average quality: {stats.get('avg_score', 0):.2f}")
-        except Exception as exc:
-            print(f"Training data collector unavailable: {exc}")
-        return 0
-
+        return _cmd_train_data()
     if action == "run":
-        from vetinari.training.pipeline import TrainingPipeline
-
-        pipeline = TrainingPipeline()
-        reqs = pipeline.check_requirements()
-        if not reqs.get("ready_for_training"):
-            print("Training libraries not installed. Run: pip install trl peft bitsandbytes transformers")  # noqa: VET301 - user guidance string
-            return 1
-
-        skill = getattr(args, "skill", None)
-        base_model = getattr(args, "base_model", "auto")
-        backend = getattr(args, "backend", "vllm")
-        model_format = getattr(args, "model_format", None)
-        model_revision = getattr(args, "model_revision", None)
-        format_label = model_format or ("gguf" if backend == "llama_cpp" else "safetensors")
-        print(
-            f"Running training pipeline "
-            f"(task_type={skill or 'all'}, backend={backend}, format={format_label}, base_model={base_model})..."
-        )
-        run = pipeline.run(
-            base_model=base_model,
-            task_type=skill,
-            backend=backend,
-            model_format=model_format,
-            model_revision=model_revision,
-        )
-        print(f"Run {run.run_id}: success={run.success}")
-        if run.output_model_path:
-            print(f"  Model: {run.output_model_path}")
-        if getattr(run, "model_manifest_path", ""):
-            print(f"  Manifest: {run.model_manifest_path}")
-        if run.error:
-            print(f"  Error: {run.error}")
-        return 0 if run.success else 1
-
+        return _cmd_train_run(args)
     if action == "seed":
-        from vetinari.training.data_seeder import TrainingDataSeeder
-
-        seeder = TrainingDataSeeder()
-        count = seeder.seed_if_empty()
-        print(f"Seeded {count} datasets.")
-        return 0
-
+        return _cmd_train_seed()
     if action == "curriculum":
-        from vetinari.training.curriculum import TrainingCurriculum
-
-        curriculum = TrainingCurriculum()
-        status = curriculum.get_status()
-        print(f"Phase: {status['phase']}")
-        print(f"Candidates: {status.get('candidate_count', 0)}")
-        activity = curriculum.next_activity()
-        print("\nNext activity:")
-        print(f"  Type: {activity.type.value}")
-        print(f"  Description: {activity.description}")
-        print(f"  Priority: {activity.priority:.2f}")
-        print(f"  Est. duration: {activity.estimated_duration_minutes}m")
-        print(f"  Est. VRAM: {activity.estimated_vram_gb:.1f} GB")
-        return 0
-
+        return _cmd_train_curriculum()
     if action == "history":
-        from vetinari.training.agent_trainer import AgentTrainer
-
-        trainer = AgentTrainer()
-        stats = trainer.get_stats()
-        if not stats.get("agents"):
-            print("No training history yet.")
-        else:
-            for agent, info in stats["agents"].items():
-                print(f"  {agent}: last trained {info.get('last_trained', 'never')}, runs: {info.get('run_count', 0)}")
-        return 0
-
-    print(f"Unknown train action: {action}")
+        return _cmd_train_history()
+    print(f"Unknown train action: {display_label_or_humanize(action)}")
     return 1
 
 
@@ -249,14 +364,30 @@ def _register_training_commands(subparsers: Any) -> None:
     p_train = subparsers.add_parser("train", help="Manage idle-time training system")
     p_train.add_argument(
         "train_action",
-        choices=["status", "start", "run", "pause", "resume", "data", "seed", "curriculum", "history"],
+        choices=[
+            "status",
+            "start",
+            "run",
+            "pause",
+            "resume",
+            "stop",
+            "cancel",
+            "checkpoint",
+            "jobs",
+            "data",
+            "seed",
+            "curriculum",
+            "history",
+        ],
         help=(
             "status: show state | start: manual trigger | run: run pipeline now"
+            " | pause/resume/stop/cancel/checkpoint/jobs: server-side job controls"
             " | data: show stats | seed: download datasets | curriculum: show plan"
             " | history: past runs"
         ),
     )
     p_train.add_argument("--skill", default=None, help="Train specific skill (with 'start' action)")
+    p_train.add_argument("--job-id", default=None, help="Target job id for pause/resume/stop/cancel/checkpoint")
     p_train.add_argument("--base-model", default="auto", help="Base model ID/path for 'run' (default: auto)")
     p_train.add_argument(
         "--backend",
@@ -399,7 +530,7 @@ def _cmd_watch_report(args: Any) -> int:
         line_num = entry.get("line_number", "?")
         target = entry.get("target") or entry.get("full_line", "")
         ts = entry.get("timestamp", "")[:19]
-        print(f"  [{action_str}] {path}:{line_num}  - {target}  ({ts})")
+        print(f"  [{display_label_or_humanize(action_str)}] {path}:{line_num}  - {target}  ({ts})")
 
     if high:
         print("  HIGH PRIORITY:")
@@ -449,7 +580,7 @@ def _cmd_watch_scan(args: Any) -> int:
 
     print(f"[Vetinari Watch] Found {len(all_directives)} directive(s):\n")
     for d in all_directives:
-        print(f"  [{d.action.upper()}] {d.file_path}:{d.line_number}  - {d.target or d.full_line}")
+        print(f"  [{display_label_or_humanize(d.action)}] {d.file_path}:{d.line_number}  - {d.target or d.full_line}")
 
     return 0
 

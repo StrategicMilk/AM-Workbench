@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from vetinari.guards import GateError
 from vetinari.types import AgentType
 
 
@@ -136,11 +137,13 @@ def validate_delegation(from_agent: str, to_agent: str, current_depth: int = 0) 
 
     Returns:
         True if successful, False otherwise.
+
+    Raises:
+        GateError: If either agent type is outside the architecture registry.
     """
     constraint = ARCHITECTURE_CONSTRAINTS.get(from_agent)
     if constraint is None:
-        # Unknown agents are allowed by default (no constraint defined)
-        return True, "no constraint defined"
+        raise GateError("architecture_delegation", f"unknown agent type: {from_agent!r}")
 
     if to_agent in constraint.cannot_delegate_to:
         return False, f"{from_agent} is explicitly forbidden from delegating to {to_agent}"

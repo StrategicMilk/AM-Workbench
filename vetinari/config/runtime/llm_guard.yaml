@@ -44,6 +44,11 @@ input_scanners:
 # ── Output scanners ────────────────────────────────────────────────────
 # Applied to LLM responses before they reach the user.
 output_scanners:
+  secrets_detection:
+    enabled: true
+    # Mirrors input secret scanning so agent/tool outputs cannot expose credentials.
+    redact: true
+
   ban_topics:
     enabled: true
     topics:

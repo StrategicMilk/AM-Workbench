@@ -12,8 +12,8 @@ Strategy:
   - Stage-boundary compression between pipeline stages
   - Configurable per-model context window sizes
 
-Token estimation uses a simple heuristic (words x 1.3) unless a proper
-tokenizer is available.
+Exact counts come from AM Engine. A degradation-visible fallback remains for
+startup and engine-unavailable paths.
 """
 
 from __future__ import annotations
@@ -25,11 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from vetinari.async_support.conversation import ConversationMessage
-
-logger = logging.getLogger(__name__)
-
-_CHARS_PER_TOKEN: int = 4  # rough estimate used for token budgeting
-
+from vetinari.context.window_manager_compression import WindowCompressionMixin
 
 # ── Known context window sizes ────────────────────────────────────────
 
@@ -41,22 +37,27 @@ _MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "qwen3-30b-a3b": 32768,
     "qwen2.5-vl-32b": 32768,
     # Cloud models
-    "claude-3.5-sonnet": 200000,
-    "claude-opus-4": 200000,
-    "claude-sonnet-4": 200000,
+    "claude-opus-4-8": 1000000,
+    "claude-opus-4-7": 1000000,
+    "claude-sonnet-4-6": 1000000,
+    "claude-haiku-4-5-20251001": 200000,
     "gpt-4o": 128000,
-    "gemini-1.5-pro": 1000000,
+    "gemini-3.5-flash": 1000000,
+    "gemini-3.1-flash-lite": 1000000,
+    "gemini-3.1-pro-preview": 1000000,
     # Defaults
     "default": 32768,
 }
 
 
-def estimate_tokens(text: str, tokenizer: Any = None) -> int:
-    """Estimate token count, using a real tokenizer when available.
+def fallback_estimate_tokens(text: str, tokenizer: Any = None) -> int:
+    """Estimate tokens only when AM Engine exact counting is unavailable.
 
     When *tokenizer* is provided (e.g. a llama-cpp-python ``Llama`` instance),
-    its ``tokenize()`` method is used for an accurate count.  Otherwise falls
-    back to a word-based heuristic (~1.3 tokens/word for prose, ~1.5 for code).
+    its ``tokenize()`` method is used for an accurate count. Otherwise the
+    fallback uses the larger of a word estimate and a UTF-8 byte-density
+    estimate. The byte-density floor prevents minified JSON, hashes, and other
+    unspaced content from being counted as a single token.
 
     Args:
         text: The input string to tokenise.
@@ -65,6 +66,7 @@ def estimate_tokens(text: str, tokenizer: Any = None) -> int:
     Returns:
         Estimated (or exact) number of tokens in the input text.
     """
+    logger.warning("Using heuristic token count because AM Engine exact counting is unavailable")
     if not text:
         return 0
     # Prefer real tokenizer when available
@@ -77,7 +79,39 @@ def estimate_tokens(text: str, tokenizer: Any = None) -> int:
     # Heuristic: if text has lots of symbols, use higher multiplier
     symbol_ratio = sum(1 for c in text if not c.isalnum() and not c.isspace()) / max(len(text), 1)
     multiplier = 1.5 if symbol_ratio > 0.15 else 1.3
-    return int(word_count * multiplier)
+    word_estimate = max(1, int(word_count * multiplier))
+    byte_density_estimate = max(1, (len(text.encode("utf-8")) + 3) // 4)
+    return max(word_estimate, byte_density_estimate)
+
+
+def count_tokens(text: str, *, model_id: str | None = None, tokenizer: Any = None) -> int:
+    """Return an exact AM Engine token count with an explicit degraded fallback.
+
+    Returns:
+        Exact token count, or a degradation-visible heuristic count when the
+        engine and optional tokenizer are unavailable.
+    """
+    if not text:
+        return 0
+    if tokenizer is not None:
+        try:
+            return len(tokenizer.tokenize(text.encode("utf-8")))
+        except Exception:
+            logger.warning("Tokenizer failed; trying AM Engine exact counting", exc_info=True)
+    try:
+        from vetinari.engine import get_engine_client
+
+        engine_client = get_engine_client()
+        if model_id is None:
+            response = engine_client.count_tokens((text,))
+        else:
+            response = engine_client.count_tokens((text,), model_id=model_id)
+        if len(response.counts) != 1:
+            raise ValueError(f"AM Engine returned {len(response.counts)} counts for one item")
+        return response.counts[0]
+    except Exception:
+        logger.warning("AM Engine token counting failed; using degraded estimate", exc_info=True)
+        return fallback_estimate_tokens(text)
 
 
 @dataclass
@@ -95,7 +129,7 @@ class WindowConversationMessage:
 
     def __post_init__(self):
         if self.token_count == 0:
-            self.token_count = estimate_tokens(self.content)
+            self.token_count = count_tokens(self.content)
 
 
 @dataclass
@@ -115,7 +149,7 @@ class WindowState:
         )
 
 
-class ContextWindowManager:
+class ContextWindowManager(WindowCompressionMixin):
     """Manages context window usage and compression for a single model session."""
 
     def __init__(
@@ -134,6 +168,8 @@ class ContextWindowManager:
         self._messages: list[ConversationMessage] = []
         self._pinned: list[ConversationMessage] = []  # survives compression
         self._previously_injected: set[str] = set()  # SHA-256 keys for delta injection
+        self._compressions = 0
+        self._compression_ratio = 1.0
         self._lock = threading.Lock()
 
         # Determine window size
@@ -183,8 +219,9 @@ class ContextWindowManager:
     def add_message(self, role: str, content: str, **metadata: Any) -> int:
         """Add a message and return its estimated token count.
 
-        When ``auto_compress`` is enabled and the window is over the threshold,
-        compression fires automatically before the message is appended.
+        When ``auto_compress`` is enabled and the window is over the threshold
+        after this message is appended, compression includes the new message in
+        the overflow calculation before preserving the recent tail.
 
         Args:
             role: Message role (``"system"``, ``"user"``, or ``"assistant"``).
@@ -194,7 +231,7 @@ class ContextWindowManager:
         Returns:
             Estimated token count for the added message.
         """
-        token_count = len(content) // _CHARS_PER_TOKEN
+        token_count = count_tokens(content, model_id=self.model_id)
         msg = ConversationMessage(
             role=role,
             content=content,
@@ -203,83 +240,14 @@ class ContextWindowManager:
             token_count=token_count,
         )
         with self._lock:
-            if self._auto_compress and self.should_compress():
-                # Release lock to call compress() which acquires it internally
-                pass
+            self._messages.append(msg)
         if self._auto_compress and self.should_compress():
             self.compress()
-        with self._lock:
-            self._messages.append(msg)
         return token_count
 
     def should_compress(self) -> bool:
         """Check if compression is needed (usage > threshold)."""
         return self.used_tokens > self._threshold
-
-    def compress(self, summary_fn: Any | None = None) -> int:
-        """Compress the oldest 50% of messages into a summary.
-
-        Args:
-            summary_fn: Optional callable(text) -> str that produces a
-                        summary. If not provided, uses a simple truncation.
-
-        Returns:
-            Number of tokens saved.
-        """
-        with self._lock:
-            if len(self._messages) < 3:
-                return 0
-
-            # Separate pinned from compressible messages
-            pinned_ids = {id(m) for m in self._pinned}
-            compressible = [m for m in self._messages if id(m) not in pinned_ids]
-            preserved = [m for m in self._messages if id(m) in pinned_ids]
-
-            if len(compressible) < 3:
-                return 0
-
-            # Find the midpoint (compress oldest half of compressible messages)
-            midpoint = len(compressible) // 2
-            to_compress = compressible[:midpoint]
-            to_keep = compressible[midpoint:]
-
-            # Build text to summarize
-            original_text = "\n".join(f"[{m.role}]: {m.content}" for m in to_compress)
-            original_tokens = sum(m.token_count for m in to_compress)
-
-            # Generate summary
-            if summary_fn:
-                try:
-                    summary = summary_fn(original_text)
-                except Exception as e:
-                    logger.warning("Summary function failed: %s", e)
-                    summary = self._simple_compress(original_text)
-            else:
-                summary = self._simple_compress(original_text)
-
-            # Create compressed message
-            compressed_content = f"[Compressed context summary]\n{summary}"
-            compressed_token_count = len(compressed_content) // _CHARS_PER_TOKEN
-            compressed_msg = ConversationMessage(
-                role="system",
-                content=compressed_content,
-                timestamp=time.time(),
-                is_compressed=True,
-                metadata={"original_messages": len(to_compress)},
-                token_count=compressed_token_count,
-            )
-
-            saved = original_tokens - compressed_msg.token_count
-            # Pinned messages re-appended at the END for recency bias
-            self._messages = [compressed_msg, *to_keep, *preserved]
-
-            logger.info(
-                "Context compressed: %d msgs → 1 summary, saved %d tokens (%.0f%%)",
-                len(to_compress),
-                saved,
-                (saved / original_tokens * 100) if original_tokens > 0 else 0,
-            )
-            return saved
 
     def stage_boundary_compress(self, stage_name: str = "") -> int:
         """Compress at pipeline stage boundaries.
@@ -309,6 +277,8 @@ class ContextWindowManager:
             max_tokens=self.window_size,
             used_tokens=self.used_tokens,
             message_count=len(self._messages),
+            compressions=self._compressions,
+            compression_ratio=self._compression_ratio,
         )
 
     def clear(self) -> None:
@@ -574,12 +544,15 @@ def get_window_manager(model_id: str = "default") -> ContextWindowManager:
 
 
 # ── ContextCompressor and related types — moved to context_compressor.py ──
-from vetinari.context.context_compressor import (  # noqa: E402 - late import is required after bootstrap setup
+from vetinari.context.context_compressor import (
     CompressionConfig,
     CompressionResult,
     ContextCompressor,
     get_context_compressor,
 )
+
+logger = logging.getLogger(__name__)
+
 
 __all__ = [
     "CompressionConfig",
@@ -588,6 +561,7 @@ __all__ = [
     "ContextWindowManager",
     "ConversationMessage",
     "WindowState",
-    "estimate_tokens",
+    "count_tokens",
+    "fallback_estimate_tokens",
     "get_context_compressor",
 ]

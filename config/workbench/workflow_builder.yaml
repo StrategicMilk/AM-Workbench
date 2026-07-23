@@ -1,0 +1,25 @@
+step_kinds:
+  - prompt
+  - tool
+  - approval
+  - channel_delivery
+  - asset_replay
+  - wait
+safety_modes:
+  - simulation_only
+  - approval_required
+  - read_only_console
+trigger_options:
+  - manual
+  - after_approval
+  - scheduled_preview
+  - scheduled_recurring
+schedule_options:
+  cron_expression: true
+  interval_seconds: true
+  capability: workbench_workflow_builder.saved_workflow
+default_runtime:
+  max_parallel_steps: 2
+  safety_mode: simulation_only
+  channel_preview_only: true
+  persistent_threads: false

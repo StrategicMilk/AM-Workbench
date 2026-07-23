@@ -1,0 +1,303 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_memory_recall.schema.json",
+  "title": "Workbench Memory Recall Contract",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "agent_type",
+    "task_type",
+    "profile",
+    "query",
+    "status",
+    "eligible_count",
+    "items",
+    "prompt_text",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "agent_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "query": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "packed",
+        "empty",
+        "unavailable"
+      ]
+    },
+    "eligible_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "prompt_text": {
+      "type": "string"
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "profile": {
+      "type": "object",
+      "required": [
+        "profile_id",
+        "agent_types",
+        "max_items",
+        "max_tokens",
+        "min_relevance",
+        "min_confidence",
+        "authority_tiers",
+        "scopes",
+        "include_stale",
+        "include_tainted",
+        "include_superseded"
+      ],
+      "properties": {
+        "profile_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agent_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "max_items": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "min_relevance": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "min_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "authority_tiers": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "none",
+              "candidate",
+              "memory",
+              "prompt",
+              "planning",
+              "routing",
+              "policy"
+            ]
+          },
+          "minItems": 1
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "include_stale": {
+          "type": "boolean"
+        },
+        "include_tainted": {
+          "type": "boolean"
+        },
+        "include_superseded": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "memory_id",
+          "text",
+          "relevance",
+          "confidence",
+          "authority_tier",
+          "scope",
+          "source",
+          "age_seconds",
+          "stale",
+          "taint",
+          "superseded_by",
+          "token_budget",
+          "prompt_eligible",
+          "blockers",
+          "metadata"
+        ],
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string"
+          },
+          "relevance": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "authority_tier": {
+            "enum": [
+              "none",
+              "candidate",
+              "memory",
+              "prompt",
+              "planning",
+              "routing",
+              "policy"
+            ]
+          },
+          "scope": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          },
+          "age_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "taint": {
+            "enum": [
+              "clean",
+              "tainted",
+              "unknown"
+            ]
+          },
+          "superseded_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token_budget": {
+            "type": "object",
+            "required": [
+              "estimated_tokens",
+              "allocated_tokens"
+            ],
+            "properties": {
+              "estimated_tokens": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "allocated_tokens": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "prompt_eligible": {
+            "type": "boolean"
+          },
+          "blockers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "metadata": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "packed"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "eligible_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "items": {
+            "minItems": 1
+          },
+          "prompt_text": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "empty",
+              "unavailable"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "items": {
+            "maxItems": 0
+          },
+          "prompt_text": {
+            "maxLength": 0
+          }
+        }
+      }
+    }
+  ]
+}

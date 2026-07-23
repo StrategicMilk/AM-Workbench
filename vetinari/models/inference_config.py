@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 # Base thinking-token budgets per tier (s1-style defaults).
@@ -42,7 +43,7 @@ _DEFAULT_TEMPERATURE: float = 0.7
 # ── Dataclasses ────────────────────────────────────────────────────────────────
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ResolvedInferenceConfig:
     """Resolved inference parameters for a single LLM call.
 

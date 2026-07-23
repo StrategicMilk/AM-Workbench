@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from enum import Enum
 
+from vetinari.types_evidence import ArtifactKind as ArtifactKind
+from vetinari.types_evidence import EvidenceBasis as EvidenceBasis
+
 
 class StatusEnum(str, Enum):
     """Unified task/subtask lifecycle status.
@@ -28,8 +31,33 @@ class StatusEnum(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     WAITING = "waiting"  # Waiting for human input
+    PAUSED = "paused"  # Mid-task pause awaiting external clarification
     SKIPPED = "skipped"  # Intentionally skipped
     ACKNOWLEDGED = "acknowledged"  # Task accepted in degraded/standalone mode
+
+
+class ShardKind(str, Enum):
+    """Work-instruction kinds used to select Inspector grading rubrics."""
+
+    STANDARD = "standard"
+    DISCOVERY = "discovery"
+    SPIKE = "spike"
+    REFACTOR = "refactor"
+    MIGRATION = "migration"
+
+
+class TaskKind(str, Enum):
+    """Pass classification used by scaffold-then-fill execution.
+
+    SCAFFOLD tasks create importable skeletons, IMPLEMENTATION tasks fill
+    behavior into those surfaces, and VERIFICATION tasks assert the result.
+    When a planner or executor cannot classify a task safely, it should use
+    IMPLEMENTATION to preserve the legacy execution path.
+    """
+
+    SCAFFOLD = "scaffold"
+    IMPLEMENTATION = "implementation"
+    VERIFICATION = "verification"
 
 
 class PlanStatus(Enum):
@@ -55,16 +83,17 @@ class AgentType(Enum):
 
     The three factory-pipeline agents (ADR-0061) — FOREMAN, WORKER,
     INSPECTOR — handle every per-task decision in a project's lifetime.
-    The two auxiliary runner roles (ADR-0103) — TRAINING, RELEASE —
-    handle non-pipeline work that still produces a WorkReceipt and
-    therefore needs an honest actor label rather than masquerading as
-    a WORKER.
+    Three auxiliary runner roles (ADR-0103) — TRAINING, RELEASE,
+    WORKBENCH — handle non-pipeline work that still produces a
+    WorkReceipt and therefore needs an honest actor label rather than
+    masquerading as a WORKER.
 
     - FOREMAN:   Plans, decomposes goals, orchestrates execution.
     - WORKER:    Executes all research, architecture, build, and operations tasks.
     - INSPECTOR: Reviews quality, runs security audits, generates tests.
     - TRAINING:  Training-pipeline runner (auxiliary, not a factory-pipeline agent).
     - RELEASE:   Release-doctor runner (auxiliary, not a factory-pipeline agent).
+    - WORKBENCH: Workbench subsystem runner (auxiliary, not a factory-pipeline agent).
 
     Factory-pipeline routing, prompt selection, and inference budgeting
     only consider FOREMAN/WORKER/INSPECTOR. The auxiliary values exist
@@ -76,6 +105,16 @@ class AgentType(Enum):
     INSPECTOR = "INSPECTOR"
     TRAINING = "TRAINING"
     RELEASE = "RELEASE"
+    WORKBENCH = "WORKBENCH"
+
+
+class WorkerMode(str, Enum):
+    """Worker runtime modes exposed through the compatibility interface."""
+
+    BUILD = "build"
+    SUGGEST = "suggest"
+    CODE_DISCOVERY = "code_discovery"
+    ARCHITECTURE = "architecture"
 
 
 class ExecutionMode(Enum):
@@ -94,20 +133,26 @@ class ModelProvider(Enum):
     """
 
     LOCAL = "local"
-    OLLAMA = "ollama"  # Reserved: no adapter wired in adapters/registry.py as of 2026-04-24. Any code that selects this provider will raise ConfigurationError at AdapterRegistry.create_adapter. Do not delete without user confirmation (anti-pattern: silently deleting unwired code).
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
-    GOOGLE = (
-        "google"  # Reserved: not in adapter registry. GEMINI is the live Google-family provider for LiteLLM routing.
-    )
+    GOOGLE = "google"  # Reserved: not in adapter registry. GEMINI is the live Google-family provider.
     GEMINI = "gemini"  # Google Gemini (distinct API from Vertex AI)
-    HUGGINGFACE = "huggingface"
-    REPLICATE = "replicate"
-    COHERE = "cohere"
-    LITELLM = "litellm"  # Unified multi-provider adapter (ADR-0062)
     VLLM = "vllm"  # GPU-only local inference via vLLM (ADR-0084)
     NIM = "nim"  # NVIDIA NIMs inference (ADR-0084)
+    SGLANG = "sglang"  # Shared-prefix local server backend (ADR-0105)
+    COMFYUI = "comfyui"  # Image/video workflow backend (ADR-0108)
+    FASTER_WHISPER = "faster_whisper"  # Lightweight in-process ASR backend (ADR-0110)
+    AM_ENGINE = "am_engine"  # First-party single owned backend (ADR-0165)
     OTHER = "other"
+
+
+class PriorityClass(str, Enum):
+    """Inference priority classes for queueing and scheduling policy."""
+
+    INTERACTIVE = "interactive"
+    WORKER = "worker"
+    EVAL = "eval"
+    BACKGROUND = "background"
 
 
 class GoalCategory(Enum):
@@ -163,10 +208,12 @@ class ThinkingMode(str, Enum):
     defining their own copy.
     """
 
+    NONE = "none"
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
     XHIGH = "xhigh"
+    MAX = "max"
 
 
 class MemoryType(Enum):
@@ -208,7 +255,7 @@ class MemoryType(Enum):
     CODE = "code"
     CONVERSATION = "conversation"
     RESULT = "result"
-    # User-facing memory and project reference types.
+    # User-facing types (documented in CLAUDE.md / memory CLI)
     FEEDBACK = "feedback"
     USER = "user"
     PROJECT = "project"
@@ -231,6 +278,13 @@ class CodingTaskType(str, Enum):
     REVIEW = "review"
     FIX = "fix"
     DOCUMENT = "document"
+
+
+class TrainingAlgorithm(str, Enum):
+    """Canonical identifiers for training loss algorithms."""
+
+    DPO = "dpo"
+    SIMPO = "simpo"
 
 
 class SeverityLevel(str, Enum):
@@ -474,70 +528,3 @@ class ContextQuadrant(str, Enum):
     ENVIRONMENT = "environment"  # External environment (GPU, OS, config)
     USER = "user"  # User preferences and patterns
     RELATIONSHIPS = "relationships"  # Cross-entity correlations and trends
-
-
-class EvidenceBasis(str, Enum):
-    """Canonical classification of what kind of evidence backs an OutcomeSignal.
-
-    Every OutcomeSignal carries exactly one EvidenceBasis that describes how
-    the claim was substantiated.  Consumers (promotion audits, release proofs,
-    claim-gate checks) use this value to decide whether the evidence is
-    sufficient for the given use case.
-
-    Values:
-        TOOL_EVIDENCE: The signal is backed by a deterministic tool invocation
-            (command output, test run, linter result, SHA verification).
-            Strongest basis for factual claim closure.
-        LLM_JUDGMENT: The signal is backed by model-generated reasoning
-            (code review, quality assessment, synthesis).  Valid for semantic
-            tasks; not sufficient alone for high-accuracy factual claims such
-            as "all tests pass" or "commit exists".
-        HUMAN_ATTESTED: Human attestation is provenance / supporting context.
-            By itself it is NOT sufficient to close a high-accuracy factual
-            claim; it must be paired with an AttestedArtifact (a concrete
-            command, commit SHA, signed review record, or ADR id) or combined
-            with TOOL_EVIDENCE.  Bare human attestation (a user said yes) is
-            valid for intent confirmation -- destructive-op consent, override
-            appeals -- and not for claim closure.
-        HYBRID: The signal combines two or more of the above (e.g.,
-            TOOL_EVIDENCE validated by LLM_JUDGMENT).  At least one component
-            must be TOOL_EVIDENCE for the signal to be used on high-accuracy
-            factual claim paths.
-        UNSUPPORTED: Default value -- no evidence has been collected yet.
-            A signal with this basis MUST NOT pass any quality gate.  This is
-            the fail-closed sentinel; it is the default so that any
-            accidentally unconstructed signal does not accidentally pass.
-    """
-
-    TOOL_EVIDENCE = "tool_evidence"
-    LLM_JUDGMENT = "llm_judgment"
-    HUMAN_ATTESTED = "human_attested"
-    HYBRID = "hybrid"
-    UNSUPPORTED = "unsupported"
-
-
-class ArtifactKind(str, Enum):
-    """The kind of concrete artifact that backs a human attestation.
-
-    Used by AttestedArtifact to classify what the attesting human provided.
-    Bare "a user said yes" has no ArtifactKind and therefore cannot be
-    constructed as an AttestedArtifact.
-
-    Values:
-        COMMAND_INVOCATION: A shell command was run; payload carries the
-            command line, stdout hash, and exit code.
-        COMMIT_SHA: A Git commit was referenced; payload carries repo URL,
-            SHA, and a flag indicating whether it is GPG-signed.
-        SIGNED_REVIEW: A formal review record; payload carries reviewer
-            identity, signature, and timestamp.
-        ADR_REFERENCE: An accepted Architecture Decision Record; payload
-            carries ADR id and its current status.
-        EXTERNAL_RECEIPT: A receipt from an external system (CI run, ticket,
-            deployment log); payload carries issuer, receipt id, and URL.
-    """
-
-    COMMAND_INVOCATION = "command_invocation"
-    COMMIT_SHA = "commit_sha"
-    SIGNED_REVIEW = "signed_review"
-    ADR_REFERENCE = "adr_reference"
-    EXTERNAL_RECEIPT = "external_receipt"

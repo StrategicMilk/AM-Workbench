@@ -9,15 +9,28 @@ from __future__ import annotations
 import ipaddress as _ipaddress
 import logging as _logging
 import re as _re
+import socket as _socket
 import threading as _threading
-from dataclasses import dataclass as _dataclass  # noqa: VET123 - barrel export preserves public import compatibility
+from dataclasses import dataclass as _dataclass
 from urllib.parse import urlparse as _urlparse
 
-from vetinari.security.agent_permissions import (  # noqa: VET123 - barrel export preserves public import compatibility
+from vetinari.security.agent_permissions import (
     AgentAction,
     AgentPermissionPolicy,
     AgentPermissions,
 )
+from vetinari.security.fail_closed import (
+    PathTraversalError,
+    SandboxUnavailableError,
+    SchemaOpenError,
+    UntrustedInputError,
+    assert_closed_schema,
+    confine_to_root,
+    require_sandbox_or_raise,
+    sanitize_untrusted_text,
+)
+from vetinari.security.prompt_sanitizer import sanitize_prompt, sanitize_prompt_record
+from vetinari.security.secret_scanner import SecretFinding, scan_for_secrets
 
 _logger = _logging.getLogger(__name__)
 
@@ -36,11 +49,24 @@ __all__ = [
     "AgentAction",
     "AgentPermissionPolicy",
     "AgentPermissions",
+    "PathTraversalError",
+    "SandboxUnavailableError",
+    "SchemaOpenError",
+    "SecretFinding",
     "SecretPattern",
     "SecretScanner",
+    "UntrustedInputError",
+    "assert_closed_schema",
+    "confine_to_root",
     "get_secret_scanner",
+    "new_secret_scanner",
+    "require_sandbox_or_raise",
     "sanitize_dict_for_memory",
     "sanitize_for_memory",
+    "sanitize_prompt",
+    "sanitize_prompt_record",
+    "sanitize_untrusted_text",
+    "scan_for_secrets",
     "validate_url_no_ssrf",
 ]
 
@@ -291,6 +317,10 @@ _scanner_lock = _threading.Lock()
 def get_secret_scanner() -> SecretScanner:
     """Get or create the global secret scanner instance (thread-safe singleton).
 
+    Mutating this scanner with ``add_pattern()`` affects every consumer that
+    receives the singleton. Use ``new_secret_scanner()`` when per-consumer
+    custom pattern isolation is required.
+
     Returns:
         The process-wide SecretScanner, constructed once and reused across all callers.
     """
@@ -300,6 +330,11 @@ def get_secret_scanner() -> SecretScanner:
             if _scanner is None:
                 _scanner = SecretScanner()
     return _scanner
+
+
+def new_secret_scanner() -> SecretScanner:
+    """Create a fresh secret scanner with isolated custom patterns."""
+    return SecretScanner()
 
 
 def sanitize_for_memory(content: str) -> str:
@@ -366,6 +401,30 @@ def _normalize_hostname_to_ip(hostname: str) -> str:
     return hostname
 
 
+def _resolve_dns_ips(hostname: str) -> list[_ipaddress.IPv4Address | _ipaddress.IPv6Address]:
+    """Resolve a DNS hostname to IP address objects for SSRF range checks."""
+    from vetinari.exceptions import SecurityError
+
+    try:
+        results = _socket.getaddrinfo(hostname, None, 0, _socket.SOCK_STREAM)
+    except _socket.gaierror as exc:
+        raise SecurityError(f"Hostname {hostname!r} could not be resolved") from exc
+
+    addresses: list[_ipaddress.IPv4Address | _ipaddress.IPv6Address] = []
+    for result in results:
+        sockaddr = result[4]
+        if not sockaddr:
+            continue
+        try:
+            addresses.append(_ipaddress.ip_address(sockaddr[0]))
+        except ValueError as exc:
+            raise SecurityError(f"Resolved hostname {hostname!r} returned an invalid IP") from exc
+
+    if not addresses:
+        raise SecurityError(f"Hostname {hostname!r} did not resolve to any IP addresses")
+    return addresses
+
+
 def validate_url_no_ssrf(url: str) -> str:
     """Validate a URL is not targeting internal or private networks.
 
@@ -410,7 +469,17 @@ def validate_url_no_ssrf(url: str) -> str:
             raise SecurityError(f"URL targets non-routable address: {hostname}")
     except ValueError:
         # ipaddress.ip_address() raised — hostname is a DNS name, not a raw IP.
-        # This is the normal case for most public URLs; allow it.
-        _logger.debug("Hostname %r is a DNS name, not a raw IP — allowed", hostname)
+        # Resolve it and apply the same address-space policy to every result.
+        for resolved_addr in _resolve_dns_ips(hostname):
+            if (
+                resolved_addr.is_private
+                or resolved_addr.is_loopback
+                or resolved_addr.is_link_local
+                or resolved_addr.is_reserved
+            ):
+                raise SecurityError(
+                    f"URL hostname {hostname!r} resolves to non-routable address: {resolved_addr}"
+                ) from None
+        _logger.debug("Hostname %r resolved to public DNS addresses", hostname)
 
     return url

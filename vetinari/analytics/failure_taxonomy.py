@@ -36,6 +36,7 @@ from vetinari.types import AgentRxFailureCategory
 
 logger = logging.getLogger(__name__)
 
+
 # Maximum number of failure records retained in the bounded deque.
 _MAX_RECORDS = 1000
 
@@ -50,6 +51,23 @@ _BUDGET_KEYWORDS = frozenset({"budget", "token", "limit", "quota"})
 
 # Keywords that indicate a circuit-breaker or infrastructure failure.
 _CIRCUIT_KEYWORDS = frozenset({"circuit", "breaker", "unavailable", "overload"})
+
+# Keywords for semantic failure categories that used to fall through to the
+# plan-adherence default.
+_HALLUCINATION_KEYWORDS = frozenset({"hallucination", "hallucinated", "fabricated", "false claim", "unsupported fact"})
+_INTENT_MISMATCH_KEYWORDS = frozenset({
+    "intent mismatch",
+    "misaligned intent",
+    "wrong goal",
+    "does not match user intent",
+})
+_UNDER_SPECIFIED_KEYWORDS = frozenset({"under-specified", "underspecified", "missing requirement", "ambiguous intent"})
+_UNSUPPORTED_INTENT_KEYWORDS = frozenset({
+    "unsupported intent",
+    "unsupported goal",
+    "outside capability",
+    "cannot support",
+})
 
 # Valid severity levels for FailureRecord.
 _VALID_SEVERITIES = frozenset({"warning", "error", "critical"})
@@ -116,6 +134,9 @@ class FailureClassifier:
         """Map an exception and its context to an AgentRx failure category.
 
         Rules applied in order (first match wins):
+        - Explicit context category/failure_type -> matching taxonomy category
+        - Hallucination keywords/flags -> HALLUCINATION
+        - Intent mismatch/under-specified/unsupported keywords/flags -> intent category
         - ``VetinariTimeoutError`` or ``TimeoutError`` -> SYSTEM_FAILURE
         - ``ModelUnavailableError`` -> SYSTEM_FAILURE
         - ``InferenceError`` with budget/token keywords -> SYSTEM_FAILURE
@@ -133,6 +154,29 @@ class FailureClassifier:
         Returns:
             The most appropriate ``AgentRxFailureCategory`` value.
         """
+        explicit = str(context.get("category") or context.get("failure_type") or "").strip()
+        if explicit:
+            try:
+                return AgentRxFailureCategory(explicit)
+            except ValueError:
+                logger.debug("Unknown explicit failure category %r; falling back to classifier rules", explicit)
+
+        msg = str(error).lower()
+        text = " ".join(
+            str(context.get(key, "")).lower()
+            for key in ("description", "analysis", "root_cause", "observed", "expected")
+        )
+        combined = f"{msg} {text}"
+
+        if context.get("hallucination") is True or any(kw in combined for kw in _HALLUCINATION_KEYWORDS):
+            return AgentRxFailureCategory.HALLUCINATION
+        if context.get("intent_plan_mismatch") is True or any(kw in combined for kw in _INTENT_MISMATCH_KEYWORDS):
+            return AgentRxFailureCategory.INTENT_PLAN_MISALIGNMENT
+        if context.get("under_specified_intent") is True or any(kw in combined for kw in _UNDER_SPECIFIED_KEYWORDS):
+            return AgentRxFailureCategory.UNDER_SPECIFIED_INTENT
+        if context.get("intent_not_supported") is True or any(kw in combined for kw in _UNSUPPORTED_INTENT_KEYWORDS):
+            return AgentRxFailureCategory.INTENT_NOT_SUPPORTED
+
         if isinstance(error, (VetinariTimeoutError, TimeoutError)):
             return AgentRxFailureCategory.SYSTEM_FAILURE
 
@@ -140,7 +184,6 @@ class FailureClassifier:
             return AgentRxFailureCategory.SYSTEM_FAILURE
 
         if isinstance(error, InferenceError):
-            msg = str(error).lower()
             if any(kw in msg for kw in _BUDGET_KEYWORDS):
                 return AgentRxFailureCategory.SYSTEM_FAILURE
             if any(kw in msg for kw in _CIRCUIT_KEYWORDS):
@@ -231,7 +274,7 @@ class FailureTracker:
         Returns:
             The newly created and stored ``FailureRecord``.
         """
-        ctx: dict[str, Any] = context or {}  # noqa: VET112 — Optional per func param
+        ctx: dict[str, Any] = context or {}
         category = self._classifier.classify(error, ctx)
         record = FailureRecord(
             category=category,

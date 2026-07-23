@@ -9,42 +9,34 @@ from __future__ import annotations
 import logging
 
 from vetinari.agents.contracts import get_agent_spec
-from vetinari.exceptions import QualityGateFailed
+from vetinari.exceptions import JurisdictionViolation, QualityGateFailed
 from vetinari.types import AgentType
 
 logger = logging.getLogger(__name__)
 
 
 class QualityGateEnforcer:
-    """Validates agent output quality scores against the threshold in AgentSpec.
-
-    Reads ``AgentSpec.quality_gate_score`` for the given agent type and
-    raises ``QualityGateFailed`` if the provided score falls below the threshold.
-
-    Example:
-        >>> enforcer = QualityGateEnforcer()
-        >>> enforcer.validate(AgentType.WORKER, quality_score=0.9)  # passes
-        >>> enforcer.validate(AgentType.WORKER, quality_score=0.5)  # raises
-    """
+    """Validates agent output quality scores against the threshold in AgentSpec."""
 
     def validate(self, agent_type: AgentType, quality_score: float) -> None:
         """Validate that quality_score meets the agent's minimum threshold.
 
         Args:
-            agent_type: The agent type whose specification provides the threshold.
-            quality_score: The quality score produced by (or assigned to) the
-                agent's output.  Expected range is 0.0-1.0.
+            agent_type: Agent type whose specification provides the threshold.
+            quality_score: Produced or assigned quality score, in the range 0.0-1.0.
 
         Raises:
-            QualityGateFailed: If quality_score < spec.quality_gate_score.
+            JurisdictionViolation: If the agent has no registered AgentSpec.
+            QualityGateFailed: If quality_score is below spec.quality_gate_score.
         """
         spec = get_agent_spec(agent_type)
         if spec is None:
-            logger.warning(
-                "No AgentSpec found for %s — skipping quality gate validation",
-                agent_type,
+            raise JurisdictionViolation(
+                f"Agent {agent_type.value!r} has no AgentSpec; quality gate is unknown.",
+                agent_type=agent_type.value,
+                file_path="quality_gate",
+                jurisdiction=(),
             )
-            return
 
         threshold = spec.quality_gate_score
         if quality_score < threshold:
@@ -57,9 +49,4 @@ class QualityGateEnforcer:
                 threshold=threshold,
             )
 
-        logger.debug(
-            "Quality gate passed for %s: %.3f >= %.3f",
-            agent_type.value,
-            quality_score,
-            threshold,
-        )
+        logger.debug("Quality gate passed for %s: %.3f >= %.3f", agent_type.value, quality_score, threshold)

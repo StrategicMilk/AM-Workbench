@@ -22,10 +22,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from vetinari.autonomy.approval_queue_decisions import ApprovalDecisionMixin
 from vetinari.constants import get_user_dir
+from vetinari.security.fail_closed import sanitize_untrusted_text
 from vetinari.types import AutonomyLevel, PermissionDecision
 
 logger = logging.getLogger(__name__)
+
 
 _DEFAULT_DB_PATH = get_user_dir() / "autonomy.db"
 _DEFAULT_EXPIRY_HOURS = 24  # Pending approvals expire after this many hours
@@ -37,7 +40,30 @@ _STATUS_REJECTED = "rejected"
 _STATUS_EXPIRED = "expired"
 
 
-@dataclass(frozen=True)
+def _safe_text(value: object, *, max_length: int) -> str:
+    """Return safe text, allowing blank optional fields to stay blank."""
+    text = str(value).strip()
+    if not text:
+        return ""
+    return sanitize_untrusted_text(text, max_length=max_length)
+
+
+def _safe_json_value(value: Any) -> Any:
+    """Reject prompt-control strings before writing JSON-backed audit state."""
+    if isinstance(value, str):
+        return _safe_text(value, max_length=4_000)
+    if isinstance(value, dict):
+        return {
+            sanitize_untrusted_text(str(key), max_length=200): _safe_json_value(item) for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_safe_json_value(item) for item in value]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return _safe_text(value, max_length=4_000)
+
+
+@dataclass(frozen=True, slots=True)
 class PendingAction:
     """A queued action awaiting human approval.
 
@@ -61,7 +87,7 @@ class PendingAction:
         return "PendingAction(...)"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class DecisionLogEntry:
     """An entry in the decision audit log.
 
@@ -89,7 +115,7 @@ class DecisionLogEntry:
         return "DecisionLogEntry(...)"
 
 
-class ApprovalQueue:
+class ApprovalQueue(ApprovalDecisionMixin):
     """SQLite-backed approval queue with decision audit logging.
 
     All database operations are guarded by a threading lock to prevent
@@ -190,9 +216,13 @@ class ApprovalQueue:
             sqlite3.Error: If the approval request cannot be persisted.
             TypeError: If details cannot be serialized as JSON.
         """
+        action_type = sanitize_untrusted_text(action_type, max_length=160)
+        confidence = float(confidence)
+        if confidence < 0.0 or confidence > 1.0:
+            raise ValueError("approval confidence must be between 0.0 and 1.0")
         action_id = f"act_{uuid.uuid4().hex[:12]}"
         now = datetime.now(timezone.utc).isoformat()
-        details_json = json.dumps(details or {})  # noqa: VET112 — Optional per func param
+        details_json = json.dumps(_safe_json_value(details or {}))
 
         with self._lock:
             conn = self._get_connection()
@@ -231,7 +261,11 @@ class ApprovalQueue:
         Returns:
             True if approved successfully, False if action not found or not pending.
         """
-        return self._decide(action_id, _STATUS_APPROVED, decided_by)
+        return self._decide(
+            sanitize_untrusted_text(action_id, max_length=64),
+            _STATUS_APPROVED,
+            sanitize_untrusted_text(decided_by, max_length=160),
+        )
 
     def reject(self, action_id: str, reason: str = "", decided_by: str = "human") -> bool:
         """Reject a pending action.
@@ -244,112 +278,12 @@ class ApprovalQueue:
         Returns:
             True if rejected successfully, False if action not found or not pending.
         """
-        return self._decide(action_id, _STATUS_REJECTED, decided_by, reason=reason)
-
-    def _decide(self, action_id: str, status: str, decided_by: str, reason: str = "") -> bool:
-        """Apply a decision (approve/reject) to a pending action.
-
-        The queue-status UPDATE and decision_log INSERT are performed in a
-        single SQLite transaction so the audit trail is never disconnected from
-        the actual approve/reject event.  After the transaction commits, any
-        registered in-memory callback is popped and invoked.  Callback
-        exceptions are caught and logged — the decision is always considered
-        final regardless of whether the callback succeeds.
-
-        If no callback is registered (e.g. after a process restart), a WARNING
-        is logged so operators know the resumer must re-register or treat the
-        action as unresumable without explicit recovery.
-        """
-        self._expire_stale()
-        now = datetime.now(timezone.utc).isoformat()
-        details: dict[str, Any] = {}
-        decision_logged = False
-
-        with self._lock:
-            conn = self._get_connection()
-            try:
-                cursor = conn.execute(
-                    "SELECT action_type, details_json, confidence, created_at FROM approval_queue "
-                    "WHERE action_id = ? AND status = ?",
-                    (action_id, _STATUS_PENDING),
-                )
-                row = cursor.fetchone()
-                if row is None:
-                    return False
-
-                details = json.loads(row["details_json"])
-                action_type = row["action_type"]
-                confidence = row["confidence"]
-                if self._is_expired(row["created_at"]):
-                    self._expire_row_locked(conn, action_id, action_type, details, confidence, now)
-                    conn.commit()
-                    self._callbacks.pop(action_id, None)
-                    return False
-
-                # Queue status update and audit-log insert are an atomic pair.
-                # Using one connection + conn.commit() guarantees both writes
-                # land in the same WAL transaction.
-                conn.execute(
-                    "UPDATE approval_queue SET status = ?, decided_at = ?, decided_by = ? WHERE action_id = ?",
-                    (status, now, decided_by, action_id),
-                )
-
-                # Map queue status string to the canonical decision string used
-                # in decision_log.  Queue actions originate from DEFER paths
-                # which are L1_SUGGEST level — the governor only enqueues when
-                # it cannot auto-approve.
-                decision_str = "approve" if status == _STATUS_APPROVED else "deny"
-
-                conn.execute(
-                    "INSERT INTO decision_log "
-                    "(action_id, action_type, autonomy_level, decision, confidence, details_json, outcome, timestamp) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        action_id,
-                        action_type,
-                        AutonomyLevel.L1_SUGGEST.value,  # DEFER path is always L1_SUGGEST
-                        decision_str,
-                        confidence,
-                        json.dumps(details),
-                        reason,
-                        now,
-                    ),
-                )
-                conn.commit()
-                decision_logged = True
-            finally:
-                conn.close()
-
-        logger.info(
-            "Action %s %s by %s (reason=%s)%s",
-            action_id,
-            status,
-            decided_by,
-            reason or "none",
-            "" if decision_logged else " [WARNING: audit row NOT written]",
+        return self._decide(
+            sanitize_untrusted_text(action_id, max_length=64),
+            _STATUS_REJECTED,
+            sanitize_untrusted_text(decided_by, max_length=160),
+            reason=_safe_text(reason, max_length=2_000),
         )
-
-        callback = self._callbacks.pop(action_id, None)
-        if callback is None:
-            # Expected after process restart — the decision is persisted but
-            # any caller that passed on_decided and then restarted must re-register
-            # or handle recovery explicitly via get_pending().
-            logger.warning(
-                "Action %s %s but no in-memory callback registered — "
-                "expected across process restart; decision is persisted "
-                "but any resumer must re-register or treat callback as unresumable",
-                action_id,
-                status,
-            )
-        else:
-            try:
-                callback(action_id, status, details)
-            except Exception:
-                logger.warning(
-                    "Callback for action %s raised an exception — decision recorded but action may not have resumed",
-                    action_id,
-                )
-        return True
 
     def record_outcome(self, action_id: str, outcome: str) -> bool:
         """Record the execution outcome for a decided action.
@@ -366,6 +300,8 @@ class ApprovalQueue:
             True if the outcome was stored, False if the action was not found
             or is still pending.
         """
+        action_id = sanitize_untrusted_text(action_id, max_length=64)
+        outcome = sanitize_untrusted_text(outcome, max_length=4_000)
         now = datetime.now(timezone.utc).isoformat()
         with self._lock:
             conn = self._get_connection()
@@ -406,7 +342,15 @@ class ApprovalQueue:
             confidence: Agent confidence for this action.
             details: Optional metadata.
             outcome: Result of the action execution.
+
+        Raises:
+            ValueError: If confidence is outside the allowed range.
+            UntrustedInputError: If ``action_type`` is unsafe text.
         """
+        action_type = sanitize_untrusted_text(action_type, max_length=160)
+        confidence = float(confidence)
+        if confidence < 0.0 or confidence > 1.0:
+            raise ValueError("decision confidence must be between 0.0 and 1.0")
         action_id = f"dec_{uuid.uuid4().hex[:12]}"
         now = datetime.now(timezone.utc).isoformat()
         with self._lock:
@@ -422,8 +366,8 @@ class ApprovalQueue:
                         autonomy_level.value,
                         decision.value,
                         confidence,
-                        json.dumps(details or {}),  # noqa: VET112 — Optional per func param
-                        outcome,
+                        json.dumps(_safe_json_value(details or {})),
+                        _safe_text(outcome, max_length=4_000),
                         now,
                     ),
                 )
@@ -550,8 +494,8 @@ class ApprovalQueue:
             return expired
         return created < cutoff
 
+    @staticmethod
     def _expire_row_locked(
-        self,
         conn: sqlite3.Connection,
         action_id: str,
         action_type: str,
@@ -561,8 +505,7 @@ class ApprovalQueue:
     ) -> None:
         """Expire one pending action and write the matching audit row."""
         conn.execute(
-            "UPDATE approval_queue SET status = ?, decided_at = ?, decided_by = ? "
-            "WHERE action_id = ? AND status = ?",
+            "UPDATE approval_queue SET status = ?, decided_at = ?, decided_by = ? WHERE action_id = ? AND status = ?",
             (_STATUS_EXPIRED, timestamp, "system-expiry", action_id, _STATUS_PENDING),
         )
         conn.execute(

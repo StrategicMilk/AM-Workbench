@@ -34,15 +34,15 @@ Continuous Improvement implements the Plan-Do-Check-Act (PDCA) cycle for the Vet
 | Parameter       | Type            | Required | Description                                                        |
 |-----------------|-----------------|----------|--------------------------------------------------------------------|
 | task            | string          | Yes      | What area to improve and the improvement objective                 |
-| metrics         | dict            | No       | Current performance metrics (quality scores, costs, durations)     |
-| history         | list[dict]      | No       | Historical execution data from episode_memory                      |
+| metrics         | dict            | Yes      | Current performance metrics (quality scores, costs, durations)     |
+| history         | list[dict]      | Yes      | Historical execution data from episode_memory                      |
 | focus_area      | string          | No       | Specific area: "quality", "cost", "speed", "reliability"           |
 | prior_cycles    | list[dict]      | No       | Results from previous improvement cycles                           |
 | context         | dict            | No       | System configuration, constraints, goals                           |
 
 ## Process Steps
 
-1. **PLAN: Data collection** -- Gather performance data from available sources:
+1. **PLAN: Data collection** -- Require explicit current metrics and historical execution records. If either input is missing or too sparse for comparison, return `success=false` with the missing input list instead of proposing improvements from anecdotes:
    - Episode memory: task completion rates, durations, retry counts
    - Quality scores: Inspector pass rates, review scores, defect counts
    - Cost data: token usage, model tier distribution, waste ratios

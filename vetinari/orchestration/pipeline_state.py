@@ -1,12 +1,13 @@
-"""Pipeline state persistence — resume from last completed stage on crash.
+"""Pipeline state persistence — checkpoint hints for crash recovery.
 
 Persists pipeline progress to ``~/.vetinari/pipeline-state/{task_id}.json``
 after each stage completes.  On restart, ``get_resume_point()`` returns the
-last completed stage and its result snapshot so the pipeline can skip
-already-finished stages.
+last completed stage and its result snapshot for observability. Mid-pipeline
+resume is not implemented; the active pipeline always re-executes from stage 0.
+Mid-pipeline resume is not implemented as a skip-ahead mechanism.
 
-Pipeline role: sits between the pipeline engine and disk, providing
-crash-recovery by checkpointing stage completions.
+Pipeline role: sits between the pipeline engine and disk, providing durable
+checkpoint hints for crash diagnosis.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from vetinari.constants import get_user_dir
 from vetinari.security.sandbox import enforce_blocked_paths
 
 logger = logging.getLogger(__name__)
+
 
 # Who writes: tests (via monkeypatch) to redirect writes to tmp_path
 # Who reads: _get_state_dir() on every call

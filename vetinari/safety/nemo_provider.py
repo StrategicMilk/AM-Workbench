@@ -25,14 +25,23 @@ Usage::
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from vetinari.safety.guardrails import GuardrailResult, Violation
+from vetinari.safety.guardrails_checks import (
+    _check_jailbreak,
+    _check_prompt_injection,
+    _check_sensitive_data,
+    _check_toxic,
+)
 from vetinari.utils.lazy_import import lazy_import
 
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Block-phrase detection for NeMo responses
@@ -63,7 +72,41 @@ _nemoguardrails, _NEMO_AVAILABLE = lazy_import("nemoguardrails")
 # Config path
 # ---------------------------------------------------------------------------
 
-_GUARDRAILS_CONFIG_DIR = Path(__file__).parent.parent.parent / "config" / "guardrails"
+_GUARDRAILS_CONFIG_DIR = Path(__file__).resolve().parents[1] / "config" / "runtime" / "guardrails"
+_EXECUTE_ACTION_RE = re.compile(r"\bexecute\s+([A-Za-z_][A-Za-z0-9_]*)\b")
+
+
+def _action_text(*, text: str | None = None, user_input: str | None = None, bot_message: str | None = None) -> str:
+    """Return the first Colang action text argument NeMo supplied."""
+    return text if text is not None else user_input if user_input is not None else bot_message or ""
+
+
+def _check_jailbreak_action(*, user_input: str | None = None, text: str | None = None, **_: object) -> bool:
+    return bool(_check_jailbreak(_action_text(user_input=user_input, text=text)))
+
+
+def _check_prompt_injection_action(*, user_input: str | None = None, text: str | None = None, **_: object) -> bool:
+    return bool(_check_prompt_injection(_action_text(user_input=user_input, text=text)))
+
+
+def _check_sensitive_data_action(
+    *, text: str | None = None, bot_message: str | None = None, user_input: str | None = None, **_: object
+) -> bool:
+    return bool(_check_sensitive_data(_action_text(text=text, bot_message=bot_message, user_input=user_input)))
+
+
+def _check_toxic_action(
+    *, text: str | None = None, user_input: str | None = None, bot_message: str | None = None, **_: object
+) -> bool:
+    return bool(_check_toxic(_action_text(text=text, user_input=user_input, bot_message=bot_message)))
+
+
+_ACTION_REGISTRY: dict[str, Callable[..., bool]] = {
+    "check_jailbreak": _check_jailbreak_action,
+    "check_prompt_injection": _check_prompt_injection_action,
+    "check_sensitive_data": _check_sensitive_data_action,
+    "check_toxic": _check_toxic_action,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +144,7 @@ class NeMoGuardrailsProvider:
                 cannot be parsed.
         """
         if not _NEMO_AVAILABLE or _nemoguardrails is None:
-            raise ImportError("nemoguardrails is not installed. Install it with: pip install 'vetinari[guardrails]'")  # noqa: VET301 — user guidance string
+            raise ImportError("nemoguardrails is not installed. Install it with: pip install 'vetinari[guardrails]'")
 
         resolved_dir = config_dir or _GUARDRAILS_CONFIG_DIR
 
@@ -116,12 +159,19 @@ class NeMoGuardrailsProvider:
         try:
             rails_config_cls = _nemoguardrails.RailsConfig
             rails_cls = _nemoguardrails.LLMRails
+            assert_colang_actions_registered(resolved_dir)
             self._rails_config = rails_config_cls.from_path(str(resolved_dir))
             self._rails = rails_cls(self._rails_config)
+            self._register_actions()
         except Exception as exc:
             raise RuntimeError(f"Failed to load NeMo Guardrails config from {resolved_dir}: {exc}") from exc
 
         logger.info("NeMo Guardrails provider initialised successfully")
+
+    def _register_actions(self) -> None:
+        """Register Python implementations for Colang execute actions."""
+        for action_name, handler in _ACTION_REGISTRY.items():
+            self._rails.register_action(handler, action_name)
 
     # ------------------------------------------------------------------
     # Input checking
@@ -151,6 +201,7 @@ class NeMoGuardrailsProvider:
             # bot_refuse_to_respond or similar canned action output.
             # We detect this by checking whether the rails flagged the message.
             blocked = self._is_blocked_response(response)
+            activated_rails = self._extract_activated_rails(response)
             latency = (time.monotonic() - start) * 1000
 
             if blocked:
@@ -167,9 +218,10 @@ class NeMoGuardrailsProvider:
                         )
                     ],
                     latency_ms=latency,
+                    activated_rails=activated_rails,
                 )
 
-            return GuardrailResult(allowed=True, content=text, latency_ms=latency)
+            return GuardrailResult(allowed=True, content=text, latency_ms=latency, activated_rails=activated_rails)
 
         except Exception as exc:
             # Fail closed — NeMo errors must never allow content through.
@@ -220,6 +272,7 @@ class NeMoGuardrailsProvider:
                 ]
             )
             blocked = self._is_blocked_response(response)
+            activated_rails = self._extract_activated_rails(response)
             latency = (time.monotonic() - start) * 1000
 
             if blocked:
@@ -236,9 +289,10 @@ class NeMoGuardrailsProvider:
                         )
                     ],
                     latency_ms=latency,
+                    activated_rails=activated_rails,
                 )
 
-            return GuardrailResult(allowed=True, content=text, latency_ms=latency)
+            return GuardrailResult(allowed=True, content=text, latency_ms=latency, activated_rails=activated_rails)
 
         except Exception as exc:
             latency = (time.monotonic() - start) * 1000
@@ -264,7 +318,32 @@ class NeMoGuardrailsProvider:
     # Internals
     # ------------------------------------------------------------------
 
-    def _is_blocked_response(self, response: object) -> bool:
+    @staticmethod
+    def _extract_activated_rails(response: object) -> list[str]:
+        """Extract the list of activated rail names from a NeMo generate() response.
+
+        NeMo populates ``response["metadata"]["activated_rails"]`` with the
+        names of any Colang flows that fired during evaluation.  Returns an
+        empty list when the field is absent or the response is not a dict.
+
+        Args:
+            response: The raw return value from ``LLMRails.generate()``.
+
+        Returns:
+            List of activated rail name strings, or empty list if none fired.
+        """
+        if not isinstance(response, dict):
+            return []
+        metadata = response.get("metadata", {})
+        if not isinstance(metadata, dict):
+            return []
+        rails = metadata.get("activated_rails", [])
+        if not isinstance(rails, list):
+            return []
+        return [str(r) for r in rails]
+
+    @staticmethod
+    def _is_blocked_response(response: object) -> bool:
         """Determine whether a NeMo generate() response indicates a policy block.
 
         NeMo signals a block by returning a canned "I can't help with that"
@@ -364,3 +443,34 @@ def reset_nemo_provider() -> None:
     with _nemo_lock:
         _nemo_instance = None
         _nemo_init_failed = False
+
+
+def colang_execute_actions(config_dir: Path) -> set[str]:
+    """Return every Colang execute action referenced by ``*.co`` files.
+
+    Returns:
+        Set of action names referenced by Colang ``execute`` statements.
+    """
+    actions: set[str] = set()
+    for path in config_dir.rglob("*.co"):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            executable_line = line.split("#", 1)[0]
+            actions.update(_EXECUTE_ACTION_RE.findall(executable_line))
+    return actions
+
+
+def registered_action_names() -> set[str]:
+    """Return provider action names wired into NeMo rails."""
+    return set(_ACTION_REGISTRY)
+
+
+def assert_colang_actions_registered(config_dir: Path | None = None) -> None:
+    """Fail closed when Colang references an unregistered Python action.
+
+    Raises:
+        RuntimeError: If any referenced Colang action lacks a Python handler.
+    """
+    root = config_dir or _GUARDRAILS_CONFIG_DIR
+    missing = sorted(colang_execute_actions(root) - registered_action_names())
+    if missing:
+        raise RuntimeError(f"NeMo Colang action(s) lack Python registrations: {', '.join(missing)}")

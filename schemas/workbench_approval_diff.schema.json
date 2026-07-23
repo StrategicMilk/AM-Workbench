@@ -1,0 +1,317 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_approval_diff.schema.json",
+  "title": "Workbench Approval Diff",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "diff_id",
+    "target",
+    "proposal_id",
+    "project_id",
+    "baseline_ref",
+    "candidate_ref",
+    "entries",
+    "evidence",
+    "provenance_refs",
+    "confidence",
+    "safety_verdict",
+    "budget_verdict",
+    "policy_gate_refs",
+    "rollback_target_ref",
+    "affected_assets",
+    "persisted_state_refs",
+    "human_review_refs",
+    "promotion_decision_refs",
+    "status",
+    "decision"
+  ],
+  "properties": {
+    "diff_id": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "target": {
+      "type": "string",
+      "enum": [
+        "model_default",
+        "prompt_promotion",
+        "dataset_promotion",
+        "route_policy_change",
+        "training_recipe_activation",
+        "automation_promotion"
+      ]
+    },
+    "proposal_id": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "project_id": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "baseline_ref": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "candidate_ref": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 13,
+      "items": {
+        "$ref": "#/$defs/diffEntry"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "$ref": "#/$defs/evidenceRef"
+      }
+    },
+    "provenance_refs": {
+      "$ref": "#/$defs/nonEmptyStringArray"
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "safety_verdict": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "budget_verdict": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "policy_gate_refs": {
+      "$ref": "#/$defs/nonEmptyStringArray"
+    },
+    "rollback_target_ref": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "affected_assets": {
+      "$ref": "#/$defs/nonEmptyStringArray"
+    },
+    "persisted_state_refs": {
+      "$ref": "#/$defs/nonEmptyStringArray"
+    },
+    "human_review_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "promotion_decision_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "blocked",
+        "ready_for_review",
+        "approved",
+        "rejected"
+      ]
+    },
+    "decision": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/decision"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nonEmptyStringArray": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "diffEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dimension",
+        "before",
+        "after",
+        "evidence_refs",
+        "risk"
+      ],
+      "properties": {
+        "dimension": {
+          "type": "string",
+          "enum": [
+            "output_behavior",
+            "prompt",
+            "model",
+            "route",
+            "retrieval",
+            "tools",
+            "cost",
+            "latency",
+            "safety",
+            "eval_score",
+            "affected_assets",
+            "rollback_target",
+            "policy_gates"
+          ]
+        },
+        "before": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "after": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "evidence_refs": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        },
+        "risk": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "evidenceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref_id",
+        "kind",
+        "source",
+        "summary"
+      ],
+      "properties": {
+        "ref_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "trace",
+            "eval",
+            "human_review",
+            "promotion_decision",
+            "policy",
+            "budget",
+            "safety"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "summary": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "decided_by",
+        "decided_at_utc",
+        "rationale",
+        "authority_refs"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "approved",
+            "rejected"
+          ]
+        },
+        "decided_by": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "decided_at_utc": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "rationale": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "authority_refs": {
+          "$ref": "#/$defs/nonEmptyStringArray"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "approved"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "decision": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/decision"
+              },
+              {
+                "properties": {
+                  "status": {
+                    "const": "approved"
+                  }
+                }
+              }
+            ]
+          },
+          "promotion_decision_refs": {
+            "minItems": 1
+          },
+          "human_review_refs": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "rejected"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "decision": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/decision"
+              },
+              {
+                "properties": {
+                  "status": {
+                    "const": "rejected"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

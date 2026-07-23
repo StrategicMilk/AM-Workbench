@@ -1,0 +1,361 @@
+schema_version: 1
+templates:
+  - template_id: researcher
+    name: Researcher
+    role: researcher
+    purpose: Gather cited evidence, compare sources, and return provenance-backed findings.
+    allowed_tools: [source_card_library, evidence_asset_library, metadata_spine]
+    permissions: [read:source_cards, read:evidence_assets, write:evidence_draft]
+    memory_scope: [ephemeral:research_notes, persistent:accepted_source_ids]
+    model_policy:
+      allowed_providers: [local, openai, anthropic]
+      default_tier: balanced_reasoning
+      fallback_tier: local_summary
+    cost_profile:
+      budget_class: standard
+      max_tokens_per_run: 24000
+      requires_budget_ack: false
+    eval_history: [pending-evidence-artifact-required]
+    failure_history: [blocks_when_source_provenance_missing]
+    allowed_data_classes: [public_sources, user_supplied_documents, workbench_evidence]
+    compatibility_requirements: [requires_citations, source_freshness_visible]
+    capability_pack_ids: [workbench-trace-eval]
+    mode_template_ids: [evidence_intake]
+    sandbox_profile: read_only_network_limited
+    trust_badges:
+      local_only: false
+      networked: true
+      secret_accessing: false
+      model_training: false
+      writes_files: false
+      deploys_code: false
+      incident_response_capable: false
+    risk_posture:
+      risk_level: medium
+      review_required: true
+      approval_required: false
+      isolation_profile: browserless_network_limited
+    revision: "2026-05-02.1"
+    provenance:
+      source: roadmap-LW-WORKBENCH-AGENT-TEMPLATE-GALLERY-CONTRACTS
+      decision_ref: agent-template-gallery-seed
+
+  - template_id: writer
+    name: Writer
+    role: writer
+    purpose: Draft user-facing workbench artifacts from accepted evidence and explicit audience constraints.
+    allowed_tools: [evidence_asset_library, metadata_spine]
+    permissions: [read:evidence_assets, write:artifact_draft]
+    memory_scope: [ephemeral:draft_outline, persistent:accepted_artifact_ids]
+    model_policy:
+      allowed_providers: [local, openai, anthropic]
+      default_tier: creative_balanced
+      fallback_tier: local_draft
+    cost_profile:
+      budget_class: standard
+      max_tokens_per_run: 18000
+      requires_budget_ack: false
+    eval_history: [pending-evidence-artifact-required]
+    failure_history: [blocks_when_evidence_asset_missing]
+    allowed_data_classes: [user_supplied_documents, workbench_evidence, draft_artifacts]
+    compatibility_requirements: [accepted_evidence_required, caveats_preserved]
+    capability_pack_ids: [workbench-trace-eval]
+    mode_template_ids: [release_evidence]
+    sandbox_profile: workspace_write_limited
+    trust_badges:
+      local_only: true
+      networked: false
+      secret_accessing: false
+      model_training: false
+      writes_files: true
+      deploys_code: false
+      incident_response_capable: false
+    risk_posture:
+      risk_level: medium
+      review_required: true
+      approval_required: false
+      isolation_profile: draft_workspace_only
+    revision: "2026-05-02.1"
+    provenance:
+      source: roadmap-LW-WORKBENCH-AGENT-TEMPLATE-GALLERY-CONTRACTS
+      decision_ref: agent-template-gallery-seed
+
+  - template_id: analyst
+    name: Analyst
+    role: analyst
+    purpose: Compare run traces, metrics, and eval results to produce bounded decisions.
+    allowed_tools: [metadata_spine, eval_suite_builder, method_library]
+    permissions: [read:workbench_trace, read:eval_results, write:analysis_draft]
+    memory_scope: [ephemeral:analysis_notes, persistent:eval_suite_ids]
+    model_policy:
+      allowed_providers: [local, openai, anthropic]
+      default_tier: analytical_reasoning
+      fallback_tier: local_analysis
+    cost_profile:
+      budget_class: standard
+      max_tokens_per_run: 22000
+      requires_budget_ack: false
+    eval_history: [pending-evidence-artifact-required]
+    failure_history: [blocks_when_eval_result_missing]
+    allowed_data_classes: [workbench_trace, eval_results, benchmark_results]
+    compatibility_requirements: [measurable_hypothesis, eval_result_visible]
+    capability_pack_ids: [workbench-trace-eval]
+    mode_template_ids: [experiment_design]
+    sandbox_profile: read_only_local
+    trust_badges:
+      local_only: true
+      networked: false
+      secret_accessing: false
+      model_training: false
+      writes_files: false
+      deploys_code: false
+      incident_response_capable: false
+    risk_posture:
+      risk_level: low
+      review_required: true
+      approval_required: false
+      isolation_profile: local_read_only
+    revision: "2026-05-02.1"
+    provenance:
+      source: roadmap-LW-WORKBENCH-AGENT-TEMPLATE-GALLERY-CONTRACTS
+      decision_ref: agent-template-gallery-seed
+
+  - template_id: reviewer
+    name: Reviewer
+    role: reviewer
+    purpose: Review artifacts against rubrics, evidence links, and declared caveats before promotion.
+    allowed_tools: [evidence_asset_library, release_check_runner, metadata_spine]
+    permissions: [read:artifact_draft, read:evidence_assets, write:review_decision]
+    memory_scope: [ephemeral:review_notes, persistent:review_decision_ids]
+    model_policy:
+      allowed_providers: [local, openai, anthropic]
+      default_tier: strict_review
+      fallback_tier: local_review
+    cost_profile:
+      budget_class: standard
+      max_tokens_per_run: 20000
+      requires_budget_ack: false
+    eval_history: [pending-evidence-artifact-required]
+    failure_history: [blocks_when_command_output_missing]
+    allowed_data_classes: [draft_artifacts, workbench_evidence, verification_commands]
+    compatibility_requirements: [command_proof_present, caveats_explicit]
+    capability_pack_ids: [workbench-trace-eval]
+    mode_template_ids: [release_evidence]
+    sandbox_profile: read_only_local
+    trust_badges:
+      local_only: true
+      networked: false
+      secret_accessing: false
+      model_training: false
+      writes_files: false
+      deploys_code: false
+      incident_response_capable: false
+    risk_posture:
+      risk_level: low
+      review_required: true
+      approval_required: false
+      isolation_profile: local_read_only
+    revision: "2026-05-02.1"
+    provenance:
+      source: roadmap-LW-WORKBENCH-AGENT-TEMPLATE-GALLERY-CONTRACTS
+      decision_ref: agent-template-gallery-seed
+
+  - template_id: operator
+    name: Operator
+    role: operator
+    purpose: Execute approved workbench actions with visible receipts, leases, and rollback notes.
+    allowed_tools: [metadata_spine, release_check_runner]
+    permissions: [read:approved_plan, write:operation_receipt, write:artifact_draft]
+    memory_scope: [ephemeral:operation_log, persistent:operation_receipt_ids]
+    model_policy:
+      allowed_providers: [local, openai]
+      default_tier: execution_guarded
+      fallback_tier: local_execution
+    cost_profile:
+      budget_class: elevated
+      max_tokens_per_run: 16000
+      requires_budget_ack: true
+    eval_history: [pending-evidence-artifact-required]
+    failure_history: [requires_approval_before_file_write]
+    allowed_data_classes: [approved_plan, workbench_evidence, draft_artifacts]
+    compatibility_requirements: [operator_decision_required, rollback_note_required]
+    capability_pack_ids: [workbench-trace-eval]
+    mode_template_ids: [release_evidence]
+    sandbox_profile: workspace_write_limited
+    trust_badges:
+      local_only: true
+      networked: false
+      secret_accessing: false
+      model_training: false
+      writes_files: true
+      deploys_code: false
+      incident_response_capable: false
+    risk_posture:
+      risk_level: high
+      review_required: true
+      approval_required: true
+      isolation_profile: approved_workspace_only
+    revision: "2026-05-02.1"
+    provenance:
+      source: roadmap-LW-WORKBENCH-AGENT-TEMPLATE-GALLERY-CONTRACTS
+      decision_ref: agent-template-gallery-seed
+
+  - template_id: data_curator
+    name: Data Curator
+    role: data_curator
+    purpose: Classify datasets, lineage, privacy posture, and evidence usability before downstream use.
+    allowed_tools: [source_card_library, evidence_asset_library, metadata_spine]
+    permissions: [read:user_dataset, write:data_lineage_note, write:evidence_draft]
+    memory_scope: [ephemeral:data_profile_notes, persistent:dataset_lineage_ids]
+    model_policy:
+      allowed_providers: [local, openai, anthropic]
+      default_tier: analytical_reasoning
+      fallback_tier: local_classification
+    cost_profile:
+      budget_class: standard
+      max_tokens_per_run: 20000
+      requires_budget_ack: false
+    eval_history: [pending-evidence-artifact-required]
+    failure_history: [blocks_when_privacy_classification_missing]
+    allowed_data_classes: [user_supplied_documents, user_dataset, workbench_evidence]
+    compatibility_requirements: [privacy_classification_required, provenance_required]
+    capability_pack_ids: [workbench-trace-eval]
+    mode_template_ids: [evidence_intake]
+    sandbox_profile: local_read_only
+    trust_badges:
+      local_only: true
+      networked: false
+      secret_accessing: true
+      model_training: false
+      writes_files: false
+      deploys_code: false
+      incident_response_capable: false
+    risk_posture:
+      risk_level: high
+      review_required: true
+      approval_required: true
+      isolation_profile: local_sensitive_data
+    revision: "2026-05-02.1"
+    provenance:
+      source: roadmap-LW-WORKBENCH-AGENT-TEMPLATE-GALLERY-CONTRACTS
+      decision_ref: agent-template-gallery-seed
+
+  - template_id: trainer
+    name: Trainer
+    role: trainer
+    purpose: Prepare approved examples and eval-linked training jobs without bypassing promotion gates.
+    allowed_tools: [metadata_spine, eval_suite_builder]
+    permissions: [read:approved_training_examples, write:training_job_draft]
+    memory_scope: [ephemeral:training_plan_notes, persistent:training_job_ids]
+    model_policy:
+      allowed_providers: [local]
+      default_tier: local_training_planner
+      fallback_tier: local_summary
+    cost_profile:
+      budget_class: elevated
+      max_tokens_per_run: 26000
+      requires_budget_ack: true
+    eval_history: [pending-evidence-artifact-required]
+    failure_history: [blocks_when_eval_suite_missing]
+    allowed_data_classes: [approved_training_examples, eval_results, benchmark_results]
+    compatibility_requirements: [eval_suite_required, promotion_gate_required, self_improvement_governance_required]
+    capability_pack_ids: [workbench-trace-eval]
+    mode_template_ids: [experiment_design]
+    sandbox_profile: local_training_draft
+    trust_badges:
+      local_only: true
+      networked: false
+      secret_accessing: false
+      model_training: true
+      writes_files: true
+      deploys_code: false
+      incident_response_capable: false
+    risk_posture:
+      risk_level: high
+      review_required: true
+      approval_required: true
+      isolation_profile: training_draft_only
+    revision: "2026-05-02.1"
+    provenance:
+      source: roadmap-LW-WORKBENCH-AGENT-TEMPLATE-GALLERY-CONTRACTS
+      decision_ref: agent-template-gallery-seed
+
+  - template_id: incident_responder
+    name: Incident Responder
+    role: incident_responder
+    purpose: Triage failed runs, summarize impact, and propose bounded recovery steps.
+    allowed_tools: [metadata_spine, release_check_runner, evidence_asset_library]
+    permissions: [read:failed_run, read:logs, write:incident_report]
+    memory_scope: [ephemeral:incident_notes, persistent:incident_report_ids]
+    model_policy:
+      allowed_providers: [local, openai, anthropic]
+      default_tier: strict_triage
+      fallback_tier: local_triage
+    cost_profile:
+      budget_class: elevated
+      max_tokens_per_run: 24000
+      requires_budget_ack: true
+    eval_history: [pending-evidence-artifact-required]
+    failure_history: [blocks_when_run_context_missing]
+    allowed_data_classes: [failed_run, logs, workbench_evidence]
+    compatibility_requirements: [impact_summary_required, recovery_steps_bounded]
+    capability_pack_ids: [workbench-trace-eval]
+    mode_template_ids: [release_evidence]
+    sandbox_profile: incident_read_only
+    trust_badges:
+      local_only: true
+      networked: false
+      secret_accessing: true
+      model_training: false
+      writes_files: true
+      deploys_code: false
+      incident_response_capable: true
+    risk_posture:
+      risk_level: high
+      review_required: true
+      approval_required: true
+      isolation_profile: incident_local_only
+    revision: "2026-05-02.1"
+    provenance:
+      source: roadmap-LW-WORKBENCH-AGENT-TEMPLATE-GALLERY-CONTRACTS
+      decision_ref: agent-template-gallery-seed
+
+  - template_id: creative_partner
+    name: Creative Partner
+    role: creative_partner
+    purpose: Explore creative alternatives while preserving source boundaries and user intent.
+    allowed_tools: [evidence_asset_library, metadata_spine]
+    permissions: [read:brief, write:creative_draft]
+    memory_scope: [ephemeral:creative_options, persistent:selected_direction_ids]
+    model_policy:
+      allowed_providers: [local, openai, anthropic]
+      default_tier: creative_balanced
+      fallback_tier: local_draft
+    cost_profile:
+      budget_class: standard
+      max_tokens_per_run: 18000
+      requires_budget_ack: false
+    eval_history: [pending-evidence-artifact-required]
+    failure_history: [blocks_when_brief_missing]
+    allowed_data_classes: [brief, user_supplied_documents, draft_artifacts]
+    compatibility_requirements: [brief_required, source_boundaries_preserved]
+    capability_pack_ids: [workbench-trace-eval]
+    mode_template_ids: [evidence_intake]
+    sandbox_profile: draft_workspace_only
+    trust_badges:
+      local_only: true
+      networked: false
+      secret_accessing: false
+      model_training: false
+      writes_files: true
+      deploys_code: false
+      incident_response_capable: false
+    risk_posture:
+      risk_level: medium
+      review_required: true
+      approval_required: false
+      isolation_profile: draft_workspace_only
+    revision: "2026-05-02.1"
+    provenance:
+      source: roadmap-LW-WORKBENCH-AGENT-TEMPLATE-GALLERY-CONTRACTS
+      decision_ref: agent-template-gallery-seed

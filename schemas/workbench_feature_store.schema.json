@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_feature_store.schema.json",
+  "title": "Workbench Feature Store Context Layer",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["entities", "features", "context_views", "transformations"],
+  "properties": {
+    "entities": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entity" }
+    },
+    "features": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/feature" }
+    },
+    "context_views": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/context_view" }
+    },
+    "transformations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/transformation" }
+    }
+  },
+  "$defs": {
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dataset_revision_id", "quality_report_id", "lineage_graph_id", "evidence_ref"],
+      "properties": {
+        "dataset_revision_id": { "$ref": "#/$defs/non_empty_string" },
+        "quality_report_id": { "$ref": "#/$defs/non_empty_string" },
+        "lineage_graph_id": { "$ref": "#/$defs/non_empty_string" },
+        "evidence_ref": { "$ref": "#/$defs/non_empty_string" }
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_age_seconds", "stale_action"],
+      "properties": {
+        "max_age_seconds": { "type": "integer", "minimum": 0 },
+        "stale_action": { "enum": ["reject", "warn"] }
+      }
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_id", "owner", "join_keys"],
+      "properties": {
+        "entity_id": { "$ref": "#/$defs/non_empty_string" },
+        "owner": { "$ref": "#/$defs/non_empty_string" },
+        "join_keys": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        },
+        "description": { "type": "string" }
+      }
+    },
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["feature_id", "entity_id", "owner", "value_type", "freshness_policy", "lineage"],
+      "properties": {
+        "feature_id": { "$ref": "#/$defs/non_empty_string" },
+        "entity_id": { "$ref": "#/$defs/non_empty_string" },
+        "owner": { "$ref": "#/$defs/non_empty_string" },
+        "value_type": { "enum": ["string", "integer", "float", "boolean", "json"] },
+        "freshness_policy": { "$ref": "#/$defs/freshness" },
+        "lineage": { "$ref": "#/$defs/lineage" },
+        "transformation_id": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    },
+    "context_view": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["context_view_id", "owner", "entity_id", "feature_ids", "freshness_policy", "lineage"],
+      "properties": {
+        "context_view_id": { "$ref": "#/$defs/non_empty_string" },
+        "owner": { "$ref": "#/$defs/non_empty_string" },
+        "entity_id": { "$ref": "#/$defs/non_empty_string" },
+        "feature_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        },
+        "freshness_policy": { "$ref": "#/$defs/freshness" },
+        "lineage": { "$ref": "#/$defs/lineage" },
+        "required": { "type": "boolean" },
+        "description": { "type": "string" }
+      }
+    },
+    "transformation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transformation_id",
+        "owner",
+        "kind",
+        "input_feature_ids",
+        "output_feature_ids",
+        "lineage",
+        "code_ref"
+      ],
+      "properties": {
+        "transformation_id": { "$ref": "#/$defs/non_empty_string" },
+        "owner": { "$ref": "#/$defs/non_empty_string" },
+        "kind": { "enum": ["sql", "python", "aggregation", "embedding"] },
+        "input_feature_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        },
+        "output_feature_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/non_empty_string" }
+        },
+        "lineage": { "$ref": "#/$defs/lineage" },
+        "code_ref": { "$ref": "#/$defs/non_empty_string" },
+        "description": { "type": "string" }
+      }
+    }
+  }
+}

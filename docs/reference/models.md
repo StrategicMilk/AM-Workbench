@@ -1,6 +1,6 @@
 # Model Configuration and Routing
 
-This guide covers how Vetinari discovers, loads, and selects models. It explains the tier system, cascade routing, Thompson Sampling, inference profiles, and how to add new models.
+This guide covers how AM Workbench discovers, loads, and selects models. It explains the tier system, cascade routing, Thompson Sampling, inference profiles, and how to add new models.
 
 Model names, provider examples, context windows, and prices in this guide are operational examples, not compliance evidence. Do not make license, commercial-suitability, attribution, or NOTICE claims from this page unless the exact model ID, revision, model-card/license URL, checked date, and attribution duty are recorded with the deployment configuration.
 
@@ -8,7 +8,7 @@ Model names, provider examples, context windows, and prices in this guide are op
 
 ## Overview
 
-Vetinari uses a local-first, multi-tier model system. The two primary config files are:
+AM Workbench uses a local-first, multi-tier model system. The two primary config files are:
 
 - `config/models.yaml` — model definitions, hardware profile, routing policy, and backend settings
 - `config/task_inference_profiles.json` — per-task-type sampling parameters (temperature, max tokens, etc.)
@@ -92,7 +92,7 @@ speculative_decoding:
 
 ```yaml
 model_routing:
-  model_router: "internal"      # "internal" = Vetinari manages VRAM directly
+  model_router: "internal"      # "internal" = AM Workbench manages VRAM directly
                                 # "llama-swap" = delegate to external llama-swap server
   router_url: ""                # e.g. "http://localhost:8081" (llama-swap only)
 ```
@@ -110,11 +110,14 @@ Supported backends and their characteristics:
 | Backend | Formats | CPU Offload | GPU Required | Use Case |
 |---------|---------|-------------|--------------|----------|
 | `llama_cpp` | GGUF | Yes | No | Explicit preference, GGUF-only models, weak/no server setup, CPU/RAM+VRAM offload, oversized local models, recovery fallback |
-| `litellm` | Cloud APIs | N/A | N/A | Cloud provider fallback |
 | `vllm` | safetensors, AWQ, GPTQ | No | Yes | High-throughput GPU server |
+| `sglang` | safetensors, AWQ, GPTQ | No | Yes | Structured-generation GPU server, fast constrained decoding |
 | `nim` | safetensors, GGUF, AWQ, GPTQ | No | Yes | Preferred native backend on NVIDIA/CUDA hardware when reachable |
+| `comfyui` | safetensors, ckpt | No | Yes (typically) | Image diffusion and ComfyUI workflow graphs |
+| `faster_whisper` | CTranslate2 model directories | Yes | Optional | Local Whisper transcription |
+| `litellm` | Cloud APIs (no local files) | N/A | N/A | OpenAI, Anthropic, Cohere, Gemini, HuggingFace, Replicate fallback |
 
-vLLM and NIM are GPU-server backends. For models larger than VRAM or workflows that require CPU/RAM+VRAM offload, use `llama_cpp` with `cpu_offload_enabled: true`.
+GGUF is the file format for `llama_cpp` and some NIM deployments; it is not the format for vLLM, SGLang, ComfyUI, faster-whisper, or any hosted provider. Choose the backend by capability and hardware fit; do not assume GGUF is the universal model format. vLLM and NIM are GPU-server backends. For models larger than VRAM or workflows that require CPU/RAM+VRAM offload, use `llama_cpp` with `cpu_offload_enabled: true`.
 
 ### Model Definition Fields
 
@@ -139,9 +142,17 @@ Each entry under `models:` follows this structure:
     - classification
 ```
 
-Set `status: "example"` for models not yet downloaded. Change to `"available"` once the GGUF file is present in `models_dir`.
+Set `status: "example"` for models not yet downloaded. Change to `"available"` once the asset is present on disk or the remote endpoint is reachable.
 
-The `model_id` must match the filename stem that `LlamaCppProviderAdapter` discovers at runtime. For a file named `qwen2.5-coder-7b.Q4_K_M.gguf`, the `model_id` is `qwen2.5-coder-7b`.
+The `model_id` resolution depends on the `provider`:
+
+| Provider | What `model_id` must match |
+|---|---|
+| `local` (llama-cpp) | Filename stem in `models_dir`. For `qwen2.5-coder-7b.Q4_K_M.gguf`, use `qwen2.5-coder-7b`. |
+| `vllm`, `sglang`, `nim` | HuggingFace repo ID (e.g. `meta-llama/Meta-Llama-3.1-8B-Instruct`) that the backend can resolve at load time. |
+| `faster_whisper` | HuggingFace repo ID for the CTranslate2 model (e.g. `Systran/faster-whisper-large-v3`). |
+| `comfyui` | Filename or workflow node identifier the ComfyUI graph references. |
+| `litellm` and other hosted providers (`openai`, `anthropic`, `cohere`, `gemini`, `huggingface`, `replicate`) | Hosted-API model identifier the provider accepts (e.g. `gpt-4o`, `claude-opus-4-8`, `command-r-plus`). |
 
 ### Task Defaults
 
@@ -176,14 +187,25 @@ policy:
   max_cost_per_1k_tokens: null  # set a positive value to cap cloud spend
   preferred_providers:
     - local
-    - ollama
     - claude
     - gemini
     - huggingface
     - replicate
   allow_cloud_fallback: true
   cloud_fallback_trigger: "local_unavailable"
+  cloud_egress_mode: "local_first_with_fallback"
 ```
+
+`cloud_egress_mode` is the product-level exit policy for cloud use:
+
+| Mode | Behavior |
+|------|----------|
+| `local_only` | Cloud routing is disabled; use this for offline/private deployments. |
+| `local_first_with_fallback` | Local models stay preferred; cloud is limited to the configured fallback trigger. |
+| `explicit_cloud` | Cloud is available only when the caller deliberately selects a cloud route. |
+
+`cloud_fallback_trigger` is schema-constrained to `disabled`, `local_unavailable`,
+`explicit_request`, or `policy_approved`; arbitrary provider strings are invalid.
 
 ---
 
@@ -330,7 +352,12 @@ Cloud models are defined under `cloud_models:` in `config/models.yaml` and are a
 
 Anthropic also accepts `CLAUDE_API_KEY` as a fallback if `ANTHROPIC_API_KEY` is not set.
 
-Cloud models are Tier 4 and are only used when `allow_cloud_fallback: true` and `cloud_fallback_trigger: "local_unavailable"` (or explicitly selected).
+Cloud models are Tier 4 and are only used when the routing policy permits cloud
+egress. The default runtime policy is `cloud_egress_mode:
+"local_first_with_fallback"` with `allow_cloud_fallback: true` and
+`cloud_fallback_trigger: "local_unavailable"`. Offline/private deployments set
+`cloud_egress_mode: "local_only"`, `allow_cloud_fallback: false`, and
+`cloud_fallback_trigger: "disabled"`.
 
 ---
 
@@ -366,7 +393,7 @@ Results are ranked by estimated quality score and cached in memory for the lifet
 
 ```python
 ModelScout.UNDERPERFORMANCE_THRESHOLD = 0.5  # Beta mean below this triggers scouting
-ModelScout.MAX_RECOMMENDATIONS = 5           # maximum candidates returned
+ModelScout.MAX_RECOMMENDATIONS = 5  # maximum candidates returned
 ```
 
 Only models estimated to outperform the current pool by a meaningful margin are surfaced. CLI hardware-based recommendations are available via `vetinari models recommend`; freshness checks are available via `vetinari models check`. The mounted model-scout recommendation route is `/api/v1/models/recommendations`.
@@ -446,3 +473,9 @@ The download command places the file in `models_dir` and prompts you to add a co
 | `vetinari/models/model_scout.py` | Underperformance detection and recommendation search |
 | `vetinari/adapters/registry.py` | Provider adapter catalog — maps providers to adapter implementations |
 | `vetinari/config/inference_config.py` | `InferenceConfigManager` — reads and applies task inference profiles |
+
+## RCG-0065-P01 Security Doc Evidence
+
+- Pack: RCG-0065-P01.
+- Scope review: no direct source row maps to this file in slice 01/02; retained as an affected surface for explicit no-change evidence.
+- Validation command: `.venv312/Scripts/python.exe -m pytest tests/operator/test_security_doc_standards.py -m operator -n 0`.

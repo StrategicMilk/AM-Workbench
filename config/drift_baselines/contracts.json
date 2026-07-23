@@ -1,10 +1,20 @@
 {
+  "registration_note": "ENG-P11 intentional refresh: add the opt-in am_engine registration contract without changing governed dataclass fingerprints.",
+  "registrations": {
+    "am_engine": {
+      "enabled_by_default": false,
+      "error_failure_class_contract": "identity-bijection:IS3.4",
+      "model_format": "gguf",
+      "provider_type": "am_engine",
+      "vision_enabled_by_default": false
+    }
+  },
   "hashes": {
-    "AlertThreshold": "15b32e3f4e0aa170ad1967b2b71cb8f68ac68344b6b55ad8d08219ec76efd94c",
-    "CostEntry": "f5ed1d044064ad6c4f1c86eb366ef5340de8859fa24aa4060a6eb3961315edf7",
+    "AlertThreshold": "e6e70ccf609c3f89426c4a45c7ffc030fbf5c361a168e79bd7e175ae10007191",
+    "CostEntry": "18ed7e079dec02f21085230f782f226ddb586a3f939a4b31f659386d76b42b08",
     "LogRecord": "db1d9ad65367503ba626e460e27516007ea41e06bf1c13fd76e30a8dc52cf349",
-    "Plan": "dda15ab8b70859be759e4e3b5f8521bef4b66dce689a976d4dd235f5f06469e9",
+    "Plan": "bf6558c78492c7d9ab0838927e830d5e576405ccdd4317fb4ede3710e9108bc3",
     "PlanCandidate": "814d39fe1cb96189443979f2e7be7e0bfbce68bf3860d29fb23cd4b6aa53f449",
-    "Subtask": "4a4e0024fca747e1528d5d8db7b0e18f879a7af453a15ab3ec183f27c629692f"
+    "Subtask": "22f451b03b17fbcd6cddf78605979460db785409d3d3c6607348cb3aafbd486d"
   }
 }

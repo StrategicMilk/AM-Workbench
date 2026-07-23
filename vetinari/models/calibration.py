@@ -20,12 +20,16 @@ Usage::
 
 from __future__ import annotations
 
+import importlib
 import logging
+import queue
+import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
 
 # Total time budget for all calibration prompts (seconds)
 CALIBRATION_BUDGET_SECONDS = 30
@@ -68,7 +72,120 @@ _CALIBRATION_PROMPTS: list[tuple[str, str, str, int]] = [
 ]
 
 
-@dataclass
+def _calibration_params(task_type: str) -> tuple[float, float]:
+    """Return effective temperature and top-p values for calibration."""
+    try:
+        from vetinari.config.inference_config import get_inference_config
+
+        params = get_inference_config().get_effective_params(task_type)
+        return float(params.get("temperature", 0.3)), float(params.get("top_p", 0.9))
+    except Exception:
+        logger.warning("Exception handled by  calibration params fallback", exc_info=True)
+        return 0.3, 0.9
+
+
+def _complete_calibration_task(
+    task_cal: TaskCalibration, output: str, tokens_used: int, elapsed: float
+) -> TaskCalibration:
+    """Populate a TaskCalibration after a successful prompt response."""
+    return replace(
+        task_cal,
+        tokens_generated=tokens_used,
+        tokens_per_second=tokens_used / max(elapsed, 0.001),
+        latency_ms=int(elapsed * 1000),
+        output_length=len(output),
+        completed=bool(output.strip()),
+    )
+
+
+def _run_calibration_prompt(
+    llm: Any,
+    task_type: str,
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int,
+    effective_timeout: float,
+) -> TaskCalibration:
+    """Execute one calibration prompt and return its timing metrics."""
+    task_cal = TaskCalibration(task_type=task_type)
+    task_start = time.time()
+    try:
+        temperature, top_p = _calibration_params(task_type)
+        response = _call_llm_with_timeout(
+            llm,
+            timeout_seconds=effective_timeout,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            min_p=0.05,
+        )
+        elapsed = time.time() - task_start
+        choices = response.get("choices", [])
+        output = choices[0]["message"]["content"] if choices else ""
+        usage = response.get("usage", {})
+        tokens_used = usage.get("completion_tokens", 0) or max(1, len(output) // 4)
+        task_cal = _complete_calibration_task(task_cal, output, tokens_used, elapsed)
+        logger.debug(
+            "[Calibration] %s: %d tokens in %.1fs (%.1f tok/s)",
+            task_type,
+            tokens_used,
+            elapsed,
+            task_cal.tokens_per_second,
+        )
+    except Exception as exc:
+        elapsed = time.time() - task_start
+        task_cal = replace(task_cal, latency_ms=int(elapsed * 1000))
+        logger.warning("[Calibration] %s failed: %s", task_type, exc)
+    return task_cal
+
+
+def _call_llm_with_timeout(llm: Any, *, timeout_seconds: float, **kwargs: Any) -> dict[str, Any]:
+    """Run a blocking llama-cpp call behind a wall-clock timeout."""
+    result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+
+    def _target() -> None:
+        try:
+            result_queue.put(("ok", llm.create_chat_completion(**kwargs)))
+        except Exception as exc:
+            result_queue.put(("err", exc))
+
+    thread = threading.Thread(target=_target, name="calibration-llm-call", daemon=True)
+    thread.start()
+    thread.join(max(0.001, timeout_seconds))
+    if thread.is_alive():
+        raise TimeoutError(f"calibration prompt exceeded {timeout_seconds:.1f}s")
+    status, payload = result_queue.get_nowait()
+    if status == "err":
+        raise payload
+    return payload
+
+
+def _snapshot_memory_usage_mb() -> float:
+    """Return current process RSS in MB, or zero when unavailable."""
+    try:
+        psutil = importlib.import_module("psutil")
+        process = psutil.Process()
+        return round(process.memory_info().rss / (1024 * 1024), 1)
+    except Exception:
+        logger.warning("Could not measure memory during calibration")
+        return 0.0
+
+
+def _finalize_calibration_result(result: CalibrationResult, budget_start: float) -> None:
+    """Populate aggregate calibration result fields."""
+    result.total_time_seconds = round(time.time() - budget_start, 1)
+    completed = [task for task in result.tasks if task.completed]
+    result.completed_count = len(completed)
+    if completed:
+        result.avg_tokens_per_second = round(sum(task.tokens_per_second for task in completed) / len(completed), 1)
+    result.memory_usage_mb = _snapshot_memory_usage_mb()
+
+
+@dataclass(frozen=True, slots=True)
 class TaskCalibration:
     """Calibration metrics for a single task type."""
 
@@ -163,88 +280,18 @@ def calibrate_model(model_id: str, llm: Any) -> CalibrationResult:
 
         remaining = CALIBRATION_BUDGET_SECONDS - elapsed
         effective_timeout = min(PER_PROMPT_TIMEOUT_SECONDS, remaining)
-
-        task_cal = TaskCalibration(task_type=task_type)
-        task_start = time.time()
-
-        try:
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ]
-
-            # Use InferenceConfigManager for calibration params when available
-            try:
-                from vetinari.config.inference_config import get_inference_config
-
-                _cal_params = get_inference_config().get_effective_params(task_type)
-                _cal_temp = _cal_params.get("temperature", 0.3)
-                _cal_top_p = _cal_params.get("top_p", 0.9)
-            except Exception:
-                _cal_temp = 0.3
-                _cal_top_p = 0.9
-
-            response = llm.create_chat_completion(
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=_cal_temp,
-                top_p=_cal_top_p,
-                min_p=0.05,
-            )
-
-            task_elapsed = time.time() - task_start
-
-            # Check timeout
-            if task_elapsed > effective_timeout:
-                logger.debug(
-                    "[Calibration] %s exceeded timeout (%.1fs > %.1fs)", task_type, task_elapsed, effective_timeout
-                )
-                task_cal.latency_ms = int(task_elapsed * 1000)
-                result.tasks.append(task_cal)
-                continue
-
-            choices = response.get("choices", [])
-            output = choices[0]["message"]["content"] if choices else ""
-            usage = response.get("usage", {})
-            tokens_used = usage.get("completion_tokens", 0) or len(output.split())
-
-            task_cal.tokens_generated = tokens_used
-            task_cal.tokens_per_second = tokens_used / max(task_elapsed, 0.001)
-            task_cal.latency_ms = int(task_elapsed * 1000)
-            task_cal.output_length = len(output)
-            task_cal.completed = bool(output.strip())
-
-            logger.debug(
-                "[Calibration] %s: %d tokens in %.1fs (%.1f tok/s)",
+        result.tasks.append(
+            _run_calibration_prompt(
+                llm,
                 task_type,
-                tokens_used,
-                task_elapsed,
-                task_cal.tokens_per_second,
+                system_prompt,
+                user_prompt,
+                max_tokens,
+                effective_timeout,
             )
+        )
 
-        except Exception as exc:
-            task_elapsed = time.time() - task_start
-            task_cal.latency_ms = int(task_elapsed * 1000)
-            logger.warning("[Calibration] %s failed: %s", task_type, exc)
-
-        result.tasks.append(task_cal)
-
-    # Aggregate metrics
-    result.total_time_seconds = round(time.time() - budget_start, 1)
-    completed = [t for t in result.tasks if t.completed]
-    result.completed_count = len(completed)
-
-    if completed:
-        result.avg_tokens_per_second = round(sum(t.tokens_per_second for t in completed) / len(completed), 1)
-
-    # Memory usage snapshot
-    try:
-        import psutil
-
-        process = psutil.Process()
-        result.memory_usage_mb = round(process.memory_info().rss / (1024 * 1024), 1)
-    except Exception:
-        logger.warning("Could not measure memory during calibration")
+    _finalize_calibration_result(result, budget_start)
 
     logger.info(
         "[Calibration] Completed for %s: %d/%d tasks, avg %.1f tok/s, %.1fs total",
@@ -270,11 +317,12 @@ def seed_thompson_priors(model_id: str, calibration: CalibrationResult) -> None:
 
         selector = get_model_selector()
         priors = calibration.get_thompson_priors()
+        set_prior = getattr(selector, "set_prior", None)
 
         for task_type, (alpha, beta) in priors.items():
             arm_key = f"{model_id}:{task_type}"
-            if hasattr(selector, "set_prior"):
-                selector.set_prior(arm_key, alpha, beta)
+            if callable(set_prior):
+                set_prior(arm_key, alpha, beta)
                 logger.debug("[Calibration] Seeded Thompson prior for %s: alpha=%.1f, beta=%.1f", arm_key, alpha, beta)
 
     except Exception as exc:

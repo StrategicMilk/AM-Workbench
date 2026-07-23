@@ -43,14 +43,70 @@ Every SSE event published via ``_push_sse_event`` travels two paths:
 
 from __future__ import annotations
 
-import json
 import logging
+import threading
 from dataclasses import dataclass, field
 from itertools import count
-from typing import Any
+from typing import Any, ClassVar
+
+from vetinari.web.sse_event_store import (
+    _persist_sse_event as _persist_sse_event,
+)
+from vetinari.web.sse_event_store import (
+    cleanup_old_sse_events as cleanup_old_sse_events,
+)
+from vetinari.web.sse_event_store import (
+    cleanup_stale_sse_events as cleanup_stale_sse_events,
+)
+from vetinari.web.sse_event_store import (
+    get_recent_sse_events as get_recent_sse_events,
+)
 
 logger = logging.getLogger(__name__)
-_SSE_EVENT_SEQUENCE = count(1)
+
+
+class _AtomicSequence:
+    """Lock-backed monotonic sequence for SSE event IDs."""
+
+    def __init__(self, start: int = 1) -> None:
+        self._counter = count(start)
+        self._lock = threading.Lock()
+
+    def __next__(self) -> int:
+        with self._lock:
+            return next(self._counter)
+
+
+_SSE_EVENT_SEQUENCE = _AtomicSequence(1)
+
+
+def _durable_global_sse_sequence_floor() -> int:
+    """Return the highest persisted SSE sequence across projects, or zero."""
+    try:
+        from vetinari.database import get_connection
+
+        conn = get_connection()
+        row = conn.execute("SELECT COALESCE(MAX(sequence_num), 0) AS max_sequence FROM sse_event_log").fetchone()
+        if row is None:
+            return 0
+        if hasattr(row, "keys") and "max_sequence" in row:
+            return int(row["max_sequence"])
+        return int(row[0])
+    except Exception:
+        logger.warning("Failed to read durable typed SSE sequence floor", exc_info=True)
+        return 0
+
+
+def reseed_sse_event_sequence_from_store() -> int:
+    """Restart typed SSE event IDs after the durable log's current maximum.
+
+    Returns:
+        Durable sequence floor used to seed the in-process counter.
+    """
+    global _SSE_EVENT_SEQUENCE
+    floor = _durable_global_sse_sequence_floor()
+    _SSE_EVENT_SEQUENCE = _AtomicSequence(floor + 1)
+    return floor
 
 
 def _next_sse_sequence() -> int:
@@ -58,77 +114,136 @@ def _next_sse_sequence() -> int:
     return next(_SSE_EVENT_SEQUENCE)
 
 
+class SseEvent:
+    """Shared serializer for typed SSE event payload dataclasses."""
+
+    _payload_fields: ClassVar[tuple[str, ...]] = ()
+    _payload_constants: ClassVar[dict[str, Any]] = {}
+
+    def to_sse(self) -> dict[str, Any]:
+        """Serialize to the SSE data payload expected by the web event queue.
+
+        Returns:
+            Value produced for the caller.
+        """
+        payload = {field_name: getattr(self, field_name) for field_name in self._payload_fields}
+        payload.update(self._payload_constants)
+        return payload
+
+
 # -- Lifecycle events -------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
-class StatusEvent:
+class StatusEvent(SseEvent):
     """Pipeline status update (running, idle, etc.)."""
 
     event_type: str = "status"
     status: str = ""
     total_tasks: int = 0
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {"status": self.status, "total_tasks": self.total_tasks}
+    _payload_fields: ClassVar[tuple[str, ...]] = ("status", "total_tasks")
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"event_type={self.event_type!r}, "
+            f"status={self.status!r}, "
+            f"total_tasks={self.total_tasks!r}, "
+            f"_payload_fields={self._payload_fields!r}"
+            ")"
+        )
 
 
 @dataclass(frozen=True, slots=True)
-class PlanningStartEvent:
+class PlanningStartEvent(SseEvent):
     """Plan generation has begun."""
 
     event_type: str = "planning_started"
     goal: str = ""
     plan_id: str = ""
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {"goal": self.goal, "plan_id": self.plan_id}
+    _payload_fields: ClassVar[tuple[str, ...]] = ("goal", "plan_id")
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"event_type={self.event_type!r}, "
+            f"goal={self.goal!r}, "
+            f"plan_id={self.plan_id!r}, "
+            f"_payload_fields={self._payload_fields!r}"
+            ")"
+        )
 
 
 @dataclass(frozen=True, slots=True)
-class PausedEvent:
+class PausedEvent(SseEvent):
     """Pipeline execution paused."""
 
     event_type: str = "paused"
     project_id: str = ""
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {"project_id": self.project_id, "status": "paused"}
+    _payload_fields: ClassVar[tuple[str, ...]] = ("project_id",)
+    _payload_constants: ClassVar[dict[str, Any]] = {"status": "paused"}
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"event_type={self.event_type!r}, "
+            f"project_id={self.project_id!r}, "
+            f"_payload_fields={self._payload_fields!r}, "
+            f"_payload_constants={self._payload_constants!r}"
+            ")"
+        )
 
 
 @dataclass(frozen=True, slots=True)
-class ResumedEvent:
+class ResumedEvent(SseEvent):
     """Pipeline execution resumed."""
 
     event_type: str = "resumed"
     project_id: str = ""
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {"project_id": self.project_id, "status": "resumed"}
+    _payload_fields: ClassVar[tuple[str, ...]] = ("project_id",)
+    _payload_constants: ClassVar[dict[str, Any]] = {"status": "resumed"}
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"event_type={self.event_type!r}, "
+            f"project_id={self.project_id!r}, "
+            f"_payload_fields={self._payload_fields!r}, "
+            f"_payload_constants={self._payload_constants!r}"
+            ")"
+        )
 
 
 @dataclass(frozen=True, slots=True)
-class CancelledEvent:
+class CancelledEvent(SseEvent):
     """Pipeline execution cancelled."""
 
     event_type: str = "cancelled"
     project_id: str = ""
     reason: str = ""
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {"project_id": self.project_id, "reason": self.reason}
+    _payload_fields: ClassVar[tuple[str, ...]] = ("project_id", "reason")
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"event_type={self.event_type!r}, "
+            f"project_id={self.project_id!r}, "
+            f"reason={self.reason!r}, "
+            f"_payload_fields={self._payload_fields!r}"
+            ")"
+        )
 
 
 # -- Task events ------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
-class TaskStartEvent:
+class TaskStartEvent(SseEvent):
     """A task has started execution."""
 
     event_type: str = "task_started"
@@ -144,20 +259,18 @@ class TaskStartEvent:
             f"TaskStartEvent(task_id={self.task_id!r}, agent={self.agent_type!r}, {self.task_index}/{self.total_tasks})"
         )
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {
-            "sequence": self.sequence,
-            "task_id": self.task_id,
-            "description": self.description,
-            "agent_type": self.agent_type,
-            "task_index": self.task_index,
-            "total_tasks": self.total_tasks,
-        }
+    _payload_fields: ClassVar[tuple[str, ...]] = (
+        "sequence",
+        "task_id",
+        "description",
+        "agent_type",
+        "task_index",
+        "total_tasks",
+    )
 
 
 @dataclass(frozen=True, slots=True)
-class TaskCompleteEvent:
+class TaskCompleteEvent(SseEvent):
     """A task has completed successfully."""
 
     event_type: str = "task_completed"
@@ -170,19 +283,11 @@ class TaskCompleteEvent:
     def __repr__(self) -> str:
         return f"TaskCompleteEvent(task_id={self.task_id!r}, {self.task_index}/{self.total_tasks})"
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {
-            "sequence": self.sequence,
-            "task_id": self.task_id,
-            "output_summary": self.output_summary,
-            "task_index": self.task_index,
-            "total_tasks": self.total_tasks,
-        }
+    _payload_fields: ClassVar[tuple[str, ...]] = ("sequence", "task_id", "output_summary", "task_index", "total_tasks")
 
 
 @dataclass(frozen=True, slots=True)
-class TaskFailedEvent:
+class TaskFailedEvent(SseEvent):
     """A task has failed."""
 
     event_type: str = "task_failed"
@@ -195,19 +300,11 @@ class TaskFailedEvent:
     def __repr__(self) -> str:
         return f"TaskFailedEvent(task_id={self.task_id!r}, error={self.error!r})"
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {
-            "sequence": self.sequence,
-            "task_id": self.task_id,
-            "error": self.error,
-            "task_index": self.task_index,
-            "total_tasks": self.total_tasks,
-        }
+    _payload_fields: ClassVar[tuple[str, ...]] = ("sequence", "task_id", "error", "task_index", "total_tasks")
 
 
 @dataclass(frozen=True, slots=True)
-class TaskCancelledEvent:
+class TaskCancelledEvent(SseEvent):
     """A task has been cancelled."""
 
     event_type: str = "task_cancelled"
@@ -218,13 +315,11 @@ class TaskCancelledEvent:
     def __repr__(self) -> str:
         return f"TaskCancelledEvent(task_id={self.task_id!r}, reason={self.reason!r})"
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {"sequence": self.sequence, "task_id": self.task_id, "reason": self.reason}
+    _payload_fields: ClassVar[tuple[str, ...]] = ("sequence", "task_id", "reason")
 
 
 @dataclass(frozen=True, slots=True)
-class TaskRerunEvent:
+class TaskRerunEvent(SseEvent):
     """A task is being re-run (retry)."""
 
     event_type: str = "task_rerun"
@@ -235,16 +330,14 @@ class TaskRerunEvent:
     def __repr__(self) -> str:
         return f"TaskRerunEvent(task_id={self.task_id!r}, attempt={self.attempt})"
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {"sequence": self.sequence, "task_id": self.task_id, "attempt": self.attempt}
+    _payload_fields: ClassVar[tuple[str, ...]] = ("sequence", "task_id", "attempt")
 
 
 # -- Stage events -----------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
-class StageStartEvent:
+class StageStartEvent(SseEvent):
     """A pipeline stage has started."""
 
     event_type: str = "stage_started"
@@ -256,18 +349,11 @@ class StageStartEvent:
     def __repr__(self) -> str:
         return f"StageStartEvent(stage={self.stage!r}, {self.stage_index}/{self.total_stages})"
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {
-            "sequence": self.sequence,
-            "stage": self.stage,
-            "stage_index": self.stage_index,
-            "total_stages": self.total_stages,
-        }
+    _payload_fields: ClassVar[tuple[str, ...]] = ("sequence", "stage", "stage_index", "total_stages")
 
 
 @dataclass(frozen=True, slots=True)
-class StageProgressEvent:
+class StageProgressEvent(SseEvent):
     """Progress update within a pipeline stage."""
 
     event_type: str = "stage_progress"
@@ -279,18 +365,11 @@ class StageProgressEvent:
     def __repr__(self) -> str:
         return f"StageProgressEvent(stage={self.stage!r}, progress={self.progress:.0%})"
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {
-            "sequence": self.sequence,
-            "stage": self.stage,
-            "progress": self.progress,
-            "message": self.message,
-        }
+    _payload_fields: ClassVar[tuple[str, ...]] = ("sequence", "stage", "progress", "message")
 
 
 @dataclass(frozen=True, slots=True)
-class StageCompleteEvent:
+class StageCompleteEvent(SseEvent):
     """A pipeline stage has completed."""
 
     event_type: str = "stage_completed"
@@ -301,13 +380,11 @@ class StageCompleteEvent:
     def __repr__(self) -> str:
         return f"StageCompleteEvent(stage={self.stage!r}, summary={self.output_summary!r})"
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {"sequence": self.sequence, "stage": self.stage, "output_summary": self.output_summary}
+    _payload_fields: ClassVar[tuple[str, ...]] = ("sequence", "stage", "output_summary")
 
 
 @dataclass(frozen=True, slots=True)
-class PipelineStageEvent:
+class PipelineStageEvent(SseEvent):
     """Pipeline stage status snapshot for dashboard visualization."""
 
     event_type: str = "pipeline_stage"
@@ -319,34 +396,35 @@ class PipelineStageEvent:
     def __repr__(self) -> str:
         return f"PipelineStageEvent(stage={self.stage!r}, status={self.status!r}, entry={self.entry_count}, exit={self.exit_count})"
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {
-            "stage": self.stage,
-            "status": self.status,
-            "entry_count": self.entry_count,
-            "exit_count": self.exit_count,
-        }
+    _payload_fields: ClassVar[tuple[str, ...]] = ("stage", "status", "entry_count", "exit_count")
 
 
 # -- Agent/model events -----------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
-class ThinkingEvent:
+class ThinkingEvent(SseEvent):
     """Agent thinking/reasoning status."""
 
     event_type: str = "thinking"
     agent_type: str = ""
     message: str = ""
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {"agent_type": self.agent_type, "message": self.message}
+    _payload_fields: ClassVar[tuple[str, ...]] = ("agent_type", "message")
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"event_type={self.event_type!r}, "
+            f"agent_type={self.agent_type!r}, "
+            f"message={self.message!r}, "
+            f"_payload_fields={self._payload_fields!r}"
+            ")"
+        )
 
 
 @dataclass(frozen=True, slots=True)
-class DecisionEvent:
+class DecisionEvent(SseEvent):
     """Agent decision notification."""
 
     event_type: str = "decision"
@@ -357,59 +435,77 @@ class DecisionEvent:
     def __repr__(self) -> str:
         return f"DecisionEvent(type={self.decision_type!r}, summary={self.summary!r})"
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {
-            "decision_type": self.decision_type,
-            "summary": self.summary,
-            "details": self.details,
-        }
+    _payload_fields: ClassVar[tuple[str, ...]] = ("decision_type", "summary", "details")
 
 
 @dataclass(frozen=True, slots=True)
-class ModelLoadingEvent:
+class ModelLoadingEvent(SseEvent):
     """A model is being loaded for inference."""
 
     event_type: str = "model_loading"
     model_id: str = ""
     status: str = "loading"
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {"model_id": self.model_id, "status": self.status}
+    _payload_fields: ClassVar[tuple[str, ...]] = ("model_id", "status")
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"event_type={self.event_type!r}, "
+            f"model_id={self.model_id!r}, "
+            f"status={self.status!r}, "
+            f"_payload_fields={self._payload_fields!r}"
+            ")"
+        )
 
 
 @dataclass(frozen=True, slots=True)
-class ModelRecommendationEvent:
+class ModelRecommendationEvent(SseEvent):
     """Model selection recommendation."""
 
     event_type: str = "model_recommendation"
     recommended_model: str = ""
     reason: str = ""
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {"recommended_model": self.recommended_model, "reason": self.reason}
+    _payload_fields: ClassVar[tuple[str, ...]] = ("recommended_model", "reason")
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"event_type={self.event_type!r}, "
+            f"recommended_model={self.recommended_model!r}, "
+            f"reason={self.reason!r}, "
+            f"_payload_fields={self._payload_fields!r}"
+            ")"
+        )
 
 
 @dataclass(frozen=True, slots=True)
-class EtaUpdateEvent:
+class EtaUpdateEvent(SseEvent):
     """Estimated time of arrival update."""
 
     event_type: str = "eta_update"
     remaining_seconds: float = 0.0
     message: str = ""
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {"remaining_seconds": self.remaining_seconds, "message": self.message}
+    _payload_fields: ClassVar[tuple[str, ...]] = ("remaining_seconds", "message")
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"event_type={self.event_type!r}, "
+            f"remaining_seconds={self.remaining_seconds!r}, "
+            f"message={self.message!r}, "
+            f"_payload_fields={self._payload_fields!r}"
+            ")"
+        )
 
 
 # -- Error events -----------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
-class ErrorEvent:
+class ErrorEvent(SseEvent):
     """General error notification."""
 
     event_type: str = "error"
@@ -420,20 +516,14 @@ class ErrorEvent:
     def __repr__(self) -> str:
         return f"ErrorEvent(type={self.error_type!r}, recoverable={self.recoverable}, error={self.error!r})"
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {
-            "error": self.error,
-            "error_type": self.error_type,
-            "recoverable": self.recoverable,
-        }
+    _payload_fields: ClassVar[tuple[str, ...]] = ("error", "error_type", "recoverable")
 
 
 # -- Quality events ---------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
-class QualityResultEvent:
+class QualityResultEvent(SseEvent):
     """Quality scoring result from Inspector review."""
 
     event_type: str = "quality_result"
@@ -449,50 +539,48 @@ class QualityResultEvent:
             f"QualityResultEvent(project_id={self.project_id!r}, score={self.quality_score!r}, passed={self.passed!r})"
         )
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {
-            "project_id": self.project_id,
-            "quality_score": self.quality_score,
-            "passed": self.passed,
-            "issues_count": self.issues_count,
-            "confidence": self.confidence,
-        }
+    _payload_fields: ClassVar[tuple[str, ...]] = ("project_id", "quality_score", "passed", "issues_count", "confidence")
 
 
 # -- Training events --------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
-class TrainingCompleteEvent:
+class TrainingCompleteEvent(SseEvent):
     """Training run completed successfully."""
 
     event_type: str = "training_completed"
     run_id: str = ""
     summary: str = ""
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {"run_id": self.run_id, "summary": self.summary}
+    _payload_fields: ClassVar[tuple[str, ...]] = ("run_id", "summary")
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"event_type={self.event_type!r}, "
+            f"run_id={self.run_id!r}, "
+            f"summary={self.summary!r}, "
+            f"_payload_fields={self._payload_fields!r}"
+            ")"
+        )
 
 
 @dataclass(frozen=True, slots=True)
-class TrainingFailedEvent:
+class TrainingFailedEvent(SseEvent):
     """Training run failed."""
 
     event_type: str = "training_failed"
     error: str = ""
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {"error": self.error}
+    _payload_fields: ClassVar[tuple[str, ...]] = ("error",)
 
 
 # -- Notification events ----------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
-class NotificationEvent:
+class NotificationEvent(SseEvent):
     """A notification dispatched via the notification manager."""
 
     event_type: str = "notification"
@@ -505,19 +593,11 @@ class NotificationEvent:
     def __repr__(self) -> str:
         return "NotificationEvent(...)"
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {
-            "notification_id": self.notification_id,
-            "title": self.title,
-            "body": self.body,
-            "priority": self.priority,
-            "action_type": self.action_type,
-        }
+    _payload_fields: ClassVar[tuple[str, ...]] = ("notification_id", "title", "body", "priority", "action_type")
 
 
 @dataclass(frozen=True, slots=True)
-class ApprovalRequestEvent:
+class ApprovalRequestEvent(SseEvent):
     """An action has been queued for human approval."""
 
     event_type: str = "approval_requested"
@@ -528,13 +608,7 @@ class ApprovalRequestEvent:
     def __repr__(self) -> str:
         return "ApprovalRequestEvent(...)"
 
-    def to_sse(self) -> dict[str, Any]:
-        """Serialize to SSE data payload."""
-        return {
-            "action_id": self.action_id,
-            "action_type": self.action_type,
-            "confidence": self.confidence,
-        }
+    _payload_fields: ClassVar[tuple[str, ...]] = ("action_id", "action_type", "confidence")
 
 
 # -- Registry ---------------------------------------------------------------
@@ -567,130 +641,3 @@ SSE_EVENT_REGISTRY: dict[str, type] = {
     "notification": NotificationEvent,
     "approval_requested": ApprovalRequestEvent,
 }
-
-
-# -- Persistence helpers --------------------------------------------------------
-
-
-def _persist_sse_event(project_id: str, event_type: str, payload: dict[str, Any]) -> None:
-    """Write an SSE event to the ``sse_event_log`` table (best-effort).
-
-    Called immediately after an event is delivered live so the event is also
-    available for replay.  Failures are logged at WARNING and swallowed so live
-    delivery is never interrupted.
-
-    Args:
-        project_id: The project the event belongs to.
-        event_type: The SSE event type string (e.g. ``"task_started"``).
-        payload: The event data dict to store as JSON.
-    """
-    conn = None
-    try:
-        from vetinari.database import get_connection
-
-        conn = get_connection()
-        conn.execute(
-            "INSERT INTO sse_event_log (project_id, event_type, payload_json) VALUES (?, ?, ?)",
-            (project_id, event_type, json.dumps(payload, ensure_ascii=False)),
-        )
-        conn.commit()
-    except Exception:
-        if conn is not None:
-            try:
-                conn.rollback()
-            except Exception:
-                logger.warning(
-                    "Rollback also failed during SSE event persistence — database may be in inconsistent state"
-                )
-        logger.warning(
-            "Could not persist SSE event %s for project %s — event delivered but not stored",
-            event_type,
-            project_id,
-        )
-
-
-def get_recent_sse_events(
-    project_id: str,
-    limit: int = 100,
-    since: str | None = None,
-) -> list[dict[str, Any]]:
-    """Return persisted SSE events for *project_id* in ascending order.
-
-    Args:
-        project_id: Project to query.
-        limit: Maximum number of rows to return.
-        since: ISO-format timestamp string; only events emitted after this
-            timestamp are returned.  Pass None to return all events.
-
-    Returns:
-        List of event dicts with keys ``id``, ``project_id``, ``event_type``,
-        ``payload`` (parsed JSON dict), and ``emitted_at``.  Events with
-        unparseable JSON return ``{"_raw": <original string>}`` as payload.
-    """
-    from vetinari.database import get_connection
-
-    conn = get_connection()
-    if since is not None:
-        rows = conn.execute(
-            "SELECT id, project_id, event_type, payload_json, emitted_at"
-            " FROM sse_event_log"
-            " WHERE project_id = ? AND emitted_at > ?"
-            " ORDER BY id ASC LIMIT ?",
-            (project_id, since, limit),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT id, project_id, event_type, payload_json, emitted_at"
-            " FROM sse_event_log"
-            " WHERE project_id = ?"
-            " ORDER BY id ASC LIMIT ?",
-            (project_id, limit),
-        ).fetchall()
-
-    results: list[dict[str, Any]] = []
-    for row in rows:
-        try:
-            payload = json.loads(row["payload_json"])
-        except (json.JSONDecodeError, TypeError):
-            payload = {"_raw": row["payload_json"]}
-        results.append({
-            "id": row["id"],
-            "project_id": row["project_id"],
-            "event_type": row["event_type"],
-            "payload": payload,
-            "emitted_at": row["emitted_at"],
-        })
-    return results
-
-
-def cleanup_old_sse_events(hours: int = 168) -> int:
-    """Delete SSE event log entries older than *hours* hours.
-
-    Args:
-        hours: Retention window in hours.  Events emitted more than this many
-            hours ago are deleted.  Defaults to 168 (7 days).  Must be >= 1.
-
-    Returns:
-        Number of rows deleted.
-
-    Raises:
-        ValueError: If hours is less than 1.
-    """
-    if hours < 1:
-        raise ValueError("hours must be >= 1")
-
-    from vetinari.database import get_connection
-
-    conn = get_connection()
-    cursor = conn.execute(
-        "DELETE FROM sse_event_log WHERE emitted_at < datetime('now', ? || ' hours')",
-        (f"-{hours}",),
-    )
-    conn.commit()
-    deleted = cursor.rowcount
-    logger.info("cleanup_old_sse_events: deleted %d rows older than %d hours", deleted, hours)
-    return deleted
-
-
-# Alias used by cli_startup.py scheduler callback
-cleanup_stale_sse_events = cleanup_old_sse_events

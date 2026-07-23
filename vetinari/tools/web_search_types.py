@@ -13,11 +13,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
 from vetinari.utils.serialization import dataclass_to_dict
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class SearchResult:
     """Single search result with provenance tracking."""
 
@@ -77,14 +78,15 @@ class SourceCredibility:
             Credibility score between 0.0 and 1.0. Known high-trust domains
             (e.g. arxiv.org, .gov, .edu) score higher; defaults to 0.5.
         """
-        url_lower = url.lower()
+        parsed = urlsplit(url if "://" in url else f"//{url}")
+        host = (parsed.hostname or "").lower().rstrip(".")
 
         # Check exact matches first
         for domain, score in cls.DOMAIN_SCORES.items():
             if domain.startswith("."):
-                if url_lower.endswith(domain):
+                if domain in {".edu", ".gov"} and host.endswith(domain):
                     return score
-            elif domain in url_lower:
+            elif host == domain or host.endswith(f".{domain}"):
                 return score
 
         return 0.5  # Default score

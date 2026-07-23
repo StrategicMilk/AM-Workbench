@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from vetinari.validation.document_judge import DocumentJudge, JudgeConfig
-from vetinari.validation.document_quality import (  # noqa: VET123 - barrel export preserves public import compatibility
+from vetinari.validation.document_quality import (
     DimensionScore,
     QualityReport,
     evaluate_document,
@@ -20,6 +20,23 @@ from vetinari.validation.goal_verifier import (
     GoalVerifier,
     get_goal_verifier,
 )
+from vetinari.validation.numeric import (
+    NumericSignal,
+    NumericValidationError,
+    clamp_confidence,
+    clamp_score,
+    require_confidence,
+    require_finite_metric,
+    require_non_negative_integer,
+    require_positive_token_budget,
+    require_progress,
+    require_rubric_value,
+    require_score,
+    validate_confidence,
+    validate_numeric_payload,
+    validate_numeric_signal,
+)
+from vetinari.validation.output_validator import Validator
 from vetinari.validation.prevention import CheckResult, PreventionGate, PreventionResult
 from vetinari.validation.root_cause import (
     CausalEdge,
@@ -31,7 +48,7 @@ from vetinari.validation.root_cause import (
     walk_graph_for_root_cause,
 )
 from vetinari.validation.static_verifier import StaticCheckResult, StaticVerifier
-from vetinari.validation.verification import (  # noqa: VET123 - barrel export preserves public import compatibility
+from vetinari.validation.verification import (
     CascadeOrchestrator,
     CascadeVerdict,
     CodeSyntaxVerifier,
@@ -39,7 +56,6 @@ from vetinari.validation.verification import (  # noqa: VET123 - barrel export p
     JSONStructureVerifier,
     SecurityVerifier,
     ValidationVerificationResult,
-    Validator,
     VerificationIssue,
     VerificationLevel,
     VerificationPipeline,
@@ -75,6 +91,8 @@ __all__ = [
     "ImportVerifier",
     "JSONStructureVerifier",
     "JudgeConfig",
+    "NumericSignal",
+    "NumericValidationError",
     "PreventionGate",
     "PreventionResult",
     "QualityReport",
@@ -93,13 +111,25 @@ __all__ = [
     "VerificationSummary",
     "Verifier",
     "build_causal_graph",
+    "clamp_confidence",
+    "clamp_score",
     "evaluate_document",
     "get_cascade_orchestrator",
     "get_goal_verifier",
     "get_profile_for_type",
     "get_verifier_pipeline",
     "load_document_profiles",
+    "require_confidence",
+    "require_finite_metric",
+    "require_non_negative_integer",
+    "require_positive_token_budget",
+    "require_progress",
+    "require_rubric_value",
+    "require_score",
     "run_stage_gate",
+    "validate_confidence",
+    "validate_numeric_payload",
+    "validate_numeric_signal",
     "verify_worker_output",
     "walk_graph_for_root_cause",
     "wire_validation_subsystem",

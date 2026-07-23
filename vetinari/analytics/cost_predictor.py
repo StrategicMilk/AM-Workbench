@@ -35,7 +35,10 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
+from vetinari.analytics.cost_models import _DEFAULT_PRICING
+
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -53,23 +56,47 @@ _BASE_TOKENS: dict[str, int] = {
     "default": 1000,
 }
 
-# Per-token cost in USD (per single token, not per 1 k).
-_PER_TOKEN_COST: dict[str, float] = {
-    "claude-opus": 15e-6,  # $15 / 1M tokens
-    "claude-sonnet": 3e-6,  # $3  / 1M tokens
-    "claude-haiku": 0.25e-6,  # $0.25 / 1M tokens
-    "gpt-4o": 5e-6,  # $5  / 1M tokens
-    "gpt-4o-mini": 0.15e-6,  # $0.15 / 1M tokens
-    "default": 3e-6,
+_MODEL_COST_ALIAS_PARTS: dict[tuple[str, ...], tuple[str, ...]] = {
+    ("claude", "opus"): ("claude", "opus", "4", "8"),
+    ("claude", "sonnet"): ("claude", "sonnet", "4", "6"),
+    ("claude", "haiku"): ("claude", "haiku", "4", "5", "20251001"),
+    ("default",): ("claude", "sonnet", "4", "6"),
 }
+
+
+def _model_key(parts: tuple[str, ...]) -> str:
+    return "-".join(parts)
+
+
+def _average_token_price_usd(model_key: str) -> float:
+    pricing = _DEFAULT_PRICING[model_key]
+    return (pricing.input_per_1k + pricing.output_per_1k) / 2_000
+
+
+def _build_per_token_costs() -> dict[str, float]:
+    costs = {key.split(":", 1)[1]: _average_token_price_usd(key) for key in _DEFAULT_PRICING}
+    costs.update({_model_key(alias): costs[_model_key(target)] for alias, target in _MODEL_COST_ALIAS_PARTS.items()})
+    return costs
+
+
+# Per-token cost in USD, derived from the versioned cost model registry.
+_PER_TOKEN_COST: dict[str, float] = _build_per_token_costs()
 
 # Approximate throughput in tokens per second for each model tier.
 _TOKENS_PER_SECOND: dict[str, float] = {
     "claude-opus": 60.0,
+    "claude-opus-4-8": 60.0,
+    "claude-opus-4-7": 60.0,
     "claude-sonnet": 80.0,
+    "claude-sonnet-4-6": 80.0,
     "claude-haiku": 120.0,
+    "claude-haiku-4-5-20251001": 120.0,
     "gpt-4o": 80.0,
     "gpt-4o-mini": 150.0,
+    "o3-mini": 90.0,
+    "gemini-3.5-flash": 130.0,
+    "gemini-3.1-flash-lite": 180.0,
+    "*": 80.0,
     "default": 80.0,
 }
 
@@ -169,6 +196,35 @@ def _scope_factor(scope_size: int) -> float:
     return max(0.1, scope_size / _SCOPE_BASE)
 
 
+def reset_cost_predictor_records() -> None:
+    """Compatibility reset for callers that reset analytics singletons.
+
+    Calibration records are owned by each ``CostPredictor`` instance; production
+    reuse happens through ``vetinari.analytics.wiring``'s singleton reference.
+    """
+    return None
+
+
+def _resolve_model_key(model: str, table: dict[str, float]) -> str:
+    """Resolve provider-qualified model IDs to pricing/throughput keys.
+
+    Examples:
+        ``anthropic:claude-sonnet-4-6`` resolves to ``claude-sonnet-4-6``.
+        ``anthropic/claude-sonnet-4-6`` resolves to ``claude-sonnet-4-6``.
+    """
+    if model in table:
+        return model
+    _, _, unqualified = model.partition(":")
+    if unqualified in table:
+        return unqualified
+    slash_unqualified = model.rsplit("/", 1)[-1]
+    if slash_unqualified in table:
+        return slash_unqualified
+    if model.startswith("local:") and "*" in table:
+        return "*"
+    return "default"
+
+
 # ---------------------------------------------------------------------------
 # Main predictor class
 # ---------------------------------------------------------------------------
@@ -192,9 +248,9 @@ class CostPredictor:
         logger.info("Estimated cost: $%s, confidence: %s", est.cost_usd, est.confidence)
     """
 
-    def __init__(self) -> None:
-        """Initialise the predictor with an empty record store."""
-        self._records: deque[_Record] = deque(maxlen=1000)
+    def __init__(self, records: deque[_Record] | None = None) -> None:
+        """Initialise the predictor with an instance-local calibration store."""
+        self._records: deque[_Record] = records if records is not None else deque(maxlen=1000)
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -206,7 +262,7 @@ class CostPredictor:
         task_type: str,
         complexity: float,
         scope_size: int,
-        model: str,
+        model: str = "default",
     ) -> CostEstimate:
         """Estimate cost for a task before it executes.
 
@@ -229,8 +285,10 @@ class CostPredictor:
             record_count = len(records_for_type)
 
         token_estimate = self._estimate_tokens(task_type, complexity, scope_size, records_for_type)
-        per_token = _PER_TOKEN_COST.get(model, _PER_TOKEN_COST["default"])
-        tps = _TOKENS_PER_SECOND.get(model, _TOKENS_PER_SECOND["default"])
+        cost_key = _resolve_model_key(model, _PER_TOKEN_COST)
+        tps_key = _resolve_model_key(model, _TOKENS_PER_SECOND)
+        per_token = _PER_TOKEN_COST[cost_key]
+        tps = _TOKENS_PER_SECOND[tps_key]
 
         cost_usd = token_estimate * per_token
         latency_seconds = token_estimate / tps
@@ -276,6 +334,13 @@ class CostPredictor:
                 execution.
             actual_cost: Actual cost in USD observed after execution.
         """
+        self._validate_actual_record(
+            actual_tokens=actual_tokens,
+            actual_latency=actual_latency,
+            actual_cost=actual_cost,
+            complexity=complexity,
+            scope_size=scope_size,
+        )
         record: _Record = {
             "task_type": task_type,
             "complexity": float(complexity),
@@ -316,6 +381,27 @@ class CostPredictor:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _validate_actual_record(
+        *,
+        actual_tokens: int,
+        actual_latency: float,
+        actual_cost: float,
+        complexity: float,
+        scope_size: int,
+    ) -> None:
+        """Reject malformed actual outcomes before they affect calibration."""
+        if actual_tokens <= 0:
+            raise ValueError("actual_tokens must be positive")
+        if actual_latency <= 0.0 or not math.isfinite(actual_latency):
+            raise ValueError("actual_latency must be a positive finite value")
+        if actual_cost < 0.0 or not math.isfinite(actual_cost):
+            raise ValueError("actual_cost must be a non-negative finite value")
+        if complexity <= 0.0 or not math.isfinite(complexity):
+            raise ValueError("complexity must be a positive finite value")
+        if scope_size <= 0:
+            raise ValueError("scope_size must be positive")
+
     def _estimate_tokens(
         self,
         task_type: str,
@@ -340,8 +426,8 @@ class CostPredictor:
             return self._ols_estimate(complexity, scope_size, records_for_type)
         return self._heuristic_estimate(task_type, complexity, scope_size)
 
+    @staticmethod
     def _heuristic_estimate(
-        self,
         task_type: str,
         complexity: float,
         scope_size: int,
@@ -362,8 +448,8 @@ class CostPredictor:
         tokens = base * _complexity_factor(complexity) * _scope_factor(scope_size)
         return max(1, round(tokens))
 
+    @staticmethod
     def _ols_estimate(
-        self,
         complexity: float,
         scope_size: int,
         records: list[_Record],

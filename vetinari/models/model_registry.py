@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2024-2026 Vetinari Contributors
+# SPDX-License-Identifier: Apache-2.0
 """Vetinari Unified Model Registry.
 
 ================================
@@ -35,8 +37,13 @@ from pathlib import Path
 from typing import Any
 
 from vetinari.models.model_profiler_data import build_model_artifact_identity, read_metadata
+from vetinari.security.fail_closed import PathTraversalError, confine_to_root
+from vetinari.security.redaction import redact_text
 
 logger = logging.getLogger(__name__)
+_MAX_LOCAL_MODEL_SCAN_FILES = 5000
+_MAX_LOCAL_MODEL_SCAN_DEPTH = 8
+
 
 # ---------------------------------------------------------------------------
 # Model capability inference helpers
@@ -105,7 +112,7 @@ def _infer_context_window(model_id: str) -> int:
 
 
 @dataclass
-class ModelRegistryEntry:  # noqa: VET114 — status fields (is_loaded, last_seen) are mutated by _do_refresh()
+class ModelRegistryEntry:
     """Runtime record for a single model."""
 
     model_id: str
@@ -137,7 +144,14 @@ class ModelRegistryEntry:  # noqa: VET114 — status fields (is_loaded, last_see
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize this ModelRegistryEntry to a plain dictionary."""
+        """Serialize this ModelRegistryEntry to a plain dictionary.
+
+        Returns:
+            JSON-ready registry metadata with compatibility aliases and
+            public-safe endpoint and artifact locations.
+        """
+        endpoint = _public_model_location(self.endpoint, provider=self.provider)
+        artifact_path = _public_model_location(self.artifact_path, provider=self.provider)
         return {
             "id": self.model_id,
             "model_id": self.model_id,
@@ -156,9 +170,10 @@ class ModelRegistryEntry:  # noqa: VET114 — status fields (is_loaded, last_see
             "preferred_for": self.preferred_for,
             "is_loaded": self.is_loaded,
             "last_seen": self.last_seen,
-            "endpoint": self.endpoint,
+            "endpoint": endpoint,
             "source": self.source,
-            "artifact_path": self.artifact_path,
+            "artifact_path": artifact_path,
+            "artifact_path_redacted": bool(self.artifact_path and artifact_path != self.artifact_path),
             "artifact_sha256": self.artifact_sha256,
             "artifact_size_bytes": self.artifact_size_bytes,
             "artifact_mtime_ns": self.artifact_mtime_ns,
@@ -167,8 +182,16 @@ class ModelRegistryEntry:  # noqa: VET114 — status fields (is_loaded, last_see
         }
 
 
-# Backward compatibility alias
 ModelInfo = ModelRegistryEntry
+
+
+def _public_model_location(value: str, *, provider: str) -> str:
+    """Return a public-safe model location for route/UI dictionaries."""
+    if not value:
+        return ""
+    if provider == "local":
+        return "[REDACTED_PATH]"
+    return redact_text(value)
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +213,7 @@ class ModelRegistry:
         self._last_refresh: float = 0.0
         self._refresh_lock = threading.Lock()
         self._models_dir = os.environ.get("VETINARI_MODELS_DIR", "")
-        self._config_path = Path(__file__).parent.parent / "config" / "models.yaml"  # noqa: VET306 — config read, not artifact write
+        self._config_path = Path(__file__).parent.parent / "config" / "models.yaml"
 
         # Load static config immediately (no network call)
         self._load_static_config()
@@ -290,53 +313,89 @@ class ModelRegistry:
             return
 
         discovered_ids: set[str] = set()
-        for gguf_path in models_dir.glob("**/*.gguf"):
-            # Use the stem (filename without .gguf) as the model ID
-            mid = gguf_path.stem
-            if not mid:
+        scanned = 0
+        root = models_dir.resolve()
+        for dirpath, dirnames, filenames in os.walk(root):
+            current = Path(dirpath)
+            try:
+                depth = len(current.relative_to(root).parts)
+            except ValueError:
+                logger.warning("[ModelRegistry] Skipping model scan path outside root: %s", current)
                 continue
-            artifact_identity = self._artifact_identity(gguf_path)
-            metadata_dict, actual_quantization = self._gguf_header_evidence(gguf_path)
-            discovered_ids.add(mid)
-            if mid in self._models:
-                existing = self._models[mid]
-                existing.is_loaded = True
-                existing.last_seen = time.time()
-                existing.endpoint = str(gguf_path)
-                existing.artifact_path = artifact_identity["artifact_path"]
-                existing.artifact_sha256 = artifact_identity["artifact_sha256"]
-                existing.artifact_size_bytes = artifact_identity["artifact_size_bytes"]
-                existing.artifact_mtime_ns = artifact_identity["artifact_mtime_ns"]
-                existing.gguf_metadata = metadata_dict
-                if actual_quantization:
-                    existing.quantization = actual_quantization
-                if existing.source == "discovered":
-                    existing.capabilities = _infer_capabilities(mid)
-                    existing.context_window = _infer_context_window(mid)
+            if depth >= _MAX_LOCAL_MODEL_SCAN_DEPTH:
+                dirnames[:] = []
             else:
-                from vetinari.utils import estimate_model_memory_gb
+                dirnames[:] = [name for name in dirnames if not name.startswith(".")]
+            for filename in filenames:
+                scanned += 1
+                if scanned > _MAX_LOCAL_MODEL_SCAN_FILES:
+                    logger.warning(
+                        "[ModelRegistry] Local model scan stopped after %d files under %s",
+                        _MAX_LOCAL_MODEL_SCAN_FILES,
+                        root,
+                    )
+                    break
+                gguf_path = current / filename
+                if gguf_path.suffix.lower() != ".gguf":
+                    continue
+                try:
+                    gguf_path = confine_to_root(root, gguf_path.relative_to(root))
+                except PathTraversalError as exc:
+                    logger.warning("[ModelRegistry] Skipping model path outside root: %s", exc)
+                    continue
+                # Use the stem (filename without .gguf) as the model ID
+                mid = gguf_path.stem
+                if not mid:
+                    continue
+                artifact_identity = self._artifact_identity(gguf_path)
+                if not artifact_identity.get("artifact_sha256"):
+                    logger.warning(
+                        "[ModelRegistry] Skipping unreadable GGUF artifact without provenance: %s", gguf_path
+                    )
+                    continue
+                metadata_dict, actual_quantization = self._gguf_header_evidence(gguf_path)
+                discovered_ids.add(mid)
+                if mid in self._models:
+                    existing = self._models[mid]
+                    existing.is_loaded = True
+                    existing.last_seen = time.time()
+                    existing.endpoint = str(gguf_path)
+                    existing.artifact_path = artifact_identity["artifact_path"]
+                    existing.artifact_sha256 = artifact_identity["artifact_sha256"]
+                    existing.artifact_size_bytes = artifact_identity["artifact_size_bytes"]
+                    existing.artifact_mtime_ns = artifact_identity["artifact_mtime_ns"]
+                    existing.gguf_metadata = metadata_dict
+                    if actual_quantization:
+                        existing.quantization = actual_quantization
+                    if existing.source == "discovered":
+                        existing.capabilities = _infer_capabilities(mid)
+                        existing.context_window = _infer_context_window(mid)
+                else:
+                    from vetinari.utils import estimate_model_memory_gb
 
-                self._models[mid] = ModelRegistryEntry(
-                    model_id=mid,
-                    display_name=mid,
-                    provider="local",
-                    capabilities=_infer_capabilities(mid),
-                    context_window=_infer_context_window(mid),
-                    memory_requirements_gb=estimate_model_memory_gb(mid),
-                    quantization=actual_quantization or self._infer_quantization(mid),
-                    latency_hint=self._infer_latency(mid),
-                    privacy_level="local",
-                    cost_per_1k_tokens=0.0,
-                    is_loaded=True,
-                    last_seen=time.time(),
-                    endpoint=str(gguf_path),
-                    source="discovered",
-                    artifact_path=artifact_identity["artifact_path"],
-                    artifact_sha256=artifact_identity["artifact_sha256"],
-                    artifact_size_bytes=artifact_identity["artifact_size_bytes"],
-                    artifact_mtime_ns=artifact_identity["artifact_mtime_ns"],
-                    gguf_metadata=metadata_dict,
-                )
+                    self._models[mid] = ModelRegistryEntry(
+                        model_id=mid,
+                        display_name=mid,
+                        provider="local",
+                        capabilities=_infer_capabilities(mid),
+                        context_window=_infer_context_window(mid),
+                        memory_requirements_gb=estimate_model_memory_gb(mid),
+                        quantization=actual_quantization or self._infer_quantization(mid),
+                        latency_hint=self._infer_latency(mid),
+                        privacy_level="local",
+                        cost_per_1k_tokens=0.0,
+                        is_loaded=True,
+                        last_seen=time.time(),
+                        endpoint=str(gguf_path),
+                        source="discovered",
+                        artifact_path=artifact_identity["artifact_path"],
+                        artifact_sha256=artifact_identity["artifact_sha256"],
+                        artifact_size_bytes=artifact_identity["artifact_size_bytes"],
+                        artifact_mtime_ns=artifact_identity["artifact_mtime_ns"],
+                        gguf_metadata=metadata_dict,
+                    )
+            if scanned > _MAX_LOCAL_MODEL_SCAN_FILES:
+                break
 
         logger.debug(
             "[ModelRegistry] Refreshed: %d discovered in %s, %d total in registry",
@@ -425,7 +484,7 @@ class ModelRegistry:
         provider: str | None = None,
         loaded_only: bool = False,
         capability: str | None = None,
-    ) -> list[ModelInfo]:
+    ) -> list[ModelRegistryEntry]:
         """Return models matching optional filters.
 
         Args:
@@ -448,18 +507,27 @@ class ModelRegistry:
             results.append(info)
         return results
 
-    def get_loaded_local_models(self) -> list[ModelInfo]:
+    def get_loaded_local_models(self) -> list[ModelRegistryEntry]:
         """Return all models currently present in the local models directory."""
         return self.get_available_models(provider="local", loaded_only=True)
 
-    def get_model_info(self, model_id: str) -> ModelInfo | None:
+    def get_model_info(self, model_id: str, *, refresh: bool = True) -> ModelRegistryEntry | None:
         """Return info for a specific model ID, refreshing if needed.
+
+        Args:
+            model_id: The model identifier to look up.
+            refresh: When True (default) trigger a registry refresh first so
+                newly-added local GGUFs are picked up. Set False for advisory
+                lookups on the hot path where the cost of a refresh (full
+                directory scan + SHA-256 of every GGUF) would dominate the
+                request.
 
         Returns:
             The ModelInfo for the given model_id, or None if the model is not
             registered (including after a fresh registry refresh).
         """
-        self.refresh()
+        if refresh:
+            self.refresh()
         return self._models.get(model_id)
 
     def get_all_as_dicts(self) -> list[dict[str, Any]]:
@@ -481,7 +549,7 @@ class ModelRegistry:
         """Compat shim for ponder.py which calls adapter.list_loaded_models()."""
         return self.get_loaded_as_dicts()
 
-    def register_model(self, info: ModelInfo) -> None:
+    def register_model(self, info: ModelRegistryEntry) -> None:
         """Manually register or override a model entry."""
         self._models[info.model_id] = info
 

@@ -23,8 +23,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from vetinari.types import NotificationPriority
+from vetinari.ux import display_label, display_label_or_humanize
 
 logger = logging.getLogger(__name__)
+
 
 # Semantic batching window in seconds
 _BATCH_WINDOW_SECONDS = 60.0
@@ -69,8 +71,9 @@ class Notification:
         )
 
 
-# Type for channel handler: receives a list of notifications to deliver
-ChannelHandler = Callable[[list[Notification]], None]
+# Type for channel handler: receives a list of notifications to deliver.
+# Returning False is an explicit negative acknowledgement.
+ChannelHandler = Callable[[list[Notification]], bool | None]
 
 
 class NotificationManager:
@@ -111,12 +114,13 @@ class NotificationManager:
             self._thread.start()
 
     def stop(self) -> None:
-        """Stop the daemon batch flush worker."""
+        """Stop the daemon batch flush worker and drain pending batches."""
         self._stop_event.set()
         with self._lifecycle_lock:
             if self._thread is not None:
                 self._thread.join(timeout=self._batch_flush_interval_s + 2)
                 self._thread = None
+        self.flush_batches()
 
     def close(self) -> None:
         """Alias for stop() for callers that use resource-style cleanup."""
@@ -150,6 +154,39 @@ class NotificationManager:
             self._channels.pop(name, None)
         logger.info("Unregistered notification channel: %s", name)
 
+    @staticmethod
+    def _deliver_to_channel(
+        channel_name: str,
+        handler: ChannelHandler,
+        notifications: list[Notification],
+    ) -> tuple[bool, dict[str, str] | None]:
+        """Deliver notifications to one channel and normalize failure state."""
+        try:
+            accepted = handler(notifications)
+        except Exception as exc:
+            logger.warning(
+                "Failed to deliver %d notification(s) to channel %s; recovery required before retry",
+                len(notifications),
+                channel_name,
+                exc_info=True,
+            )
+            return False, {
+                "channel": channel_name,
+                "reason": exc.__class__.__name__,
+                "recovery_action": "inspect channel runtime logs and retry delivery",
+            }
+        if accepted is False:
+            logger.warning(
+                "Notification channel %s returned negative acknowledgement; delivery not marked successful",
+                channel_name,
+            )
+            return False, {
+                "channel": channel_name,
+                "reason": "negative_ack",
+                "recovery_action": "check channel configuration and retry delivery",
+            }
+        return True, None
+
     def notify(
         self,
         title: str,
@@ -176,12 +213,13 @@ class NotificationManager:
             body=body,
             priority=priority,
             action_type=action_type,
-            metadata=metadata or {},  # noqa: VET112 — Optional per func param
+            metadata=metadata or {},
             created_at=datetime.now(timezone.utc).isoformat(),
         )
 
         target_channels = _PRIORITY_ROUTING.get(priority, ["dashboard"])
         delivered_to: list[str] = []
+        delivery_failures: list[dict[str, str]] = []
 
         with self._lock:
             for channel_name in target_channels:
@@ -194,23 +232,22 @@ class NotificationManager:
                     continue
 
                 handler = self._channels[channel_name]
-                try:
-                    handler([notification])
+                delivered, failure = self._deliver_to_channel(channel_name, handler, [notification])
+                if delivered:
                     delivered_to.append(channel_name)
-                except Exception:
-                    logger.warning(
-                        "Failed to deliver notification %s to channel %s — "
-                        "notification dropped (immediate delivery only, no retry queue)",
-                        notification.notification_id,
-                        channel_name,
-                    )
+                elif failure is not None:
+                    delivery_failures.append(failure)
 
             # Record delivery
             self._delivery_log.append({
                 "notification_id": notification.notification_id,
                 "priority": priority.value,
+                "priority_label": display_label(priority),
                 "action_type": action_type,
+                "action_label": display_label_or_humanize(action_type) if action_type else "",
                 "delivered_to": delivered_to,
+                "failed_channels": [failure["channel"] for failure in delivery_failures],
+                "delivery_failures": delivery_failures,
                 "created_at": notification.created_at,
             })
 
@@ -240,24 +277,27 @@ class NotificationManager:
                     continue
                 handler = self._channels.get(channel_name)
                 if handler is None:
-                    delivered_channels.append(channel_name)  # no handler registered — drop
+                    logger.warning(
+                        "No handler registered for batched notification channel %s; retaining buffer",
+                        channel_name,
+                    )
                     continue
 
                 # Semantic batching: group by action_type
                 batched = self._semantic_batch(notifications)
-                try:
-                    handler(batched)
+                delivered, _failure = self._deliver_to_channel(channel_name, handler, batched)
+                if delivered:
                     total_flushed += len(notifications)
                     delivered_channels.append(channel_name)
-                except Exception:
+                else:
                     logger.warning(
-                        "Failed to flush %d batched notifications to %s — retaining in buffer for next flush",
+                        "Failed to flush %d batched notifications to %s; retaining in buffer for next flush",
                         len(notifications),
                         channel_name,
                     )
                     # Do NOT add to delivered_channels — buffer retained for retry
 
-            # Only clear channels that succeeded (or were empty/unregistered).
+            # Only clear channels that succeeded or were empty.
             # Failed channels keep their buffered notifications for the next flush.
             for ch in delivered_channels:
                 self._batch_buffer.pop(ch, None)
@@ -267,7 +307,8 @@ class NotificationManager:
             logger.info("Flushed %d batched notifications", total_flushed)
         return total_flushed
 
-    def _semantic_batch(self, notifications: list[Notification]) -> list[Notification]:
+    @staticmethod
+    def _semantic_batch(notifications: list[Notification]) -> list[Notification]:
         """Group related notifications into summary notifications.
 
         Groups by action_type and replaces clusters of 3+ with a single
@@ -294,7 +335,7 @@ class NotificationManager:
                 # Create a summary notification
                 summary = Notification(
                     notification_id=f"ntf_{uuid.uuid4().hex[:12]}",
-                    title=f"{len(group)} {action_type} actions completed",
+                    title=f"{len(group)} {display_label_or_humanize(action_type)} actions completed",
                     body=f"Batched summary of {len(group)} notifications",
                     priority=group[0].priority,
                     action_type=action_type,
@@ -341,3 +382,12 @@ def get_notification_manager() -> NotificationManager:
             if _manager is None:
                 _manager = NotificationManager()
     return _manager
+
+
+def reset_notification_manager() -> None:
+    """Stop and clear the process-wide notification manager."""
+    global _manager
+    with _manager_lock:
+        if _manager is not None:
+            _manager.stop()
+            _manager = None

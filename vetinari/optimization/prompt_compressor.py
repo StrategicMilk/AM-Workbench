@@ -14,9 +14,10 @@ from __future__ import annotations
 import logging
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -26,7 +27,7 @@ _NGRAM_SIZE: int = 3  # character n-gram length for entropy computation
 _MIN_SEGMENT_LENGTH: int = 5  # segments shorter than this are always kept
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class TextSegment:
     """A single segment produced by splitting a prompt for compression.
 
@@ -72,7 +73,7 @@ class PerplexityCompressor:
 
     def __init__(self, preserve_patterns: list[str] | None = None) -> None:
         self._preserve_patterns: list[re.Pattern[str]] = []
-        for pat in preserve_patterns or []:  # noqa: VET112 - empty fallback preserves optional request metadata contract
+        for pat in preserve_patterns or []:
             try:
                 self._preserve_patterns.append(re.compile(pat))
             except re.error as exc:
@@ -104,9 +105,10 @@ class PerplexityCompressor:
             return text
 
         # Score non-structural segments
-        for seg in segments:
-            if not seg.is_structural:
-                seg.entropy_score = self._compute_entropy(seg.text)
+        segments = [
+            replace(seg, entropy_score=self._compute_entropy(seg.text)) if not seg.is_structural else seg
+            for seg in segments
+        ]
 
         # Sort removable segments by entropy ascending (lowest info first)
         removable = [s for s in segments if not s.is_structural and len(s.text.strip()) >= _MIN_SEGMENT_LENGTH]
@@ -133,7 +135,8 @@ class PerplexityCompressor:
         )
         return compressed
 
-    def _compute_entropy(self, text: str) -> float:
+    @staticmethod
+    def _compute_entropy(text: str) -> float:
         """Compute character n-gram Shannon entropy for *text*.
 
         Higher entropy indicates more varied/informative content.
@@ -200,8 +203,11 @@ class PerplexityCompressor:
             if _in_code_block(line_start):
                 # Merge into preceding code-block segment or start new one
                 if segments and segments[-1].is_structural and _in_code_block(segments[-1].start_pos):
-                    segments[-1].text += line
-                    segments[-1].end_pos = line_end
+                    segments[-1] = replace(
+                        segments[-1],
+                        text=f"{segments[-1].text}{line}",
+                        end_pos=line_end,
+                    )
                 else:
                     segments.append(
                         TextSegment(

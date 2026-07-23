@@ -11,6 +11,7 @@ import os.path
 
 from vetinari.agents.contracts import get_agent_spec
 from vetinari.exceptions import JurisdictionViolation
+from vetinari.privacy import privacy_receipt
 from vetinari.types import AgentType
 
 logger = logging.getLogger(__name__)
@@ -79,11 +80,12 @@ class FileJurisdictionEnforcer:
         """
         spec = get_agent_spec(agent_type)
         if spec is None:
-            logger.warning(
-                "No AgentSpec found for %s — skipping jurisdiction validation",
-                agent_type,
+            raise JurisdictionViolation(
+                f"Agent {agent_type.value!r} has no AgentSpec; jurisdiction is unknown.",
+                agent_type=agent_type.value,
+                file_path=file_path,
+                jurisdiction=(),
             )
-            return
 
         jurisdiction = spec.jurisdiction
         # An empty jurisdiction list means no restriction — allow everything.
@@ -116,4 +118,27 @@ class FileJurisdictionEnforcer:
             agent_type=agent_type.value,
             file_path=file_path,
             jurisdiction=jurisdiction,
+        )
+
+    def privacy_receipt_for_path(self, agent_type: AgentType, file_path: str) -> dict[str, object]:
+        """Validate access and return an operational privacy receipt.
+
+        Args:
+            agent_type: Agent whose jurisdiction is checked before emitting
+                the receipt.
+            file_path: File path being accessed or modified.
+
+        Returns:
+            Operational privacy receipt metadata for the jurisdiction decision.
+
+        Raises:
+            JurisdictionViolation: If the agent has no specification or the
+                path is outside the agent's jurisdiction.
+        """
+        self.validate(agent_type, file_path)
+        return privacy_receipt(
+            privacy_class="operational",
+            source=f"jurisdiction:{agent_type.value}",
+            retention_days=30,
+            redaction_applied=True,
         )

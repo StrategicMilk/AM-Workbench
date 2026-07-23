@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_query.schema.json",
+  "title": "Workbench Graph Query",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project_id", "nodes", "edges", "saved_views", "authority_ref", "generated_at_utc"],
+  "properties": {
+    "project_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "nodes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/GraphNode" }
+    },
+    "edges": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/GraphEdge" }
+    },
+    "saved_views": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/SavedGraphView" }
+    },
+    "authority_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at_utc": {
+      "type": "string",
+      "minLength": 1
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "ObjectKind": {
+      "type": "string",
+      "enum": [
+        "asset",
+        "run",
+        "trace",
+        "eval",
+        "dataset",
+        "annotation",
+        "diagnosis",
+        "proposal",
+        "lease",
+        "receipt",
+        "automation",
+        "promotion",
+        "monitor_signal"
+      ]
+    },
+    "GraphNode": {
+      "type": "object",
+      "required": ["node_id", "kind", "label", "revision", "status", "metadata", "provenance", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "node_id": { "type": "string", "minLength": 1 },
+        "kind": { "$ref": "#/$defs/ObjectKind" },
+        "label": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string" },
+        "status": { "type": "string" },
+        "metadata": { "type": "object" },
+        "provenance": { "$ref": "#/$defs/Provenance" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "GraphEdge": {
+      "type": "object",
+      "required": ["edge_id", "source_id", "target_id", "relation", "provenance", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "edge_id": { "type": "string", "minLength": 1 },
+        "source_id": { "type": "string", "minLength": 1 },
+        "target_id": { "type": "string", "minLength": 1 },
+        "relation": { "type": "string", "minLength": 1 },
+        "provenance": { "$ref": "#/$defs/Provenance" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "SavedGraphView": {
+      "type": "object",
+      "required": ["view_id", "name", "description", "required_kinds", "requires_authority", "minimum_confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "view_id": {
+          "type": "string",
+          "enum": [
+            "failure_shared_source_revision",
+            "stale_evidence_blocked_promotions",
+            "route_cost_without_quality_gain",
+            "automation_churn_without_adoption",
+            "full_cross_object_graph"
+          ]
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "required_kinds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/ObjectKind" }
+        },
+        "requires_authority": { "type": "boolean" },
+        "minimum_confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "Provenance": {
+      "type": "object",
+      "required": ["source"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": { "type": "string" }
+    }
+  }
+}

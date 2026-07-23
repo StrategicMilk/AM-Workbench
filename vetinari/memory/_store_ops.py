@@ -11,21 +11,17 @@ Not part of the public API — import only from ``vetinari.memory.unified``.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
-from .interfaces import MemoryEntry, MemoryType
-
-logger = logging.getLogger(__name__)
-
 # ---------------------------------------------------------------------------
 # Public re-exports from sub-modules (keeps existing callers working)
 # ---------------------------------------------------------------------------
-
-from ._store_episode import (  # noqa: E402 - late import is required after bootstrap setup
+from ._store_episode import (
     evict_old_episodes,
     get_episode_stats,
     get_failure_patterns,
@@ -34,7 +30,9 @@ from ._store_episode import (  # noqa: E402 - late import is required after boot
     record_episode_full,
     row_to_episode_dict,
 )
-from ._store_search import (  # noqa: E402 - late import is required after bootstrap setup
+from ._store_insert import insert_memory_entry_row
+from ._store_lifecycle import compact_memories, evict_low_importance_memories, get_memory_stats
+from ._store_search import (
     build_timeline,
     fts_search,
     is_semantic_duplicate,
@@ -42,6 +40,10 @@ from ._store_search import (  # noqa: E402 - late import is required after boots
     manual_cosine_search,
     vec_knn_search,
 )
+from .interfaces import MemoryEntry, MemoryType
+
+logger = logging.getLogger(__name__)
+
 
 __all__ = [
     "build_timeline",
@@ -161,9 +163,91 @@ def filter_entry_secrets(entry: Any) -> Any:
     return entry
 
 
+def _redact_pii_value(value: Any) -> Any:
+    """Return a JSON-like value with PII removed from every string."""
+    from vetinari.safety.guardrails import redact_pii_payload
+
+    return redact_pii_payload(value)
+
+
+def _redact_memory_entry(entry: Any) -> Any:
+    """Redact user content before it crosses the SQLite storage boundary."""
+    entry.content = _redact_pii_value(entry.content)
+    entry.summary = _redact_pii_value(entry.summary)
+    if entry.metadata is not None:
+        entry.metadata = _redact_pii_value(entry.metadata)
+    return entry
+
+
 # ---------------------------------------------------------------------------
 # Entry storage
 # ---------------------------------------------------------------------------
+
+
+def _ensure_hash_chain_columns(conn: sqlite3.Connection) -> None:
+    """Ensure the append-only memory integrity columns exist."""
+    cursor = conn.execute("PRAGMA table_info(memories)")
+    existing = {row[1] for row in cursor.fetchall()}
+    if "previous_content_hash" not in existing:
+        conn.execute("ALTER TABLE memories ADD COLUMN previous_content_hash TEXT NOT NULL DEFAULT ''")
+    if "chain_hash" not in existing:
+        conn.execute("ALTER TABLE memories ADD COLUMN chain_hash TEXT NOT NULL DEFAULT ''")
+
+
+def _latest_memory_chain_hash(conn: sqlite3.Connection) -> str:
+    """Return the newest chain hash, falling back to content_hash for old rows."""
+    row = conn.execute(
+        """
+        SELECT chain_hash, content_hash
+        FROM memories
+        WHERE forgotten = 0
+        ORDER BY rowid DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if not row:
+        return ""
+    return row["chain_hash"] or row["content_hash"] or ""
+
+
+def _memory_chain_hash(previous_hash: str, entry_id: str, content_digest: str) -> str:
+    """Bind one memory append to the previous append and current content."""
+    payload = f"{previous_hash}\n{entry_id}\n{content_digest}".encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _entry_type_value(entry_type: Any) -> str:
+    return entry_type.value if hasattr(entry_type, "value") else str(entry_type)
+
+
+def _existing_memory_id_for_hash(conn: sqlite3.Connection, c_hash: str, entry: Any) -> str | None:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id FROM memories
+        WHERE content_hash = ?
+          AND forgotten = 0
+          AND COALESCE(scope, 'global') = ?
+          AND (COALESCE(provenance, '') = ? OR COALESCE(provenance, '') = '' OR ? = '')
+          AND COALESCE(agent, '') = ?
+          AND entry_type = ?
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT 1
+        """,
+        (
+            c_hash,
+            getattr(entry, "scope", "global") or "global",
+            getattr(entry, "provenance", "") or "",
+            getattr(entry, "provenance", "") or "",
+            getattr(entry, "agent", "") or "",
+            _entry_type_value(getattr(entry, "entry_type", "")),
+        ),
+    )
+    existing = cursor.fetchone()
+    if existing:
+        logger.debug("Skipping duplicate memory within same scope/provenance/type boundary: %s", existing["id"])
+        return str(existing["id"])
+    return None
 
 
 def store_memory_entry(
@@ -191,49 +275,30 @@ def store_memory_entry(
     """
     from vetinari.exceptions import StorageError
 
+    try:
+        entry = _redact_memory_entry(entry)
+    except Exception as exc:
+        logger.exception("Memory PII redaction failed for %s — refusing to store raw content", entry.id)
+        raise StorageError("Memory store redaction failed; raw content was not stored") from exc
+
     from .interfaces import content_hash
 
-    now = datetime.now(timezone.utc).isoformat()
     c_hash = content_hash(entry.content)
 
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM memories WHERE content_hash = ? AND forgotten = 0", (c_hash,))
-    existing = cursor.fetchone()
+    _ensure_hash_chain_columns(conn)
+    existing = _existing_memory_id_for_hash(conn, c_hash, entry)
     if existing:
-        logger.debug("Skipping duplicate memory (hash match): %s", existing["id"])
-        return existing["id"]
+        return existing
+
+    previous_hash = _latest_memory_chain_hash(conn)
+    chain_hash = _memory_chain_hash(previous_hash, entry.id, c_hash)
 
     try:
-        cursor.execute(
-            """INSERT INTO memories
-               (id, agent, entry_type, content, summary, timestamp,
-                provenance, content_hash, forgotten, access_count,
-                quality_score, importance, created_at, updated_at, metadata_json,
-                scope, recall_count, supersedes_id, relationship_type, last_accessed)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.5, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                entry.id,
-                entry.agent,
-                entry.entry_type.value if isinstance(entry.entry_type, MemoryType) else str(entry.entry_type),
-                entry.content,
-                entry.summary,
-                entry.timestamp,
-                entry.provenance,
-                c_hash,
-                now,
-                now,
-                json.dumps(entry.metadata) if entry.metadata else None,
-                entry.scope,
-                entry.recall_count,
-                entry.supersedes_id,
-                entry.relationship_type,
-                entry.last_accessed,
-            ),
-        )
+        insert_memory_entry_row(conn, entry, c_hash, previous_hash, chain_hash)
         conn.commit()
         store_embedding_fn(entry.id, entry.content)
         logger.debug("Stored memory %s (agent=%s, type=%s)", entry.id, entry.agent, entry.entry_type)
-        return entry.id
+        return str(entry.id)
     except sqlite3.Error as exc:
         logger.error("Failed to store memory %s: %s", entry.id, exc)
         raise StorageError(f"Memory store write failed: {exc}") from exc
@@ -244,12 +309,20 @@ def store_memory_entry(
 # ---------------------------------------------------------------------------
 
 
-def export_memories(conn: sqlite3.Connection, path: str) -> bool:
-    """Export all non-forgotten memories to a JSON file.
+def export_memories(
+    conn: sqlite3.Connection,
+    path: str,
+    *,
+    subject_id: str | None = None,
+    allow_unscoped_export: bool = False,
+) -> bool:
+    """Export memories to a JSON file, failing closed for unscoped exports.
 
     Args:
         conn: Active SQLite connection.
         path: Output file path (UTF-8 encoded JSON).
+        subject_id: Required subject filter for normal exports.
+        allow_unscoped_export: Explicit administrative override.
 
     Returns:
         True on success, False when an error occurs.
@@ -257,10 +330,32 @@ def export_memories(conn: sqlite3.Connection, path: str) -> bool:
     from pathlib import Path
 
     try:
+        if not subject_id and not allow_unscoped_export:
+            raise ValueError("subject_id is required for memory export")
         rows = conn.execute("SELECT * FROM memories WHERE forgotten = 0 ORDER BY timestamp DESC").fetchall()
-        entries = [row_to_entry(row).to_dict() for row in rows]
+        raw_entries = [row_to_entry(row) for row in rows]
+        if subject_id:
+            from vetinari.privacy.erasure_registry import build_erasure_token, filter_subject_export
+
+            entries = filter_subject_export(raw_entries, subject_id=subject_id)
+            export_scope = {
+                "subject_id": subject_id,
+                "erasure_token": build_erasure_token(source="memory.export", subject_id=subject_id),
+                "redaction_applied": True,
+            }
+        else:
+            entries = [entry.to_dict() for entry in raw_entries]
+            export_scope = {"administrative_unscoped_export": True, "redaction_applied": False}
         with Path(path).open("w", encoding="utf-8") as f:
-            json.dump({"exported_at": datetime.now(timezone.utc).isoformat(), "entries": entries}, f, indent=2)
+            json.dump(
+                {
+                    "exported_at": datetime.now(timezone.utc).isoformat(),
+                    "privacy_export": export_scope,
+                    "entries": entries,
+                },
+                f,
+                indent=2,
+            )
         return True
     except Exception as exc:
         logger.error("Export failed: %s", exc)
@@ -283,9 +378,38 @@ def forget_memory(conn: sqlite3.Connection, entry_id: str, reason: str) -> bool:
     Returns:
         True if the entry was found and marked.
     """
+    forgotten_marker = "[forgotten]"
+    _ensure_hash_chain_columns(conn)
+    row = conn.execute(
+        "SELECT content_hash, chain_hash FROM memories WHERE id = ? AND forgotten = 0",
+        (entry_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    forgotten_digest = f"forgotten:{entry_id}"
+    previous_hash = row["chain_hash"] or row["content_hash"] or ""
+    chain_hash = _memory_chain_hash(previous_hash, entry_id, forgotten_digest)
     cursor = conn.execute(
-        "UPDATE memories SET forgotten = 1, updated_at = ? WHERE id = ?",
-        (datetime.now(timezone.utc).isoformat(), entry_id),
+        """
+        UPDATE memories
+        SET forgotten = 1,
+            content = ?,
+            summary = '',
+            metadata_json = NULL,
+            content_hash = ?,
+            previous_content_hash = ?,
+            chain_hash = ?,
+            updated_at = ?
+        WHERE id = ? AND forgotten = 0
+        """,
+        (
+            forgotten_marker,
+            forgotten_digest,
+            previous_hash,
+            chain_hash,
+            datetime.now(timezone.utc).isoformat(),
+            entry_id,
+        ),
     )
     conn.commit()
     if cursor.rowcount > 0:
@@ -304,12 +428,52 @@ def update_memory_content(conn: sqlite3.Connection, entry_id: str, new_content: 
 
     Returns:
         True if the entry was found and updated.
+
+    Raises:
+        vetinari.exceptions.StorageError: If redaction fails before the
+            replacement content can be persisted.
     """
+    from vetinari.exceptions import StorageError
+
     from .interfaces import content_hash
 
+    try:
+        redacted_content = _redact_pii_value(new_content)
+        from vetinari.security import get_secret_scanner
+
+        redacted_content = get_secret_scanner().sanitize(redacted_content)
+    except Exception as exc:
+        logger.exception("Memory update PII redaction failed for %s — refusing to store raw content", entry_id)
+        raise StorageError("Memory update redaction failed; raw content was not stored") from exc
+
+    _ensure_hash_chain_columns(conn)
+    row = conn.execute(
+        "SELECT content_hash, chain_hash FROM memories WHERE id = ? AND forgotten = 0",
+        (entry_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    new_content_hash = content_hash(redacted_content)
+    previous_hash = row["chain_hash"] or row["content_hash"] or ""
+    chain_hash = _memory_chain_hash(previous_hash, entry_id, new_content_hash)
     cursor = conn.execute(
-        "UPDATE memories SET content = ?, content_hash = ?, updated_at = ? WHERE id = ?",
-        (new_content, content_hash(new_content), datetime.now(timezone.utc).isoformat(), entry_id),
+        """
+        UPDATE memories
+        SET content = ?,
+            content_hash = ?,
+            previous_content_hash = ?,
+            chain_hash = ?,
+            updated_at = ?
+        WHERE id = ? AND forgotten = 0
+        """,
+        (
+            redacted_content,
+            new_content_hash,
+            previous_hash,
+            chain_hash,
+            datetime.now(timezone.utc).isoformat(),
+            entry_id,
+        ),
     )
     if cursor.rowcount > 0:
         conn.execute("DELETE FROM embeddings WHERE memory_id = ?", (entry_id,))
@@ -325,120 +489,6 @@ def update_memory_content(conn: sqlite3.Connection, entry_id: str, new_content: 
 # ---------------------------------------------------------------------------
 # Compaction and capacity management
 # ---------------------------------------------------------------------------
-
-
-def compact_memories(conn: sqlite3.Connection, max_age_days: int | None) -> int:
-    """Remove forgotten entries and optionally prune old data.
-
-    Args:
-        conn: Active SQLite connection.
-        max_age_days: Remove non-frequently-accessed entries older than this.
-
-    Returns:
-        Number of entries removed.
-    """
-    import time as _time
-
-    deleted = 0
-    conn.execute("DELETE FROM memories WHERE forgotten = 1")
-    deleted += conn.execute("SELECT changes()").fetchone()[0]
-
-    if max_age_days is not None:
-        cutoff = int((_time.time() - max_age_days * 86400) * 1000)
-        conn.execute(
-            "DELETE FROM memories WHERE timestamp < ? AND access_count < 3",
-            (cutoff,),
-        )
-        deleted += conn.execute("SELECT changes()").fetchone()[0]
-
-    conn.commit()
-    logger.info("Compacted memory store: removed %d entries", deleted)
-    return deleted
-
-
-def evict_low_importance_memories(conn: sqlite3.Connection, max_entries: int) -> None:
-    """Evict the least-important long-term memory entries when over capacity.
-
-    Importance is computed as quality_score * (access_count + 1) * recency_decay.
-    Removes entries until the count is ``max_entries`` minus a 5% buffer.
-
-    Args:
-        conn: Active SQLite connection.
-        max_entries: Maximum allowed memory count.
-    """
-    total = conn.execute("SELECT COUNT(*) as cnt FROM memories WHERE forgotten = 0").fetchone()["cnt"]
-    if total <= max_entries:
-        return
-    evict_count = total - max_entries + (max_entries // 20)  # 5% buffer
-    # Ebbinghaus-based eviction: rank by retention strength (ADR-0071).
-    # Uses SQL approximation of the Ebbinghaus formula for in-DB sorting.
-    # importance * exp(-0.16 * (1 - importance*0.8) * days) * (1 + recall_count*0.2)
-    try:
-        conn.execute(
-            """DELETE FROM memories WHERE id IN (
-                 SELECT id FROM memories
-                 WHERE forgotten = 0
-                 ORDER BY (
-                     importance *
-                     EXP(-0.16 * (1.0 - importance * 0.8) *
-                         MAX(0, (julianday('now') - julianday(created_at)))) *
-                     (1.0 + COALESCE(recall_count, 0) * 0.2)
-                 ) ASC LIMIT ?
-               )""",
-            (evict_count,),
-        )
-        conn.commit()
-        logger.info("Evicted low-importance memories (count=%d)", evict_count)
-    except sqlite3.Error as exc:
-        logger.warning("Memory eviction failed: %s", exc)
-
-
-# ---------------------------------------------------------------------------
-# Stats and single-entry fetch
-# ---------------------------------------------------------------------------
-
-
-def get_memory_stats(conn: sqlite3.Connection, db_path_fn: Any) -> dict[str, Any]:
-    """Compute aggregate statistics from the memories table.
-
-    Args:
-        conn: Active SQLite connection.
-        db_path_fn: Callable that returns the database Path (for file size).
-
-    Returns:
-        Dictionary with total_entries, file_size_bytes, oldest/newest timestamps,
-        and per-agent/per-type counts.
-    """
-    total = conn.execute("SELECT COUNT(*) as total FROM memories WHERE forgotten = 0").fetchone()["total"]
-    row = conn.execute(
-        "SELECT MIN(timestamp) as oldest, MAX(timestamp) as newest FROM memories WHERE forgotten = 0"
-    ).fetchone()
-    oldest = row["oldest"] or 0
-    newest = row["newest"] or 0
-    by_agent = {
-        r["agent"]: r["cnt"]
-        for r in conn.execute(
-            "SELECT agent, COUNT(*) as cnt FROM memories WHERE forgotten = 0 GROUP BY agent"
-        ).fetchall()
-    }
-    by_type = {
-        r["entry_type"]: r["cnt"]
-        for r in conn.execute(
-            "SELECT entry_type, COUNT(*) as cnt FROM memories WHERE forgotten = 0 GROUP BY entry_type"
-        ).fetchall()
-    }
-    try:
-        file_size = db_path_fn().stat().st_size
-    except OSError:
-        file_size = 0
-    return {
-        "total_entries": total,
-        "file_size_bytes": file_size,
-        "oldest_entry": oldest,
-        "newest_entry": newest,
-        "entries_by_agent": by_agent,
-        "entries_by_type": by_type,
-    }
 
 
 def get_fact_chain(conn: sqlite3.Connection, entry_id: str) -> list[MemoryEntry]:

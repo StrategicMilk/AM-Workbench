@@ -7,6 +7,13 @@ All vector math should import from here.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
+
+
+def _validate_finite_values(values: Sequence[float], *, field_name: str) -> None:
+    for index, value in enumerate(values):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"{field_name}[{index}] must be a finite number")
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -21,6 +28,10 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     Returns:
         Cosine similarity in [-1, 1], or 0.0 for degenerate inputs.
     """
+    _validate_finite_values(a, field_name="a")
+    _validate_finite_values(b, field_name="b")
+    _validate_finite_values(a, field_name="a")
+    _validate_finite_values(b, field_name="b")
     if len(a) != len(b) or not a:
         return 0.0
     dot = sum(x * y for x, y in zip(a, b))
@@ -61,7 +72,13 @@ def stddev(
 
     Returns:
         Standard deviation, or 0.0 for empty/single-element lists.
+
+    Raises:
+        ValueError: If ``values`` or ``mean`` contains a non-finite number.
     """
+    _validate_finite_values(values, field_name="values")
+    if mean is not None and (isinstance(mean, bool) or not isinstance(mean, (int, float)) or not math.isfinite(mean)):
+        raise ValueError("mean must be a finite number")
     if len(values) < 2:
         return 0.0
     mu = mean if mean is not None else sum(values) / len(values)
@@ -83,6 +100,8 @@ def percentile(values: list[float], p: float) -> float:
     Raises:
         ValueError: If values is empty or p is out of range.
     """
+    _validate_finite_values(values, field_name="values")
+    _validate_finite_values(values, field_name="values")
     if not values:
         msg = "Cannot compute percentile of empty list"
         raise ValueError(msg)

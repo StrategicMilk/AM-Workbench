@@ -25,6 +25,7 @@ from vetinari.database import get_connection
 
 logger = logging.getLogger(__name__)
 
+
 _DEFECT_SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS defect_occurrences (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

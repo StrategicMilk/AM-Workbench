@@ -1,0 +1,75 @@
+[package]
+name = "amw-engine"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+build = "build.rs"
+
+[features]
+default = []
+cpu = []
+cuda = []
+nvml = ["dep:nvml-wrapper"]
+# Non-default, debug-only fault/event controls used by authenticated real-process
+# contract tests. Release and ordinary developer builds do not compile them.
+contract-test-controls = []
+
+[dependencies]
+axum = { version = "0.8", features = ["json", "macros", "tokio"] }
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
+hex = "0.4"
+http-body-util = "0.1"
+num_cpus = "1"
+nvml-wrapper = { version = "0.12", optional = true }
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sysinfo = "0.37"
+thiserror = "1"
+tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+zeroize = "1"
+
+[target.'cfg(windows)'.dependencies]
+# Session persistence must set and verify a protected owner+SYSTEM DACL and
+# reject reparse points without shelling out to an ambient system utility.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cryptoki = "=0.12.0"
+
+[dev-dependencies]
+cryptoki = "=0.12.0"
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+
+[build-dependencies]
+bindgen = "0.72"
+cc = "1"
+cmake = "0.1"
+
+[package.metadata.am_engine]
+libllama_rev = "86a9c79f866799eb0e7e89c03578ccfbcc5d808e"
+
+[[bin]]
+name = "amw-engine-server"
+path = "src/bin/amw-engine-server.rs"

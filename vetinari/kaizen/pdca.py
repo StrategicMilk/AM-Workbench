@@ -17,11 +17,12 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from vetinari.kaizen.pdca_cycle import PDCACycleMixin
 
 if TYPE_CHECKING:
     from vetinari.kaizen.knowledge_lint import KnowledgeLintReport
@@ -29,17 +30,25 @@ if TYPE_CHECKING:
 from vetinari.constants import get_user_dir
 from vetinari.exceptions import ExecutionError
 from vetinari.kaizen.defect_trends import (
-    DefectHotspot,
     DefectTrendAnalyzer,
-    build_hypothesis,
-    is_valid_category,
 )
 from vetinari.kaizen.improvement_log import (
     ImprovementLog,
     ImprovementRecord,
     ImprovementStatus,
 )
-from vetinari.validation import DefectCategory
+from vetinari.kaizen.pdca_applicators import (
+    CatalogFreshnessApplicator,
+    CatalogUpdateProposal,
+    ImprovementApplicator,
+    KaizenApplyReceipt,
+    ThresholdApplicator,
+    ThresholdOverride,
+    _safe_receipt_changes,
+)
+from vetinari.learning.atomic_writers import write_json_atomic
+from vetinari.privacy.envelope import PRIVACY_ENVELOPE_KEY, wrap_for_persistence
+from vetinari.security.redaction import redact_text, redact_value
 
 logger = logging.getLogger(__name__)
 
@@ -49,149 +58,10 @@ def _get_default_overrides_path() -> Path:
     return get_user_dir() / "kaizen_overrides.json"
 
 
-ImprovementApplicator = Callable[[ImprovementRecord], dict[str, Any]]  # applies an improvement, returns changes
-
-# ── Built-in: Threshold applicator ───────────────────────────────────────────
-
-
-@dataclass
-class ThresholdOverride:
-    """A runtime threshold override applied by the PDCA loop."""
-
-    metric: str
-    previous_value: float
-    new_value: float
-    improvement_id: str
-    applied_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    confirmed: bool = False
-
-    def __repr__(self) -> str:
-        """Compact representation showing metric, value change, and confirmation state."""
-        return (
-            f"ThresholdOverride(metric={self.metric!r}, "
-            f"{self.previous_value}->{self.new_value}, "
-            f"id={self.improvement_id!r}, confirmed={self.confirmed})"
-        )
-
-
-class ThresholdApplicator:
-    """Applies improvements by adjusting runtime threshold values.
-
-    Manages a registry of named thresholds (e.g. ``quality``, ``latency``,
-    ``throughput``) with current values.  When an improvement targeting one
-    of these metrics is activated, the threshold is adjusted toward the
-    target value.
-
-    Args:
-        initial_thresholds: Starting threshold values keyed by metric name.
-    """
-
-    def __init__(self, initial_thresholds: dict[str, float] | None = None) -> None:
-        self._thresholds: dict[str, float] = dict(initial_thresholds or {})  # noqa: VET112 - empty fallback preserves optional request metadata contract
-        self._overrides: list[ThresholdOverride] = []
-        self._lock = threading.Lock()
-
-    @property
-    def thresholds(self) -> dict[str, float]:
-        """Current threshold values (read-only copy)."""
-        with self._lock:
-            return dict(self._thresholds)
-
-    @property
-    def overrides(self) -> list[ThresholdOverride]:
-        """History of all threshold overrides applied."""
-        return list(self._overrides)
-
-    def get_threshold(self, metric: str) -> float | None:
-        """Get the current value for a named threshold.
-
-        Args:
-            metric: The threshold metric name.
-
-        Returns:
-            Current value, or None if the metric is not registered.
-        """
-        with self._lock:
-            return self._thresholds.get(metric)
-
-    def __call__(self, record: ImprovementRecord) -> dict[str, Any]:
-        """Apply a threshold adjustment based on the improvement's target.
-
-        Moves the threshold for ``record.metric`` to ``record.target_value``.
-        If the metric is not registered, the override is still recorded
-        (the metric is created).
-
-        Args:
-            record: The improvement being activated.
-
-        Returns:
-            Dict describing the change: metric, previous, new, improvement_id.
-        """
-        with self._lock:
-            previous = self._thresholds.get(record.metric, record.baseline_value)
-            self._thresholds[record.metric] = record.target_value
-
-            override = ThresholdOverride(
-                metric=record.metric,
-                previous_value=previous,
-                new_value=record.target_value,
-                improvement_id=record.id,
-            )
-            self._overrides.append(override)
-
-        logger.info(
-            "Threshold applied: metric=%s, %s -> %s (improvement=%s)",
-            record.metric,
-            previous,
-            record.target_value,
-            record.id,
-        )
-        return {
-            "metric": record.metric,
-            "previous": previous,
-            "new": record.target_value,
-            "improvement_id": record.id,
-        }
-
-    def confirm_override(self, improvement_id: str) -> None:
-        """Mark an override as confirmed (permanently applied).
-
-        Args:
-            improvement_id: The improvement whose override to confirm.
-        """
-        with self._lock:
-            for override in self._overrides:
-                if override.improvement_id == improvement_id:
-                    override.confirmed = True
-
-    def revert_override(self, improvement_id: str) -> float | None:
-        """Revert a threshold to its pre-override value.
-
-        Args:
-            improvement_id: The improvement whose override to revert.
-
-        Returns:
-            The reverted-to value, or None if no override was found.
-        """
-        with self._lock:
-            for override in reversed(self._overrides):
-                if override.improvement_id == improvement_id and not override.confirmed:
-                    self._thresholds[override.metric] = override.previous_value
-                    logger.info(
-                        "Threshold reverted: metric=%s, %s -> %s (improvement=%s)",
-                        override.metric,
-                        override.new_value,
-                        override.previous_value,
-                        improvement_id,
-                    )
-                    return override.previous_value
-        return None
-
-
 # ── PDCA Controller ──────────────────────────────────────────────────────────
 
 
-class PDCAController:
+class PDCAController(PDCACycleMixin):
     """Orchestrates the full PDCA feedback loop for kaizen improvements.
 
     Bridges the gap between ImprovementLog (data store) and real system
@@ -208,11 +78,16 @@ class PDCAController:
         self,
         improvement_log: ImprovementLog,
         overrides_path: Path | str | None = None,
+        receipt_path: Path | str | None = None,
     ) -> None:
         self._log = improvement_log
         self._overrides_path = Path(overrides_path) if overrides_path else _get_default_overrides_path()
+        self._receipt_path = (
+            Path(receipt_path) if receipt_path else self._overrides_path.with_name("kaizen_apply_receipts.jsonl")
+        )
         self._applicators: dict[str, ImprovementApplicator] = {}
         self._applied: dict[str, dict[str, Any]] = {}
+        self._receipt_lock = threading.Lock()
         self._trend_analyzer = DefectTrendAnalyzer()
 
     def register_applicator(self, metric: str, applicator: ImprovementApplicator) -> None:
@@ -227,7 +102,12 @@ class PDCAController:
 
     # ── Do phase: activate and apply ─────────────────────────────────────
 
-    def activate_and_apply(self, improvement_id: str) -> dict[str, Any]:
+    def activate_and_apply(
+        self,
+        improvement_id: str,
+        *,
+        require_registered_applicator: bool = False,
+    ) -> dict[str, Any]:
         """Activate an improvement and apply it to the running system.
 
         Calls ``ImprovementLog.activate()`` to transition the status, then
@@ -237,6 +117,9 @@ class PDCAController:
 
         Args:
             improvement_id: The improvement to activate.
+            require_registered_applicator: Raise when the improvement's
+                metric has no registered applicator instead of recording a
+                no-op activation.
 
         Returns:
             Dict describing what was applied (empty if no applicator matched).
@@ -247,6 +130,15 @@ class PDCAController:
         """
         # Transition status in the log — ImprovementLog.activate() emits
         # KaizenImprovementActive internally, so we must NOT emit again here.
+        pre_activation_record = self._log.get_improvement(improvement_id)
+        if pre_activation_record is None:
+            raise ExecutionError(f"Improvement not found: {improvement_id}")
+        if require_registered_applicator and pre_activation_record.metric not in self._applicators:
+            raise ExecutionError(
+                f"No registered applicator for metric={pre_activation_record.metric!r}; "
+                f"refusing to activate improvement {improvement_id}"
+            )
+
         self._log.activate(improvement_id)
 
         record = self._log.get_improvement(improvement_id)
@@ -276,14 +168,31 @@ class PDCAController:
                 exc_info=True,
             )
             self._log.revert_to_proposed(improvement_id)
+            self._write_apply_receipt(
+                KaizenApplyReceipt(
+                    improvement_id=improvement_id,
+                    metric=record.metric,
+                    status="apply_failed_reverted_to_proposed",
+                    evidence="applicator raised; improvement status reverted before retry",
+                )
+            )
             raise
 
         self._applied[improvement_id] = changes
+        self._write_apply_receipt(
+            KaizenApplyReceipt(
+                improvement_id=improvement_id,
+                metric=record.metric,
+                status="applied",
+                evidence="registered applicator completed",
+                changes=_safe_receipt_changes(dict(changes)),
+            )
+        )
         logger.info(
             "Improvement applied: id=%s, metric=%s, changes=%s",
             improvement_id,
             record.metric,
-            changes,
+            _safe_receipt_changes(dict(changes)),
         )
         return changes
 
@@ -353,18 +262,21 @@ class PDCAController:
 
         overrides.append({
             "improvement_id": improvement_id,
-            "metric": record.metric,
-            "hypothesis": record.hypothesis,
+            "metric": redact_text(record.metric),
+            "hypothesis": redact_text(record.hypothesis),
             "baseline_value": record.baseline_value,
             "target_value": record.target_value,
             "actual_value": record.actual_value,
             "confirmed_at": datetime.now(timezone.utc).isoformat(),
-            "changes": changes,
+            "changes": redact_value(changes),
+            PRIVACY_ENVELOPE_KEY: wrap_for_persistence(
+                {"improvement_id": improvement_id, "metric": record.metric},
+                privacy_class="operational",
+                source="kaizen.pdca.override",
+                redaction_applied=True,
+            )[PRIVACY_ENVELOPE_KEY],
         })
-        self._overrides_path.write_text(
-            json.dumps(overrides, indent=2),
-            encoding="utf-8",
-        )
+        write_json_atomic(self._overrides_path, overrides)
 
     def load_persisted_overrides(self) -> list[dict[str, Any]]:
         """Load previously persisted overrides from the JSON file.
@@ -383,89 +295,97 @@ class PDCAController:
 
     # ── Plan phase: trend analysis → auto-propose ────────────────────────
 
-    def check_trends_and_propose(
-        self,
-        weekly_counts: list[dict[str, int]] | None = None,
-        hotspot_data: list[dict[str, Any]] | None = None,
-    ) -> list[str]:
-        """Analyze defect trends and auto-propose improvements for worsening metrics.
+    # ── Knowledge lint ───────────────────────────────────────────────────
 
-        When no ``weekly_counts`` are provided, fetches them from the
-        ImprovementLog's defect tracking tables.  Concerning trends
-        (>15% week-over-week increase) generate automatic improvement
-        proposals.
+    def _write_apply_receipt(self, receipt: KaizenApplyReceipt) -> None:
+        self._receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(asdict(receipt), separators=(",", ":"), sort_keys=True) + "\n"
+        with self._receipt_lock, self._receipt_path.open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(line)
+            fh.flush()
 
-        Args:
-            weekly_counts: Optional pre-computed weekly defect counts.
-                Each dict maps category string to count.
-            hotspot_data: Optional pre-computed hotspot data from
-                ``ImprovementLog.get_defect_hotspots()``.
+    def load_apply_receipts(self) -> list[dict[str, Any]]:
+        """Load durable apply/revert receipts recorded by this controller.
 
         Returns:
-            List of improvement IDs that were proposed.
+            List of receipt dictionaries in write order.
+
+        Raises:
+            FileNotFoundError: If the durable receipt log has not been created.
         """
-        if weekly_counts is None:
-            weekly_counts = self._log.get_weekly_defect_counts(weeks=4)
+        if not self._receipt_path.exists():
+            raise FileNotFoundError(f"Kaizen apply receipt log is missing: {self._receipt_path}")
+        return [
+            json.loads(line) for line in self._receipt_path.read_text(encoding="utf-8").splitlines() if line.strip()
+        ]
 
-        if not weekly_counts or len(weekly_counts) < 2:
-            logger.info("Insufficient defect data for trend analysis (need >= 2 weeks)")
-            return []
+    def run_check_phase(self) -> list[str]:
+        """Evaluate active improvements and record rollback evidence for failures.
 
-        typed_counts: list[dict[DefectCategory, int]] = []
-        for week in weekly_counts:
-            typed_week: dict[DefectCategory, int] = {}
-            for cat_str, count in week.items():
-                try:
-                    typed_week[DefectCategory(cat_str)] = count
-                except ValueError:
-                    logger.warning("Skipping unknown defect category: %s", cat_str)
-            typed_counts.append(typed_week)
-
-        hotspots: list[DefectHotspot] | None = None
-        if hotspot_data:
-            hotspots = [
-                DefectHotspot(
-                    agent_type=h["agent_type"],
-                    mode=h["mode"],
-                    defect_category=DefectCategory(h["category"]),
-                    defect_count=h["count"],
-                    defect_rate=h.get("defect_rate", 0.0),
-                )
-                for h in hotspot_data
-                if is_valid_category(h.get("category", ""))
-            ]
-
-        report = self._trend_analyzer.analyze_trends(typed_counts, hotspots)
-
-        proposed_ids: list[str] = []
-        for trend in report.trends.values():
-            if not trend.is_concerning:
+        Returns:
+            Improvement IDs confirmed and persisted during this check.
+        """
+        active = self._log.get_active_improvements()
+        confirmed_ids: list[str] = []
+        now_utc = datetime.now(timezone.utc)
+        for improvement in active:
+            observations = self._log.get_observations(improvement.id)
+            if not observations:
+                if improvement.applied_at is not None:
+                    window_expires = improvement.applied_at + improvement.observation_window
+                    if now_utc > window_expires:
+                        logger.warning(
+                            "Improvement %s stuck in ACTIVE: observation window expired "
+                            "with no observations - reverting to PROPOSED for retry",
+                            improvement.id,
+                        )
+                        try:
+                            self._log.revert_to_proposed(improvement.id)
+                            self._write_apply_receipt(
+                                KaizenApplyReceipt(
+                                    improvement_id=improvement.id,
+                                    metric=improvement.metric,
+                                    status="observation_window_expired_reverted_to_proposed",
+                                    evidence="no observations before observation window expired",
+                                )
+                            )
+                        except Exception:
+                            logger.error(
+                                "Failed to revert stuck improvement %s to PROPOSED",
+                                improvement.id,
+                                exc_info=True,
+                            )
                 continue
+            result = self._log.evaluate(improvement.id)
+            if result == ImprovementStatus.CONFIRMED:
+                self.confirm_and_persist(improvement.id)
+                confirmed_ids.append(improvement.id)
+            elif result == ImprovementStatus.FAILED:
+                applicator = self._applicators.get(improvement.metric)
+                rollback_evidence = "no registered rollback handler"
+                receipt_status = "failed_no_rollback_handler"
+                if isinstance(applicator, ThresholdApplicator):
+                    reverted_to = applicator.revert_override(improvement.id)
+                    rollback_evidence = f"threshold reverted to {reverted_to!r}"
+                    receipt_status = "failed_reverted"
+                self._write_apply_receipt(
+                    KaizenApplyReceipt(
+                        improvement_id=improvement.id,
+                        metric=improvement.metric,
+                        status=receipt_status,
+                        evidence=rollback_evidence,
+                        changes=_safe_receipt_changes(dict(self._applied.get(improvement.id, {}))),
+                    )
+                )
+                logger.info(
+                    "Improvement %s failed evaluation - changes reverted",
+                    improvement.id,
+                )
 
-            hypothesis = build_hypothesis(trend.category, trend.change_pct)
-            imp_id = self._log.propose(
-                hypothesis=hypothesis,
-                metric="defect_count",
-                baseline=float(trend.current_count),
-                target=float(max(trend.previous_count - 1, 0)),
-                applied_by="pdca_trend_monitor",
-                rollback_plan="Revert to previous configuration for this defect category",
-            )
-            proposed_ids.append(imp_id)
-            logger.info(
-                "Auto-proposed improvement %s for worsening %s trend (+%.0f%%)",
-                imp_id,
-                trend.category.value,
-                trend.change_pct * 100,
-            )
+        from vetinari.kaizen.knowledge_compactor import run_compaction_step
 
-        logger.info(
-            "Trend analysis complete: %d improvement(s) proposed",
-            len(proposed_ids),
-        )
-        return proposed_ids
-
-    # ── Knowledge lint ───────────────────────────────────────────────────
+        run_compaction_step()
+        return confirmed_ids
 
     def knowledge_lint(self) -> KnowledgeLintReport:
         """Run knowledge lint checks on all memory entries.
@@ -505,58 +425,14 @@ class PDCAController:
 
     # ── Full PDCA cycle convenience ──────────────────────────────────────
 
-    def run_check_phase(self) -> list[str]:
-        """Run the Check phase: evaluate active improvements and handle results.
 
-        Evaluates all active improvements.  Confirmed ones are persisted;
-        failed ones are logged.  This is the automated Check-Act bridge.
-
-        Returns:
-            List of improvement IDs that were confirmed and persisted.
-        """
-        active = self._log.get_active_improvements()
-        confirmed_ids: list[str] = []
-
-        now_utc = datetime.now(timezone.utc)
-        for improvement in active:
-            observations = self._log.get_observations(improvement.id)
-            if not observations:
-                # Skip improvements that are still within their observation window.
-                # If the window has expired with no observations, revert to PROPOSED
-                # so the improvement does not remain stuck in ACTIVE indefinitely.
-                if improvement.applied_at is not None:
-                    window_expires = improvement.applied_at + improvement.observation_window
-                    if now_utc > window_expires:
-                        logger.warning(
-                            "Improvement %s stuck in ACTIVE: observation window expired "
-                            "with no observations — reverting to PROPOSED for retry",
-                            improvement.id,
-                        )
-                        try:
-                            self._log.revert_to_proposed(improvement.id)
-                        except Exception:
-                            logger.error(
-                                "Failed to revert stuck improvement %s to PROPOSED",
-                                improvement.id,
-                                exc_info=True,
-                            )
-                continue
-            result = self._log.evaluate(improvement.id)
-            if result == ImprovementStatus.CONFIRMED:
-                self.confirm_and_persist(improvement.id)
-                confirmed_ids.append(improvement.id)
-            elif result == ImprovementStatus.FAILED:
-                # Revert the applicator's changes
-                applicator = self._applicators.get(improvement.metric)
-                if isinstance(applicator, ThresholdApplicator):
-                    applicator.revert_override(improvement.id)
-                logger.info(
-                    "Improvement %s failed evaluation — changes reverted",
-                    improvement.id,
-                )
-
-        from vetinari.kaizen.knowledge_compactor import run_compaction_step
-
-        run_compaction_step()
-
-        return confirmed_ids
+__all__ = [
+    "CatalogFreshnessApplicator",
+    "CatalogUpdateProposal",
+    "ImprovementApplicator",
+    "KaizenApplyReceipt",
+    "PDCAController",
+    "ThresholdApplicator",
+    "ThresholdOverride",
+    "_safe_receipt_changes",
+]

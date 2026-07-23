@@ -1,10 +1,10 @@
-"""Schema evolution — versioned persistent formats with auto-migration.
+"""Schema evolution for versioned persistent formats with auto-migration.
 
 Every persistent format (JSONL, SQLite, JSON config) carries a
 ``schema_version`` integer.  When data is loaded, this module detects
 the version and applies registered migration functions in sequence to
 bring the record up to the current version.  Unknown fields are always
-preserved — never silently dropped.
+preserved; never silently dropped.
 
 Pipeline role: sits below all persistence layers (failure registry,
 pipeline state, remediation outcomes) to ensure data compatibility
@@ -20,7 +20,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from vetinari.boundary_guards import assert_dependency_success
+
 logger = logging.getLogger(__name__)
+
 
 # Type alias for migration functions: (old_record) -> new_record
 MigrationFn = Callable[[dict[str, Any]], dict[str, Any]]
@@ -56,7 +59,7 @@ class SchemaRegistry:
     record's version to the current version.
 
     Side effects:
-        - No I/O — purely in-memory registry of migration functions.
+        - No I/O - purely in-memory registry of migration functions.
     """
 
     def __init__(self) -> None:
@@ -150,7 +153,7 @@ class SchemaRegistry:
     ) -> dict[str, Any]:
         """Migrate a record from its current version to the latest version.
 
-        Unknown fields in the record are preserved — they are never dropped.
+        Unknown fields in the record are preserved - they are never dropped.
         If the record is already at the current version, it is returned as-is.
         If no migrations are registered, the record is returned with
         ``schema_version`` set to the current version.
@@ -161,19 +164,31 @@ class SchemaRegistry:
 
         Returns:
             A new dict at the current schema version with all fields preserved.
+
+        Raises:
+            ValueError: If the record's schema_version is missing a valid
+                positive integer shape.
+            RuntimeError: If a migration step fails and would otherwise return
+                a partially migrated record.
         """
         # Work on a copy to avoid mutating the caller's data
         result = copy.deepcopy(record)
         record_version = result.get("schema_version", 1)
+        if isinstance(record_version, bool) or not isinstance(record_version, int) or record_version < 1:
+            raise ValueError(f"Invalid schema_version for {format_name}: {record_version!r}")
         current_version = self.get_current_version(format_name)
 
         if record_version >= current_version:
-            # Already at or ahead of current — just ensure version field exists
+            # Already at or ahead of current - just ensure version field exists
             result["schema_version"] = max(record_version, current_version)
             return result
 
         with self._lock:
             steps = list(self._migrations.get(format_name, []))
+
+        if not steps:
+            result["schema_version"] = current_version
+            return result
 
         # Apply each migration step in sequence
         for step in steps:
@@ -184,6 +199,12 @@ class SchemaRegistry:
 
             try:
                 result = step.migrate_fn(result)
+                actual_version = result.get("schema_version")
+                if actual_version is not None and actual_version != step.to_version:
+                    assert_dependency_success(False, dependency_id="schema migration version")
+                    raise ValueError(
+                        f"migration produced stale record: expected v{step.to_version}, got {actual_version!r}"
+                    )
                 result["schema_version"] = step.to_version
                 logger.debug(
                     "Migrated %s record v%d->v%d",
@@ -191,17 +212,21 @@ class SchemaRegistry:
                     step.from_version,
                     step.to_version,
                 )
-            except Exception:
+            except Exception as exc:
                 logger.exception(
-                    "Migration failed for %s v%d->v%d — returning partially migrated record",
+                    "Migration failed for %s v%d->v%d; refusing partial migration result",
                     format_name,
                     step.from_version,
                     step.to_version,
                 )
-                break
+                raise RuntimeError(
+                    f"Migration failed for {format_name} v{step.from_version}->v{step.to_version}"
+                ) from exc
 
-        # Ensure version is set even if no migrations ran
-        result.setdefault("schema_version", current_version)
+        actual_version = result.get("schema_version")
+        if actual_version != current_version:
+            assert_dependency_success(False, dependency_id="schema migration final version")
+            raise ValueError(f"migration produced stale record: expected v{current_version}, got {actual_version!r}")
         return result
 
     def stamp_record(self, format_name: str, record: dict[str, Any]) -> dict[str, Any]:
@@ -269,7 +294,7 @@ def reset_schema_registry() -> None:
 
 
 def migrate_record(format_name: str, record: dict[str, Any]) -> dict[str, Any]:
-    """Convenience wrapper — migrate a record through the global registry.
+    """Convenience wrapper - migrate a record through the global registry.
 
     Args:
         format_name: The format this record belongs to.

@@ -12,6 +12,7 @@ import sqlite3
 
 logger = logging.getLogger(__name__)
 
+
 # The full DDL for a private memory database. Keep in sync with
 # vetinari/database.py init_schema whenever the schema changes.
 _SCHEMA_SQL = """
@@ -24,6 +25,8 @@ _SCHEMA_SQL = """
         timestamp INTEGER NOT NULL,
         provenance TEXT NOT NULL DEFAULT '',
         content_hash TEXT NOT NULL,
+        previous_content_hash TEXT NOT NULL DEFAULT '',
+        chain_hash TEXT NOT NULL DEFAULT '',
         forgotten INTEGER DEFAULT 0,
         access_count INTEGER DEFAULT 0,
         quality_score REAL DEFAULT 0.0,
@@ -148,6 +151,8 @@ def _migrate_private_schema(conn: sqlite3.Connection) -> None:
         ("relationship_type", "TEXT"),
         ("last_accessed", "INTEGER DEFAULT 0"),
         ("scope", "TEXT NOT NULL DEFAULT 'global'"),
+        ("previous_content_hash", "TEXT NOT NULL DEFAULT ''"),
+        ("chain_hash", "TEXT NOT NULL DEFAULT ''"),
     ]
     try:
         cursor = conn.execute("PRAGMA table_info(memories)")

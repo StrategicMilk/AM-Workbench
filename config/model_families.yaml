@@ -1,0 +1,92 @@
+schema_version: 1
+generated_utc: "2026-07-18T00:00:00Z"
+support_matrix_version: "1"
+review_sources:
+  - "https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md"
+  - "https://developers.openai.com/api/reference/overview"
+  - "https://docs.vllm.ai/en/stable/serving/openai_compatible_server/"
+  - "https://docs.vllm.ai/en/stable/features/lora/"
+  - "https://docs.vllm.ai/en/stable/features/structured_outputs/"
+endpoint_families:
+  - family: local_llama_cpp
+    provider: local
+    tier: local_small
+    model_id: local/llama-cpp-small
+    cost_per_1k_tokens: 0.0
+    stale_after: "2026-10-16T00:00:00Z"
+    health_check: "llama_cpp adapter health_check"
+    capabilities:
+      - chat
+      - completion
+      - embeddings
+      - tools
+      - structured_output
+      - reasoning_trace
+      - batching
+      - streaming
+      - lora
+      - health
+    privacy:
+      prompt_storage: prompt_hash_only
+      route_receipt_redaction: required
+      training_reuse: disabled_without_explicit_opt_in
+      retention: project_receipt_policy
+    proof_refs:
+      - tests/test_inference_endpoint_capabilities.py
+      - scripts/check_inference_endpoint_capabilities.py
+  - family: openai_server_compatible
+    provider: openai_server
+    tier: server_medium
+    model_id: openai-server/default
+    cost_per_1k_tokens: 0.001
+    stale_after: "2026-10-16T00:00:00Z"
+    health_check: "openai_server adapter health_check"
+    capabilities:
+      - chat
+      - completion
+      - embeddings
+      - tools
+      - structured_output
+      - reasoning_trace
+      - batching
+      - streaming
+      - lora
+      - health
+    privacy:
+      prompt_storage: prompt_hash_only
+      route_receipt_redaction: required
+      training_reuse: disabled_without_explicit_opt_in
+      retention: project_receipt_policy
+    proof_refs:
+      - tests/test_default_cascade_routing.py
+      - scripts/check_default_routing_and_kaizen.py
+  - family: vllm
+    provider: openai_server
+    tier: server_medium
+    model_id: vllm/default
+    status: optional_backend_disabled_by_default
+    activation_requires:
+      - config/models.yaml inference_backend.vllm.enabled true
+      - reachable VETINARI_VLLM_ENDPOINT
+    cost_per_1k_tokens: 0.001
+    stale_after: "2026-10-16T00:00:00Z"
+    health_check: "vLLM OpenAI-compatible endpoint health_check"
+    capabilities:
+      - chat
+      - completion
+      - embeddings
+      - tools
+      - structured_output
+      - reasoning_trace
+      - batching
+      - streaming
+      - lora
+      - health
+    privacy:
+      prompt_storage: prompt_hash_only
+      route_receipt_redaction: required
+      training_reuse: disabled_without_explicit_opt_in
+      retention: project_receipt_policy
+    proof_refs:
+      - tests/test_rcg_0004_p07.py
+      - vetinari/adapters/openai_server_adapter_discovery.py

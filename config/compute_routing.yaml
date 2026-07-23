@@ -1,0 +1,33 @@
+capabilities:
+  synthesis_8b:
+    targets:
+      - compute: cpu_background
+        model: qwen2.5-7b-q4
+        p95_ms_per_tok: 180
+        p95_per_request_ms: 500
+        quality: standard
+      - compute: api
+        model: external-premium
+        p95_ms_per_tok: 60
+        p95_per_request_ms: 250
+        quality: premium
+  classify_enum_5way:
+    targets:
+      - compute: cpu_bonsai
+        model: qwen2.5-0.5b-bonsai
+        p95_ms_per_tok: 25
+        p95_per_request_ms: 50
+        quality: standard
+        escalation_margin: 0.15
+      - compute: cpu_background
+        model: qwen2.5-7b-q4
+        p95_ms_per_tok: 180
+        p95_per_request_ms: 500
+        quality: premium
+  embed:
+    targets:
+      - compute: cpu_embedder
+        model: sentence-transformers/all-MiniLM-L6-v2
+        p95_ms_per_tok: 5
+        p95_per_request_ms: 20
+        quality: standard

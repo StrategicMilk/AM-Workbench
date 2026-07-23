@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_cohesion_canary.schema.json",
+  "title": "Workbench Cohesion Canary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "trigger", "approved", "signals", "blockers", "trace_refs", "mutated_artifacts"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "run_id": { "$ref": "#/$defs/nonEmptyString" },
+    "trigger": { "$ref": "#/$defs/trigger" },
+    "approved": { "type": "boolean" },
+    "signals": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/CanarySignal" }
+    },
+    "blockers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/blocker" }
+    },
+    "trace_refs": { "$ref": "#/$defs/refArray" },
+    "goal_preservation_refs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "feedback_refs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "uncertainty_refs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "truth_refs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "safety_refs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "anti_sycophancy_decision": { "$ref": "#/$defs/AntiSycophancyDecision" },
+    "mutated_artifacts": {
+      "type": "array",
+      "maxItems": 0,
+      "items": false
+    },
+    "evidence": { "type": "object" },
+    "proposal_candidate": { "$ref": "#/$defs/CanaryProposalEvidence" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "signals": {
+            "contains": {
+              "type": "object",
+              "properties": { "kind": { "const": "positive_feedback" } },
+              "required": ["kind"]
+            }
+          }
+        },
+        "required": ["signals"]
+      },
+      "then": {
+        "required": ["truth_refs", "safety_refs", "anti_sycophancy_decision"],
+        "properties": {
+          "truth_refs": { "$ref": "#/$defs/refArray" },
+          "safety_refs": { "$ref": "#/$defs/refArray" },
+          "anti_sycophancy_decision": { "$ref": "#/$defs/AntiSycophancyDecision" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "refArray": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "trigger": { "enum": ["idle", "finalizer"] },
+    "signalKind": {
+      "enum": [
+        "goal_preserved",
+        "positive_feedback",
+        "negative_feedback",
+        "correction",
+        "overclaim_check",
+        "uncertainty_surfaced",
+        "trace_linked"
+      ]
+    },
+    "blocker": {
+      "enum": [
+        "MISSING_TRACE_REF",
+        "MISSING_GOAL_PRESERVATION_REF",
+        "MISSING_FEEDBACK_EVIDENCE",
+        "OVERCLAIMED_VERIFICATION",
+        "MISSING_UNCERTAINTY_SURFACING",
+        "MISSING_ANTI_SYCOPHANCY_DECISION",
+        "FAILING_ANTI_SYCOPHANCY_DECISION",
+        "TRUTH_OR_SAFETY_MISSING",
+        "PROMPT_MUTATION_FORBIDDEN",
+        "MEMORY_MUTATION_FORBIDDEN",
+        "MUTATED_ARTIFACT_FORBIDDEN"
+      ]
+    },
+    "CanarySignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "summary", "trace_refs", "source_refs"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/signalKind" },
+        "summary": { "$ref": "#/$defs/nonEmptyString" },
+        "trace_refs": { "$ref": "#/$defs/refArray" },
+        "source_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "AntiSycophancyDecision": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["approved", "blockers", "evidence"],
+      "properties": {
+        "approved": { "type": "boolean" },
+        "blockers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "evidence": { "type": "object" }
+      }
+    },
+    "CanaryProposalEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "target",
+        "lifecycle",
+        "baseline_evidence",
+        "candidate_evidence",
+        "regression_checks",
+        "negative_results",
+        "rollback_target_ref",
+        "expires_at_utc",
+        "post_promotion_monitoring_refs",
+        "source_refs"
+      ],
+      "properties": {
+        "candidate_id": { "$ref": "#/$defs/nonEmptyString" },
+        "target": { "const": "eval_case" },
+        "lifecycle": { "const": "shadow" },
+        "baseline_evidence": { "type": "array", "minItems": 1 },
+        "candidate_evidence": { "type": "array", "minItems": 1 },
+        "regression_checks": { "type": "array", "minItems": 1 },
+        "negative_results": { "type": "array", "minItems": 1 },
+        "rollback_target_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "expires_at_utc": { "$ref": "#/$defs/nonEmptyString" },
+        "post_promotion_monitoring_refs": { "$ref": "#/$defs/refArray" },
+        "source_refs": { "$ref": "#/$defs/refArray" }
+      }
+    }
+  }
+}

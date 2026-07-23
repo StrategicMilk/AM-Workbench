@@ -14,13 +14,15 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+from vetinari.security.fail_closed import UntrustedInputError, assert_closed_schema, sanitize_untrusted_text
 from vetinari.types import GoalCategory, ModelProvider  # canonical enums from types.py
 from vetinari.utils.serialization import dataclass_to_dict
 
+logger = logging.getLogger(__name__)
+
+
 if TYPE_CHECKING:
     from vetinari.awareness.confidence import ConfidenceResult, UnknownSituationProtocol
-
-logger = logging.getLogger(__name__)
 
 
 # =====================================================================
@@ -54,15 +56,17 @@ def parse_task_type(raw: str) -> GoalCategory:
 
     Returns:
         The matching GoalCategory member.
+
+    Raises:
+        UntrustedInputError: If the task type is unknown or unsafe.
     """
-    normalized = raw.strip().lower()
+    normalized = sanitize_untrusted_text(raw, max_length=128).lower()
     if normalized in _TASK_TYPE_COMPAT:
         return _TASK_TYPE_COMPAT[normalized]
     try:
         return GoalCategory(normalized)
     except ValueError:
-        logger.warning("Unknown task type %r — defaulting to GENERAL", raw)
-        return GoalCategory.GENERAL
+        raise UntrustedInputError(f"unknown task type: {normalized}") from None
 
 
 class ModelStatus(Enum):
@@ -123,12 +127,25 @@ class ModelCapabilities:
         Returns:
             Populated ModelCapabilities instance.
         """
+        assert_closed_schema(
+            data,
+            allowed_keys={
+                "capabilities",
+                "tags",
+                "context_len",
+                "context_length",
+                "supports_functions",
+                "supports_vision",
+                "supports_json",
+                "preferred_for",
+            },
+        )
         caps = cls()
 
         # Extract from capabilities list
         caps_list = data.get("capabilities", [])
         if isinstance(caps_list, list):
-            cap_strs = [str(c).lower() for c in caps_list]
+            cap_strs = [sanitize_untrusted_text(str(c), max_length=128).lower() for c in caps_list]
             caps.code_gen = any("code" in c or "coder" in c for c in cap_strs)
             caps.reasoning = any("reason" in c for c in cap_strs)
             caps.chat = any("chat" in c for c in cap_strs)
@@ -141,7 +158,7 @@ class ModelCapabilities:
         # Extract from tags
         tags = data.get("tags", [])
         if isinstance(tags, list):
-            tag_strs = [str(t).lower() for t in tags]
+            tag_strs = [sanitize_untrusted_text(str(t), max_length=128).lower() for t in tags]
             caps.tags = tag_strs
 
             # Infer capabilities from tags
@@ -159,7 +176,9 @@ class ModelCapabilities:
         caps.supports_json = data.get("supports_json", False)
 
         # Preferred for
-        caps.preferred_for = data.get("preferred_for", [])
+        caps.preferred_for = [
+            sanitize_untrusted_text(str(item), max_length=128) for item in data.get("preferred_for", [])
+        ]
 
         return caps
 
@@ -238,10 +257,32 @@ class RouterModelInfo:
         Returns:
             Populated RouterModelInfo instance.
         """
+        assert_closed_schema(
+            data,
+            allowed_keys={
+                "id",
+                "name",
+                "endpoint",
+                "capabilities",
+                "tags",
+                "context_len",
+                "context_length",
+                "supports_functions",
+                "supports_vision",
+                "supports_json",
+                "preferred_for",
+                "memory_gb",
+                "memory",
+                "version",
+                "metadata",
+                "metrics",
+            },
+            required_keys={"id"},
+        )
         info = cls(
-            id=data.get("id", data.get("name", "")),
-            name=data.get("name", data.get("id", "")),
-            endpoint=data.get("endpoint", ""),
+            id=sanitize_untrusted_text(data.get("id", data.get("name", "")), max_length=512),
+            name=sanitize_untrusted_text(data.get("name", data.get("id", "")), max_length=512),
+            endpoint=sanitize_untrusted_text(data.get("endpoint", "local"), max_length=2048),
             memory_gb=data.get("memory_gb", data.get("memory", 2)),
             context_length=data.get("context_len", data.get("context_length", 8192)),
             version=data.get("version", ""),
@@ -262,7 +303,17 @@ class RouterModelInfo:
             info.provider = ModelProvider.OTHER
 
         # Set capabilities
-        info.capabilities = ModelCapabilities.from_dict(data)
+        capability_keys = {
+            "capabilities",
+            "tags",
+            "context_len",
+            "context_length",
+            "supports_functions",
+            "supports_vision",
+            "supports_json",
+            "preferred_for",
+        }
+        info.capabilities = ModelCapabilities.from_dict({key: data[key] for key in capability_keys if key in data})
 
         # Set performance from metrics sub-dict
         if "metrics" in data:
@@ -375,13 +426,26 @@ class RouterTypePolicy:
         Returns:
             A new RoutingPolicy instance.
         """
+        assert_closed_schema(
+            data,
+            allowed_keys={
+                "local_first",
+                "privacy_weight",
+                "latency_weight",
+                "cost_weight",
+                "max_cost_per_1k_tokens",
+                "preferred_providers",
+            },
+        )
         return cls(
             local_first=data.get("local_first", True),
             privacy_weight=data.get("privacy_weight", 1.0),
             latency_weight=data.get("latency_weight", 0.5),
             cost_weight=data.get("cost_weight", 0.3),
             max_cost_per_1k_tokens=data.get("max_cost_per_1k_tokens", 0.0),
-            preferred_providers=data.get("preferred_providers", []),
+            preferred_providers=[
+                sanitize_untrusted_text(str(item), max_length=128) for item in data.get("preferred_providers", [])
+            ],
         )
 
 

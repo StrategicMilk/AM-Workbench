@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_effective_config.schema.json",
+  "\\$id": "https://vetinari.local/schemas/workbench_effective_config.schema.json",
+  "title": "Workbench Effective Config Explorer Snapshot",
+  "type": "object",
+  "required": ["project_id", "status", "snapshots", "diff"],
+  "properties": {
+    "project_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["ok", "degraded", "blocked"]},
+    "snapshots": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["snapshot_id", "run_id", "run_kind", "captured_at_utc", "status", "entries"],
+        "properties": {
+          "snapshot_id": {"type": "string", "minLength": 1},
+          "run_id": {"type": "string", "minLength": 1},
+          "run_kind": {"type": "string", "minLength": 1},
+          "captured_at_utc": {
+            "type": "string",
+            "minLength": 1,
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+          },
+          "status": {"enum": ["ok", "degraded", "blocked"]},
+          "blockers": {"type": "array", "items": {"type": "string"}},
+          "diff_from_snapshot_id": {"type": ["string", "null"]},
+          "entries": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "category",
+                "key",
+                "requested_value",
+                "effective_value",
+                "source_layer",
+                "backend_accepted",
+                "provenance_ref",
+                "confidence",
+                "safety_ref",
+                "budget_ref",
+                "authority_ref",
+                "persisted_ref",
+                "conflicts",
+                "stale"
+              ],
+              "properties": {
+                "category": {"type": "string", "minLength": 1},
+                "key": {"type": "string", "minLength": 1},
+                "requested_value": true,
+                "effective_value": true,
+                "source_layer": {"type": "string", "minLength": 1},
+                "backend_accepted": {"type": "boolean"},
+                "provenance_ref": {"type": "string", "minLength": 1},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "safety_ref": {"type": "string", "minLength": 1},
+                "budget_ref": {"type": "string", "minLength": 1},
+                "authority_ref": {"type": "string", "minLength": 1},
+                "persisted_ref": {"type": "string", "minLength": 1},
+                "conflicts": {"type": "array", "items": {"type": "string"}},
+                "fallback_reason": {"type": ["string", "null"]},
+                "stale": {"type": "boolean"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "diff": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["category", "key", "before_effective_value", "after_effective_value", "changed_signals"],
+        "properties": {
+          "category": {"type": "string", "minLength": 1},
+          "key": {"type": "string", "minLength": 1},
+          "before_effective_value": true,
+          "after_effective_value": true,
+          "before_source_layer": {"type": "string"},
+          "after_source_layer": {"type": "string"},
+          "changed_signals": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+        }
+      }
+    }
+  }
+}

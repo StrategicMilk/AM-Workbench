@@ -20,17 +20,29 @@ This module is part of the training layer:
 
 from __future__ import annotations
 
-import importlib
+import importlib.util
 import logging
 from pathlib import Path
 from typing import Any
 
 from vetinari.exceptions import ExecutionError
+from vetinari.learning.atomic_writers import _write_text_atomic, write_jsonl_atomic
+from vetinari.security.fail_closed import assert_closed_schema, confine_to_root, sanitize_untrusted_text
 from vetinari.training.dapo_rewards import DapoExecutionResult, StageResult, compute_dapo_reward
 from vetinari.training.dapo_scripts import build_dapo_reward_dpo_script, build_simpo_script
-from vetinari.types import StatusEnum
+from vetinari.training.loss import SIMPO_BETA_DEFAULT, SIMPO_GAMMA_DEFAULT, run_training_loss
+from vetinari.types import StatusEnum, TrainingAlgorithm
 
 logger = logging.getLogger(__name__)
+
+
+def _is_trl_available() -> bool:
+    """Return True when TRL is discoverable without importing its native-adjacent stack."""
+    try:
+        return importlib.util.find_spec("trl") is not None
+    except (ImportError, AttributeError, ValueError):
+        logger.warning("TRL availability probe failed", exc_info=True)
+        return False
 
 
 def run_sft_stage(
@@ -53,13 +65,18 @@ def run_sft_stage(
         StageResult with output_model pointing to the SFT checkpoint, or
         the unchanged ``model`` if the stage was skipped.
     """
+    safe_model = sanitize_untrusted_text(model, max_length=2048)
+    _safe_dataset_path = Path(sanitize_untrusted_text(str(dataset_path), max_length=4096)).resolve()
+    assert_closed_schema(
+        config, allowed_keys={"sft", "backend", "model_format", "model_revision", "revision", "dapo", "simpo"}
+    )
     try:
         from vetinari.training.pipeline import TrainingPipeline
 
         pipeline = TrainingPipeline()
         sft_config = config.get("sft", {})
         run = pipeline.run(
-            base_model=model,
+            base_model=safe_model,
             task_type=sft_config.get("task_type", "general"),
             min_score=sft_config.get("min_score", 0.7),
             epochs=sft_config.get("epochs", 3),
@@ -70,7 +87,7 @@ def run_sft_stage(
         return StageResult(
             success=True,
             stage_name="sft",
-            output_model=str(run.output_model_path) if hasattr(run, "output_model_path") else model,
+            output_model=str(run.output_model_path) if hasattr(run, "output_model_path") else safe_model,
         )
     except (ImportError, ModuleNotFoundError) as exc:
         # Training libraries not installed — skip gracefully (not a pipeline failure).
@@ -78,7 +95,7 @@ def run_sft_stage(
         return StageResult(
             success=True,
             stage_name="sft",
-            output_model=model,
+            output_model=safe_model,
             metrics={StatusEnum.SKIPPED.value: True, "reason": "pipeline_unavailable"},
         )
     except Exception as exc:
@@ -90,7 +107,7 @@ def run_sft_stage(
         return StageResult(
             success=False,
             stage_name="sft",
-            output_model=model,
+            output_model=safe_model,
             error=f"SFT pipeline failed: {exc}",
         )
 
@@ -116,14 +133,17 @@ def run_simpo_stage(
         StageResult with the aligned model path or a skipped result when
         trl is not installed or preference data is insufficient.
     """
-    try:
-        importlib.import_module("trl")
-    except Exception as exc:
-        logger.info("trl unavailable - skipping SimPO stage: %s", exc)
+    safe_model = sanitize_untrusted_text(model, max_length=2048)
+    safe_dataset_path = Path(sanitize_untrusted_text(str(dataset_path), max_length=4096)).resolve()
+    assert_closed_schema(
+        config, allowed_keys={"simpo", "sft", "dapo", "backend", "model_format", "model_revision", "revision"}
+    )
+    if not _is_trl_available():
+        logger.info("trl unavailable - skipping SimPO stage")
         return StageResult(
             success=True,
             stage_name="simpo",
-            output_model=model,
+            output_model=safe_model,
             metrics={StatusEnum.SKIPPED.value: True, "reason": "trl_unavailable"},
         )
 
@@ -135,14 +155,14 @@ def run_simpo_stage(
         simpo_config = config.get("simpo", {})
         dpo_path = curator.curate_dpo(
             task_type=simpo_config.get("task_type"),
-            output_dir=str(dataset_path.parent) if isinstance(dataset_path, Path) else ".",
+            output_dir=str(safe_dataset_path.parent),
         )
     except (ImportError, ValueError, ExecutionError) as exc:
         logger.info("SimPO: insufficient preference data or curator unavailable: %s", exc)
         return StageResult(
             success=True,
             stage_name="simpo",
-            output_model=model,
+            output_model=safe_model,
             metrics={StatusEnum.SKIPPED.value: True, "reason": "insufficient_dpo_pairs"},
         )
 
@@ -151,11 +171,11 @@ def run_simpo_stage(
         return StageResult(
             success=True,
             stage_name="simpo",
-            output_model=model,
+            output_model=safe_model,
             metrics={StatusEnum.SKIPPED.value: True, "reason": "no_dpo_dataset"},
         )
 
-    return _execute_simpo_training(model, dpo_path, dataset_path, simpo_config)
+    return _execute_simpo_training(safe_model, dpo_path, safe_dataset_path, simpo_config)
 
 
 def _execute_simpo_training(
@@ -178,22 +198,33 @@ def _execute_simpo_training(
     import subprocess
     import sys
 
-    output_dir = Path(dpo_path).parent / "simpo_output"
+    safe_model = sanitize_untrusted_text(model, max_length=2048)
+    safe_dpo_path = Path(sanitize_untrusted_text(str(dpo_path), max_length=4096)).resolve()
+    safe_dataset_path = Path(sanitize_untrusted_text(str(dataset_path), max_length=4096)).resolve()
+    output_dir = safe_dpo_path.parent / "simpo_output"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     script = build_simpo_script(
-        model=model,
-        dpo_path=dpo_path,
+        model=safe_model,
+        dpo_path=str(safe_dpo_path),
         output_dir=str(output_dir),
         epochs=int(simpo_config.get("epochs", 1)),
         model_revision=simpo_config.get("model_revision", simpo_config.get("revision")),
+        beta=float(simpo_config.get("beta", SIMPO_BETA_DEFAULT)),
+        simpo_gamma=float(
+            simpo_config.get(
+                "simpo_gamma",
+                simpo_config.get("gamma", simpo_config.get("gamma_beta_ratio", SIMPO_GAMMA_DEFAULT)),
+            )
+        ),
     )
 
+    run_training_loss(TrainingAlgorithm.SIMPO, model=model, dataset_path=dpo_path)
     script_path = output_dir / "train_simpo_script.py"
-    script_path.write_text(script, encoding="utf-8")
+    _write_text_atomic(script_path, script)
     logger.info("SimPO: running training script at %s", script_path)
 
-    proc = subprocess.run(  # noqa: S603 - argv is controlled and shell interpolation is not used
+    proc = subprocess.run(
         [sys.executable, str(script_path)],
         capture_output=True,
         text=True,
@@ -204,7 +235,7 @@ def _execute_simpo_training(
         return StageResult(
             success=False,
             stage_name="simpo",
-            output_model=model,
+            output_model=safe_model,
             error=f"SimPO training failed: {proc.stderr[-500:]}",
         )
 
@@ -214,7 +245,7 @@ def _execute_simpo_training(
         success=True,
         stage_name="simpo",
         output_model=adapter_path,
-        metrics={"method": "simpo", "dpo_dataset": str(dpo_path)},
+        metrics={"method": "simpo", "dpo_dataset": str(safe_dpo_path), "dataset_root": str(safe_dataset_path.parent)},
     )
 
 
@@ -247,6 +278,11 @@ def run_dapo_stage(
         StageResult with the trained adapter path, or a skipped result when
         prerequisites are not met.
     """
+    safe_model = sanitize_untrusted_text(model, max_length=2048)
+    safe_dataset_path = Path(sanitize_untrusted_text(str(dataset_path), max_length=4096)).resolve()
+    assert_closed_schema(
+        config, allowed_keys={"dapo", "simpo", "sft", "backend", "model_format", "model_revision", "revision"}
+    )
     dapo_config = config.get("dapo", {})
     min_groups = dapo_config.get("min_groups", 5)
 
@@ -261,7 +297,7 @@ def run_dapo_stage(
         return StageResult(
             success=True,
             stage_name="dapo",
-            output_model=model,
+            output_model=safe_model,
             metrics={StatusEnum.SKIPPED.value: True, "reason": "ranking_export_unavailable"},
         )
 
@@ -274,7 +310,7 @@ def run_dapo_stage(
         return StageResult(
             success=True,
             stage_name="dapo",
-            output_model=model,
+            output_model=safe_model,
             metrics={StatusEnum.SKIPPED.value: True, "reason": "insufficient_groups", "groups": len(ranking_data)},
         )
 
@@ -285,11 +321,11 @@ def run_dapo_stage(
         return StageResult(
             success=True,
             stage_name="dapo",
-            output_model=model,
+            output_model=safe_model,
             metrics={StatusEnum.SKIPPED.value: True, "reason": "insufficient_preference_pairs"},
         )
 
-    return _execute_dapo_reward_dpo_training(model, dataset_path, preference_pairs, ranking_data, dapo_config)
+    return _execute_dapo_reward_dpo_training(safe_model, safe_dataset_path, preference_pairs, ranking_data, dapo_config)
 
 
 def _build_dapo_preference_pairs(ranking_data: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -337,9 +373,9 @@ def _build_dapo_preference_pairs(ranking_data: list[dict[str, Any]]) -> list[dic
             # training subprocess can use them for reward-weighted loss rather
             # than treating all chosen/rejected pairs as equally weighted.
             preference_pairs.append({
-                "prompt": group.get("prompt", ""),
-                "chosen": best.get("response", ""),
-                "rejected": worst.get("response", ""),
+                "prompt": sanitize_untrusted_text(group.get("prompt", ""), max_length=20_000),
+                "chosen": sanitize_untrusted_text(best.get("response", ""), max_length=20_000),
+                "rejected": sanitize_untrusted_text(worst.get("response", ""), max_length=20_000),
                 "chosen_reward": scored[0][2],
                 "rejected_reward": scored[-1][2],
             })
@@ -376,23 +412,18 @@ def _execute_dapo_reward_dpo_training(
     Returns:
         StageResult with the adapter path or an error/skipped result.
     """
-    import json as _json
-    import subprocess
-    import sys
-
-    output_dir = Path(dataset_path).parent / "dapo_output" if isinstance(dataset_path, Path) else Path("./dapo_output")
+    safe_model = sanitize_untrusted_text(model, max_length=2048)
+    safe_dataset_path = Path(sanitize_untrusted_text(str(dataset_path), max_length=4096)).resolve()
+    output_dir = safe_dataset_path.parent / "dapo_output"
     output_dir.mkdir(parents=True, exist_ok=True)
     dapo_dataset_path = output_dir / "dapo_preferences.jsonl"
 
-    with open(dapo_dataset_path, "w", encoding="utf-8") as fh:
-        fh.writelines(_json.dumps(pair) + "\n" for pair in preference_pairs)
+    write_jsonl_atomic(dapo_dataset_path, list(preference_pairs))
 
     logger.info("DAPO: wrote %d preference pairs to %s", len(preference_pairs), dapo_dataset_path)
 
-    try:
-        importlib.import_module("trl")
-    except Exception as exc:
-        logger.info("DAPO: trl unavailable; skipping training after saving data: %s", exc)
+    if not _is_trl_available():
+        logger.info("DAPO: trl unavailable; skipping training after saving data")
         return StageResult(
             success=True,
             stage_name="dapo",
@@ -404,30 +435,13 @@ def _execute_dapo_reward_dpo_training(
             },
         )
 
-    script = build_dapo_reward_dpo_script(
-        model=model,
-        dapo_dataset_path=str(dapo_dataset_path),
-        output_dir=str(output_dir),
-        epochs=int(dapo_config.get("epochs", 1)),
-        model_revision=dapo_config.get("model_revision", dapo_config.get("revision")),
-    )
-
-    script_path = output_dir / "train_dapo_reward_dpo_script.py"
-    script_path.write_text(script, encoding="utf-8")
-    logger.info("DAPO: running training script at %s", script_path)
-
-    proc = subprocess.run(  # noqa: S603 - argv is controlled and shell interpolation is not used
-        [sys.executable, str(script_path)],
-        capture_output=True,
-        text=True,
-    )
-
+    proc = _run_dapo_reward_dpo_script(safe_model, dapo_dataset_path, output_dir, dapo_config)
     if proc.returncode != 0:
         logger.warning("DAPO training failed: %s", proc.stderr[-2000:])
         return StageResult(
             success=False,
             stage_name="dapo",
-            output_model=model,
+            output_model=safe_model,
             error=f"DAPO training failed: {proc.stderr[-500:]}",
         )
 
@@ -443,3 +457,29 @@ def _execute_dapo_reward_dpo_training(
             "groups_used": len(ranking_data),
         },
     )
+
+
+def _run_dapo_reward_dpo_script(model: str, dataset_path: Path, output_dir: Path, dapo_config: dict[str, Any]) -> Any:
+    import subprocess
+    import sys
+
+    safe_model = sanitize_untrusted_text(model, max_length=2048)
+    safe_dataset_path = Path(sanitize_untrusted_text(str(dataset_path), max_length=4096)).resolve()
+    output_candidate = Path(output_dir)
+    if output_candidate.is_absolute():
+        try:
+            output_candidate = output_candidate.resolve().relative_to(safe_dataset_path.parent)
+        except ValueError as exc:
+            raise ValueError("output_dir must stay beside the DAPO dataset") from exc
+    safe_output_dir = confine_to_root(safe_dataset_path.parent, output_candidate)
+    script = build_dapo_reward_dpo_script(
+        model=safe_model,
+        dapo_dataset_path=str(safe_dataset_path),
+        output_dir=str(safe_output_dir),
+        epochs=int(dapo_config.get("epochs", 1)),
+        model_revision=dapo_config.get("model_revision", dapo_config.get("revision")),
+    )
+    script_path = safe_output_dir / "train_dapo_reward_dpo_script.py"
+    _write_text_atomic(script_path, script)
+    logger.info("DAPO: running training script at %s", script_path)
+    return subprocess.run([sys.executable, str(script_path)], capture_output=True, text=True)

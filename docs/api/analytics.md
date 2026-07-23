@@ -1,4 +1,4 @@
-# Vetinari Analytics — API Reference
+# AM Workbench Analytics — API Reference
 
 **Phase 5 | Last Updated: March 2026**
 
@@ -17,8 +17,10 @@
 
 ```python
 from vetinari.analytics import (
-    get_anomaly_detector, reset_anomaly_detector,
-    AnomalyConfig, AnomalyResult,
+    get_anomaly_detector,
+    reset_anomaly_detector,
+    AnomalyConfig,
+    AnomalyResult,
 )
 ```
 
@@ -66,8 +68,11 @@ wins; a result is returned immediately without checking the remaining methods.
 
 ```python
 from vetinari.analytics import (
-    get_cost_tracker, reset_cost_tracker,
-    CostEntry, CostReport, ModelPricing,
+    get_cost_tracker,
+    reset_cost_tracker,
+    CostEntry,
+    CostReport,
+    ModelPricing,
 )
 ```
 
@@ -130,8 +135,12 @@ variants, and a zero-cost wildcard for `llama_cpp:*`.
 
 ```python
 from vetinari.analytics import (
-    get_sla_tracker, reset_sla_tracker,
-    SLOTarget, SLOType, SLAReport, SLABreach,
+    get_sla_tracker,
+    reset_sla_tracker,
+    SLOTarget,
+    SLOType,
+    SLAReport,
+    SLABreach,
 )
 ```
 
@@ -194,8 +203,10 @@ from vetinari.analytics import (
 
 ```python
 from vetinari.analytics import (
-    get_forecaster, reset_forecaster,
-    ForecastRequest, ForecastResult,
+    get_forecaster,
+    reset_forecaster,
+    ForecastRequest,
+    ForecastResult,
 )
 ```
 

@@ -16,9 +16,27 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from ._lifecycle_receipts import record_lifecycle_receipt
 from .memory_embeddings import unpack_embedding
 
 logger = logging.getLogger(__name__)
+
+
+_SEARCH_TERM_MIN_LEN = 3
+
+
+def _redact_episode_value(value: Any) -> Any:
+    """Apply memory-boundary PII and secret redaction to episode payloads."""
+    from vetinari.safety.guardrails import redact_pii_payload
+    from vetinari.security import get_secret_scanner
+
+    redacted = redact_pii_payload(value)
+    scanner = get_secret_scanner()
+    if isinstance(redacted, str):
+        return scanner.sanitize(redacted)
+    if isinstance(redacted, dict):
+        return scanner.sanitize_dict(redacted)
+    return redacted
 
 
 # ---------------------------------------------------------------------------
@@ -38,9 +56,11 @@ def row_to_episode_dict(row: Any) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
     if row["metadata_json"]:
         try:
-            metadata = json.loads(row["metadata_json"])
+            decoded = json.loads(row["metadata_json"])
         except (json.JSONDecodeError, TypeError):
-            metadata = {}
+            decoded = {}
+        if isinstance(decoded, dict):
+            metadata = decoded
     return {
         "episode_id": row["episode_id"],
         "timestamp": row["timestamp"],
@@ -119,6 +139,33 @@ def evict_old_episodes(conn: sqlite3.Connection, max_entries: int) -> None:
         return
     evict_count = max_entries // 10
     try:
+        candidates = conn.execute(
+            """
+            SELECT episode_id, timestamp, agent_type, task_type, quality_score,
+                   success, model_id, importance, task_summary, output_summary
+            FROM memory_episodes
+            ORDER BY importance ASC
+            LIMIT ?
+            """,
+            (evict_count,),
+        ).fetchall()
+        record_lifecycle_receipt(
+            conn,
+            store="memory_episodes",
+            action="capacity_evict_low_importance",
+            rows=candidates,
+            id_field="episode_id",
+            hash_fields=("task_summary", "output_summary"),
+            metadata_fields=(
+                "timestamp",
+                "agent_type",
+                "task_type",
+                "quality_score",
+                "success",
+                "model_id",
+                "importance",
+            ),
+        )
         conn.execute(
             "DELETE FROM memory_episodes WHERE episode_id IN "
             "(SELECT episode_id FROM memory_episodes ORDER BY importance ASC LIMIT ?)",
@@ -167,6 +214,11 @@ def insert_episode(
     """
     episode_id = f"ep_{uuid.uuid4().hex[:8]}"
     ts = datetime.now(timezone.utc).isoformat()
+    task_summary = str(_redact_episode_value(task_summary))
+    output_summary = str(_redact_episode_value(output_summary))
+    metadata = _redact_episode_value(metadata)
+    if not isinstance(metadata, dict):
+        metadata = {}
 
     conn.execute(
         """INSERT INTO memory_episodes
@@ -231,10 +283,16 @@ def record_episode_full(
     Returns:
         The generated ``episode_id``.
     """
+    from vetinari.inference.embedder import _validate_pinned_embedding_model
+
     from .memory_embeddings import embed_via_local_inference, pack_embedding
 
-    task_summary = task_description[:300]
-    out_summary = output_summary[:500]
+    _validate_pinned_embedding_model(model)
+    task_summary = str(_redact_episode_value(task_description))[:300]
+    out_summary = str(_redact_episode_value(output_summary))[:500]
+    metadata = _redact_episode_value(metadata)
+    if not isinstance(metadata, dict):
+        metadata = {}
     importance = round(quality_score * (1.0 if success else 0.5), 3)
 
     episode_id = insert_episode(
@@ -255,8 +313,8 @@ def record_episode_full(
     if vec is not None:
         blob = pack_embedding(vec)
         conn.execute(
-            "INSERT OR REPLACE INTO episode_embeddings (episode_id, embedding_blob) VALUES (?, ?)",
-            (episode_id, blob),
+            "INSERT OR REPLACE INTO episode_embeddings (episode_id, embedding_blob, model, dimensions) VALUES (?, ?, ?, ?)",
+            (episode_id, blob, model, len(vec)),
         )
         conn.commit()
 
@@ -278,6 +336,7 @@ def recall_episodes_from_db(
     task_type: str | None,
     successful_only: bool,
     row_to_episode_fn: Any,
+    embedding_model: str = "",
 ) -> list[Any]:
     """Retrieve the k most relevant past episodes using embedding or keyword search.
 
@@ -293,50 +352,153 @@ def recall_episodes_from_db(
         task_type: Optional task type filter.
         successful_only: When True, only return successful episodes.
         row_to_episode_fn: Callable that converts a sqlite3.Row to an Episode.
+        embedding_model: Embedding model identifier expected for compatible stored vectors.
 
     Returns:
         List of Episode objects ordered by relevance.
     """
-    from vetinari.utils.math_helpers import cosine_similarity
-
     cursor = conn.cursor()
-
+    scored: list[tuple[str, float]] = []
     if query_vec is not None:
-        cursor.execute("SELECT episode_id, embedding_blob FROM episode_embeddings")
-        scored = []
-        for row in cursor.fetchall():
-            ep_vec = unpack_embedding(row["embedding_blob"])
-            sim = cosine_similarity(query_vec, ep_vec)
-            scored.append((row["episode_id"], sim))
-        if min_score > 0:
-            scored = [(episode_id, sim) for episode_id, sim in scored if sim >= min_score]
-        scored.sort(key=lambda x: x[1], reverse=True)
-        top_ids = [eid for eid, _ in scored[: k * 3]]
-    else:
-        cursor.execute(
-            "SELECT episode_id FROM memory_episodes WHERE task_summary LIKE ? ORDER BY quality_score DESC LIMIT ?",
-            (f"%{query_text[:100]}%", k * 3),
+        embedding_dimensions = len(query_vec)
+        top_ids, scored = _semantic_recall_ids(
+            cursor,
+            query_vec,
+            min_score,
+            k,
+            task_type,
+            successful_only,
+            embedding_model,
+            embedding_dimensions,
         )
-        top_ids = [row["episode_id"] for row in cursor.fetchall()]
-        scored = []
+    else:
+        top_ids = _keyword_recall_ids(cursor, query_text, task_type, successful_only, k)
 
     if not top_ids:
         return []
 
+    episodes = _load_recalled_episodes(
+        cursor,
+        top_ids,
+        task_type=task_type if query_vec is not None else None,
+        successful_only=successful_only if query_vec is not None else False,
+        row_to_episode_fn=row_to_episode_fn,
+    )
+    if query_vec is not None:
+        sim_map = dict(scored[: k * 3])
+        episodes.sort(key=lambda ep: sim_map.get(ep.episode_id, 0.0), reverse=True)
+
+    return episodes[:k]
+
+
+def _semantic_recall_ids(
+    cursor: sqlite3.Cursor,
+    query_vec: list[float],
+    min_score: float,
+    k: int,
+    task_type: str | None,
+    successful_only: bool,
+    embedding_model: str,
+    embedding_dimensions: int,
+) -> tuple[list[str], list[tuple[str, float]]]:
+    from vetinari.utils.math_helpers import cosine_similarity
+
+    embedding_columns = {str(row["name"]) for row in cursor.execute("PRAGMA table_info(episode_embeddings)").fetchall()}
+    clauses = []
+    params: list[Any] = []
+    if task_type:
+        clauses.append("m.task_type = ?")
+        params.append(task_type)
+    if successful_only:
+        clauses.append("m.success = 1")
+    if "model" in embedding_columns:
+        clauses.append("(e.model = ? OR e.model = '')")
+        params.append(embedding_model)
+    if "dimensions" in embedding_columns:
+        clauses.append("(e.dimensions = ? OR e.dimensions = 0)")
+        params.append(embedding_dimensions)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    cursor.execute(
+        "SELECT e.episode_id, e.embedding_blob "
+        "FROM episode_embeddings e "
+        "JOIN memory_episodes m ON m.episode_id = e.episode_id "
+        f"{where}",
+        params,
+    )
+    scored = []
+    for row in cursor.fetchall():
+        ep_vec = unpack_embedding(row["embedding_blob"])
+        sim = cosine_similarity(query_vec, ep_vec)
+        scored.append((row["episode_id"], sim))
+    if min_score > 0:
+        scored = [(episode_id, sim) for episode_id, sim in scored if sim >= min_score]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [eid for eid, _ in scored[: k * 3]], scored
+
+
+def _keyword_recall_ids(
+    cursor: sqlite3.Cursor,
+    query_text: str,
+    task_type: str | None,
+    successful_only: bool,
+    k: int,
+) -> list[str]:
+    sql = "SELECT episode_id FROM memory_episodes"
+    params: list[Any] = []
+    clauses: list[str] = []
+    terms = _search_terms(query_text)
+    if terms:
+        clauses.append("(" + " OR ".join("task_summary LIKE ?" for _ in terms) + ")")
+        params.extend(f"%{term}%" for term in terms)
+    else:
+        clauses.append("task_summary LIKE ?")
+        params.append(f"%{query_text[:100]}%")
+    if task_type:
+        clauses.append("task_type = ?")
+        params.append(task_type)
+    if successful_only:
+        clauses.append("success = 1")
+    sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY quality_score DESC LIMIT ?"
+    params.append(k * 3)
+    cursor.execute(sql, params)
+    return [row["episode_id"] for row in cursor.fetchall()]
+
+
+def _load_recalled_episodes(
+    cursor: sqlite3.Cursor,
+    top_ids: list[str],
+    *,
+    task_type: str | None,
+    successful_only: bool,
+    row_to_episode_fn: Any,
+) -> list[Any]:
     placeholders = ",".join("?" for _ in top_ids)
-    sql = f"SELECT * FROM memory_episodes WHERE episode_id IN ({placeholders})"  # noqa: S608 - SQL identifiers are constrained while values stay parameterized
+    sql = f"SELECT * FROM memory_episodes WHERE episode_id IN ({placeholders})"
     params: list[Any] = list(top_ids)
     if task_type:
         sql += " AND task_type = ?"
         params.append(task_type)
     if successful_only:
         sql += " AND success = 1"
-
     cursor.execute(sql, params)
-    episodes = [row_to_episode_fn(row) for row in cursor.fetchall()]
+    return [row_to_episode_fn(row) for row in cursor.fetchall()]
 
-    if query_vec is not None:
-        sim_map = dict(scored[: k * 3])
-        episodes.sort(key=lambda ep: sim_map.get(ep.episode_id, 0.0), reverse=True)
 
-    return episodes[:k]
+def _search_terms(query_text: str) -> list[str]:
+    terms: list[str] = []
+    current: list[str] = []
+    for char in query_text.lower():
+        if char.isalnum():
+            current.append(char)
+            continue
+        if current:
+            term = "".join(current)
+            if len(term) >= _SEARCH_TERM_MIN_LEN:
+                terms.append(term)
+            current = []
+    if current:
+        term = "".join(current)
+        if len(term) >= _SEARCH_TERM_MIN_LEN:
+            terms.append(term)
+    return list(dict.fromkeys(terms))

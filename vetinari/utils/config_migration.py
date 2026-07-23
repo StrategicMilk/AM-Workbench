@@ -25,6 +25,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
+
 # Type alias: a migration function transforms config dict in-place
 MigrationFn = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -56,10 +57,18 @@ def migrate_config(
         FileNotFoundError: If config_path does not exist.
         ValueError: If a required migration step is missing.
     """
+    if not isinstance(current_version, int) or isinstance(current_version, bool) or current_version < 0:
+        raise ValueError(f"current_version must be a non-negative integer, got {current_version!r}")
+
     with config_path.open(encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
+    if not isinstance(data, dict):
+        raise ValueError(f"Config {config_path} must contain a YAML mapping at the document root")
+
     file_version = data.get("config_version", 0)
+    if not isinstance(file_version, int) or isinstance(file_version, bool) or file_version < 0:
+        raise ValueError(f"Config {config_path} has invalid config_version {file_version!r}")
 
     if file_version == current_version:
         return data  # Already up to date
@@ -91,6 +100,8 @@ def migrate_config(
             raise ValueError(f"Missing migration for config version {version} -> {version + 1} in {config_path}")
         logger.info("Migrating %s: v%d -> v%d", config_path, version, version + 1)
         data = migrations[version](data)
+        if not isinstance(data, dict):
+            raise ValueError(f"Migration {version} -> {version + 1} for {config_path} returned non-mapping data")
         version += 1
 
     data["config_version"] = current_version

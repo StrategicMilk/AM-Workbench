@@ -29,6 +29,7 @@ from typing import Any
 
 from vetinari.agents.contracts import Task
 from vetinari.execution_context import ToolPermission
+from vetinari.security.redaction import redact_text
 from vetinari.tool_interface import (
     Tool,
     ToolCategory,
@@ -40,6 +41,28 @@ from vetinari.types import AgentType, ExecutionMode, ThinkingMode
 from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
+
+
+def _log_ref(text: str) -> str:
+    """Return bounded redacted text for operational logs."""
+    return redact_text(str(text))[:120]
+
+
+def _context_lines(context: dict[str, Any]) -> list[str]:
+    """Render compact, deterministic context bullets for local Foreman modes."""
+    lines: list[str] = []
+    for key in sorted(context):
+        value = context[key]
+        if value in (None, "", [], {}, ()):
+            continue
+        if isinstance(value, (list, tuple, set)):
+            rendered = ", ".join(str(item) for item in list(value)[:5])
+        elif isinstance(value, dict):
+            rendered = ", ".join(f"{item_key}={item_value}" for item_key, item_value in sorted(value.items())[:5])
+        else:
+            rendered = str(value)
+        lines.append(f"{key}: {redact_text(rendered)[:160]}")
+    return lines
 
 
 class ForemanMode(str, Enum):
@@ -96,7 +119,9 @@ def make_plan_task(
         metadata["acceptance_criteria"] = acceptance_criteria
     if mode:
         metadata["mode"] = mode
-    return Task(
+    from vetinari.agents import contracts as agent_contracts
+
+    return agent_contracts.Task(
         id=task_id,
         description=description,
         assigned_agent=agent,
@@ -197,7 +222,7 @@ class ForemanSkillTool(Tool):
                 error=f"Unknown mode: {mode_str}. Valid modes: {[m.value for m in ForemanMode]}",
             )
 
-        logger.info("Foreman executing mode=%s goal=%.100s", mode.value, goal)
+        logger.info("Foreman executing mode=%s goal=%s", mode.value, _log_ref(goal))
 
         try:
             result = self._execute_mode(mode, goal, context)
@@ -241,7 +266,8 @@ class ForemanSkillTool(Tool):
         }[mode]
         return handler(goal, context)
 
-    def _plan(self, goal: str, context: dict[str, Any]) -> ForemanResult:
+    @staticmethod
+    def _plan(goal: str, context: dict[str, Any]) -> ForemanResult:
         """Decompose a goal into a task DAG with dependency analysis.
 
         Follows the assembly-line pattern: analyze → decompose → assign → sequence.
@@ -301,7 +327,8 @@ class ForemanSkillTool(Tool):
             metadata={"mode_hints": mode_hints, "thinking_mode": ThinkingMode.XHIGH.value},
         )
 
-    def _clarify(self, goal: str, context: dict[str, Any]) -> ForemanResult:
+    @staticmethod
+    def _clarify(goal: str, context: dict[str, Any]) -> ForemanResult:
         """Generate specific, answerable clarification questions.
 
         Uses Socratic questioning to surface hidden assumptions, constraints,
@@ -318,47 +345,133 @@ class ForemanSkillTool(Tool):
             metadata={"thinking_mode": ThinkingMode.HIGH.value},
         )
 
-    def _consolidate(self, goal: str, context: dict[str, Any]) -> ForemanResult:
+    @staticmethod
+    def _consolidate(goal: str, context: dict[str, Any]) -> ForemanResult:
         """Consolidate memory and context from multiple sources.
 
         Merges overlapping information, resolves contradictions, and produces
         a unified context document for downstream agents.
         """
+        context_lines = _context_lines(context)
+        subject = goal or "context"
+        contradictions = [
+            line
+            for line in context_lines
+            if any(term in line.lower() for term in ("conflict", "contradiction", "disagree"))
+        ]
         return ForemanResult(
             goal=goal,
-            summary="Context consolidated",
-            metadata={"thinking_mode": ThinkingMode.MEDIUM.value},
+            summary="Context consolidated" if not context_lines else f"Context consolidated for {subject}",
+            tasks=[
+                make_plan_task(
+                    "C1",
+                    "Merge overlapping context into a single downstream brief",
+                    AgentType.FOREMAN,
+                    inputs=context_lines,
+                    outputs=["consolidated context brief"],
+                    acceptance_criteria="Duplicate facts are merged and contradictions are called out",
+                )
+            ],
+            risks=["Contradictions require owner review before execution"] if contradictions else [],
+            metadata={
+                "thinking_mode": ThinkingMode.HIGH.value,
+                "context_fields": context_lines,
+                "contradiction_count": len(contradictions),
+            },
         )
 
-    def _summarise(self, goal: str, context: dict[str, Any]) -> ForemanResult:
+    @staticmethod
+    def _summarise(goal: str, context: dict[str, Any]) -> ForemanResult:
         """Summarise a session preserving key decisions and action items.
 
         Ensures no key decisions, open questions, or action items are lost
         during summarization.
         """
+        context_lines = _context_lines(context)
+        subject = goal or "session"
+        action_items = context.get("action_items") if isinstance(context, dict) else None
+        questions = context.get("open_questions") if isinstance(context, dict) else None
+        normalized_questions = [str(item) for item in questions] if isinstance(questions, list) else []
         return ForemanResult(
             goal=goal,
-            metadata={"thinking_mode": ThinkingMode.MEDIUM.value},
+            summary=f"Summary for {subject}: key state retained; {len(context_lines)} context field(s) captured.",
+            questions=normalized_questions,
+            tasks=[
+                make_plan_task(
+                    "S1",
+                    "Carry forward summary decisions and action items",
+                    AgentType.FOREMAN,
+                    outputs=["session summary"],
+                    acceptance_criteria="Summary preserves decisions, action items, and open questions",
+                )
+            ],
+            metadata={
+                "thinking_mode": ThinkingMode.HIGH.value,
+                "action_item_count": len(action_items) if isinstance(action_items, list) else 0,
+                "context_fields": context_lines,
+            },
         )
 
-    def _prune(self, goal: str, context: dict[str, Any]) -> ForemanResult:
+    @staticmethod
+    def _prune(goal: str, context: dict[str, Any]) -> ForemanResult:
         """Manage token budget by pruning low-value context.
 
         Identifies and removes redundant, outdated, or low-relevance content
         while preserving critical decisions and open issues.
         """
+        context_lines = _context_lines(context)
+        retained = [
+            line
+            for line in context_lines
+            if any(word in line.lower() for word in ("decision", "risk", "todo", "action", "blocker"))
+        ]
+        pruned_count = max(0, len(context_lines) - len(retained))
         return ForemanResult(
             goal=goal,
-            metadata={"thinking_mode": ThinkingMode.LOW.value},
+            summary=f"Context pruned: retained {len(retained)} high-signal field(s), pruned {pruned_count}.",
+            tasks=[
+                make_plan_task(
+                    "P1",
+                    "Retain high-signal context and discard redundant detail",
+                    AgentType.FOREMAN,
+                    outputs=["pruned context brief"],
+                    acceptance_criteria="Critical decisions, risks, blockers, and actions remain available",
+                )
+            ],
+            risks=["No high-signal fields were detected; review before discarding context"]
+            if context_lines and not retained
+            else [],
+            metadata={
+                "thinking_mode": ThinkingMode.LOW.value,
+                "retained_context": retained,
+                "pruned_field_count": pruned_count,
+            },
         )
 
-    def _extract(self, goal: str, context: dict[str, Any]) -> ForemanResult:
+    @staticmethod
+    def _extract(goal: str, context: dict[str, Any]) -> ForemanResult:
         """Extract knowledge patterns gathered during completed work.
 
         Identifies reusable patterns, common pitfalls, and best practices
         observed in past tasks and episodes.
         """
+        context_lines = _context_lines(context)
+        patterns = context.get("patterns") if isinstance(context, dict) else None
+        extracted = [str(item) for item in patterns] if isinstance(patterns, list) else context_lines
         return ForemanResult(
             goal=goal,
-            metadata={"thinking_mode": ThinkingMode.MEDIUM.value},
+            summary=f"Knowledge extracted: {len(extracted)} reusable item(s) identified.",
+            tasks=[
+                make_plan_task(
+                    "E1",
+                    "Promote reusable lessons into the appropriate memory or documentation surface",
+                    AgentType.FOREMAN,
+                    outputs=["extracted knowledge brief"],
+                    acceptance_criteria="Extracted lessons include source context and reuse criteria",
+                )
+            ],
+            metadata={
+                "thinking_mode": ThinkingMode.HIGH.value,
+                "extracted_items": extracted[:10],
+            },
         )

@@ -1,0 +1,78 @@
+schema_version: "1.0"
+channels:
+  - channel_id: desktop
+    channel_type: desktop
+    display_name: Desktop Workbench
+    lifecycle_state: enabled
+    health_state: healthy
+    capabilities:
+      - delivery
+      - approval
+      - command
+      - activity
+    default_target: local-workbench
+    redaction_policy:
+      redact_secret_values: true
+      redact_binary_values: true
+      redact_local_paths: true
+      allowed_attachment_fields:
+        - id
+        - name
+        - media_type
+        - size
+        - sha256
+    approval_policy: optional
+    command_authorization_policy: approval_chain_required
+  - channel_id: browser
+    channel_type: browser
+    display_name: Browser Console
+    lifecycle_state: enabled
+    health_state: healthy
+    capabilities:
+      - delivery
+      - media
+      - activity
+    default_target: browser-session
+    approval_policy: none
+    command_authorization_policy: local_only
+  - channel_id: mobile-companion
+    channel_type: mobile_companion
+    display_name: Mobile Companion
+    lifecycle_state: enabled
+    health_state: degraded
+    capabilities:
+      - delivery
+      - approval
+      - notification
+      - activity
+    default_target: mobile-companion
+    approval_policy: required
+    command_authorization_policy: none
+    health_detail: >-
+      Command capability is disabled for this channel. Remote mobile intents are
+      represented as approval-only handoffs and never receive desktop execution authority.
+      Delivery, approval, notification, and activity remain functional.
+  - channel_id: slack-future
+    channel_type: slack
+    display_name: Slack Future Connector
+    lifecycle_state: disabled
+    health_state: unknown
+    capabilities:
+      - notification
+      - approval
+    default_target: unconfigured
+    health_detail: Provider credentials are not configured in this pack.
+    approval_policy: required
+    command_authorization_policy: none
+  - channel_id: sms-future
+    channel_type: sms
+    display_name: SMS Future Connector
+    lifecycle_state: enabled
+    health_state: unhealthy
+    capabilities:
+      - notification
+      - approval
+    default_target: unconfigured
+    health_detail: Provider transport is disabled until explicit SMS credentials and policy are configured.
+    approval_policy: required
+    command_authorization_policy: none

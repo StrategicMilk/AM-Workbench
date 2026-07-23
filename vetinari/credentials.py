@@ -24,6 +24,7 @@ from vetinari.constants import get_user_dir
 
 logger = logging.getLogger(__name__)
 
+
 try:
     from cryptography.fernet import Fernet
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -31,7 +32,7 @@ try:
     CRYPTO_AVAILABLE = True
 except ImportError:
     CRYPTO_AVAILABLE = False
-logger.warning("cryptography library not available - credentials will not be encrypted")
+    logger.warning("cryptography library not available - credentials will not be encrypted")
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -65,7 +66,7 @@ class Credential:
     last_rotated: str = ""
     next_rotation_due: str = ""
     access_controls: list[str] = field(default_factory=list)
-    token_source: str = "manual"  # noqa: S105 - sentinel value is not a runtime secret
+    token_source: str = "manual"
     note: str = ""
     enabled: bool = True
 
@@ -103,10 +104,11 @@ class Credential:
             if due.tzinfo is None:
                 due = due.replace(tzinfo=timezone.utc)
             return datetime.now(timezone.utc) >= due
-        except (ValueError, TypeError):  # noqa: VET024 - credential helper intentionally distinguishes optional config
+        except (ValueError, TypeError):
             # Unparseable date → treat as expired (forces rotation — safe default)
             logger.warning("Credential expiry date unparseable — treating as expired for safe rotation")
-            return True
+            expired = True
+        return expired
 
 
 class CredentialVault:
@@ -210,19 +212,19 @@ class CredentialVault:
                 except Exception:
                     logger.warning("Failed to decrypt legacy Fernet credential vault", exc_info=True)
 
-            # Fallback: try to load as plain JSON (for migration from unencrypted store).
-            # Log a warning so operators know the vault is unencrypted (P1.H9).
+            # Fail closed on plaintext credential stores.  Legacy encrypted
+            # stores are migrated above; unencrypted JSON must be rotated.
             try:
-                data = json.loads(encrypted.decode("utf-8"))
-                logger.warning(
-                    "Loaded credentials from unencrypted store at %s — "
-                    "re-save credentials to encrypt them with the current key.",
-                    self.credentials_file,
-                )
-                for source_type, cred_data in data.items():
-                    self._credentials[source_type] = Credential(**cred_data)
+                json.loads(encrypted.decode("utf-8"))
             except Exception:
-                logger.warning("Failed to load credentials as plain JSON fallback", exc_info=True)
+                logger.warning("Credential store could not be decrypted or parsed as an encrypted vault")
+            else:
+                raise RuntimeError(
+                    f"Refusing to load unencrypted credential store at {self.credentials_file}; "
+                    "restore an encrypted vault or rotate the affected credentials."
+                )
+        except RuntimeError:
+            raise
         except Exception as e:
             logger.warning("Could not load credentials: %s", e)
 
@@ -278,7 +280,7 @@ class CredentialVault:
             # This prevents accidental plaintext credential storage.
             raise RuntimeError(
                 "Cannot save credentials: encryption is unavailable. "
-                "Install the 'cryptography' package (`pip install cryptography`) "  # noqa: VET301 — user guidance string
+                "Install the 'cryptography' package (`pip install cryptography`) "
                 "to enable the credential vault.",
             )
 
@@ -480,7 +482,7 @@ class CredentialManager:
             source_type=source_type,
             credential_type=credential_type,
             token=token,
-            scopes=scopes or [],  # noqa: VET112 - empty fallback preserves optional request metadata contract
+            scopes=scopes or [],
             rotation_days=rotation_days,
             note=note,
         )

@@ -1,0 +1,27 @@
+{
+  "api_allowlist_path": "scripts/_all_exports_allowlist.py",
+  "api_allowlist_sha256": "823e68e1a0ab13e6427bb9c2749f3579212a71f6afc5d63428adab9d3f3acbf1",
+  "api_checker_path": "scripts/check_all_exports.py",
+  "api_checker_sha256": "fe6c848c1008d39510119f06f6c10f0f6aa79fd23549f619fa966d9d517a93c3",
+  "copied_count": 6102,
+  "executable_paths": [],
+  "export_digest_spec": "sha256:path-length,path,git-mode,byte-length,content-sha256:v2",
+  "export_tree_sha256": "a20aa662ebeceff72f1b6e69d6bfadf5f0ba918e46e5320b09b6b69186977714",
+  "generated_at": "2026-07-23T09:54:00+00:00",
+  "manifest_version": 3,
+  "path_contract_version": 1,
+  "scope_policy_path": "config/public_export_scope.toml",
+  "scope_policy_sha256": "2a9109206faa0a9c3cd022f01dbaed94e57adbd4b3012b7bb3ae18be0358b468",
+  "scope_policy_version": 1,
+  "skipped_count": 21737,
+  "skipped_summary": {
+    "by_check": {
+      "positive-public-scope": 21737
+    }
+  },
+  "source_commit": "048e88e7cd7fac58088f3d8cfb2d4550e0dcc71c",
+  "source_root_redacted": true,
+  "source_tracked_dirty": false,
+  "source_tree": "2175ed184423d581175875b0787c8c53508b79fd",
+  "target_root_redacted": true
+}

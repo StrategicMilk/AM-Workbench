@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_correction.schema.json",
+  "title": "Workbench User Correction Decomposition",
+  "type": "object",
+  "required": ["schema_version", "correction_id", "status", "derivatives", "suppressed", "blockers"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "correction_id": {"type": "string", "minLength": 1},
+    "status": {"type": "string", "enum": ["ready", "blocked", "degraded"]},
+    "derivatives": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/derivative"}
+    },
+    "suppressed": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/suppression"}
+    },
+    "blockers": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "derivativeKind": {
+      "type": "string",
+      "enum": [
+        "feedback_signal",
+        "corrected_output",
+        "preference_candidate",
+        "eval_case",
+        "failure_label",
+        "method_update_candidate",
+        "source_update_candidate",
+        "tool_card_update_candidate",
+        "annotation_task",
+        "training_candidate"
+      ]
+    },
+    "stringArray": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "derivative": {
+      "type": "object",
+      "required": ["kind", "artifact_id", "target_ref", "payload", "consent_refs", "evidence_refs"],
+      "properties": {
+        "kind": {"$ref": "#/$defs/derivativeKind"},
+        "artifact_id": {"type": "string", "minLength": 1},
+        "target_ref": {"type": "string", "minLength": 1},
+        "payload": {
+          "type": "object",
+          "required": ["project_id", "persisted_state_ref"],
+          "properties": {
+            "project_id": {"type": "string", "minLength": 1},
+            "persisted_state_ref": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": true
+        },
+        "consent_refs": {"$ref": "#/$defs/stringArray"},
+        "evidence_refs": {"$ref": "#/$defs/stringArray"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"kind": {"const": "eval_case"}},
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "consent_refs": {"minItems": 1}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"kind": {"const": "training_candidate"}},
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "required": ["redaction_ref", "corrected_output", "model_version"],
+                "properties": {
+                  "redaction_ref": {"type": "string", "minLength": 1},
+                  "corrected_output": {"type": "string", "minLength": 1},
+                  "model_version": {"type": "string", "minLength": 1}
+                }
+              },
+              "consent_refs": {"minItems": 2}
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "suppression": {
+      "type": "object",
+      "required": ["kind", "reasons"],
+      "properties": {
+        "kind": {"$ref": "#/$defs/derivativeKind"},
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

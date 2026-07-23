@@ -1,0 +1,154 @@
+# Operational model pricing consumed by ADR-0159 cost-ceiling gates and
+# full-spectrum lane delegation economics.
+#
+# Prices are USD per million tokens. Update this file when provider pricing
+# changes; ADR-0159 owns the policy, while this file owns mutable rates.
+pricing:
+  claude-opus-4-8:
+    provider: anthropic
+    input_price_per_mtok: 5.0
+    cache_write_5m_price_per_mtok: 6.25
+    cache_write_1h_price_per_mtok: 10.0
+    cached_input_price_per_mtok: 0.50
+    output_price_per_mtok: 25.0
+    tokenizer_multiplier: 1.35
+    pricing_source: "https://platform.claude.com/docs/en/about-claude/pricing"
+    pricing_verified_on: 2026-06-01
+  claude-opus-4-7:
+    provider: anthropic
+    input_price_per_mtok: 5.0
+    cache_write_5m_price_per_mtok: 6.25
+    cache_write_1h_price_per_mtok: 10.0
+    cached_input_price_per_mtok: 0.50
+    output_price_per_mtok: 25.0
+    tokenizer_multiplier: 1.35
+    pricing_source: "https://platform.claude.com/docs/en/about-claude/pricing"
+    pricing_verified_on: 2026-06-01
+  claude-opus-4-6:
+    provider: anthropic
+    input_price_per_mtok: 5.0
+    cache_write_5m_price_per_mtok: 6.25
+    cache_write_1h_price_per_mtok: 10.0
+    cached_input_price_per_mtok: 0.50
+    output_price_per_mtok: 25.0
+    tokenizer_multiplier: 1.35
+    pricing_source: "https://platform.claude.com/docs/en/about-claude/pricing"
+    pricing_verified_on: 2026-06-01
+  claude-sonnet-4-6:
+    provider: anthropic
+    context_window_tokens: 200000
+    input_price_per_mtok: 3.0
+    cache_write_5m_price_per_mtok: 3.75
+    cache_write_1h_price_per_mtok: 6.0
+    cached_input_price_per_mtok: 0.30
+    output_price_per_mtok: 15.0
+    tokenizer_multiplier: 1.35
+    pricing_source: "https://platform.claude.com/docs/en/about-claude/pricing"
+    pricing_verified_on: 2026-06-01
+  claude-haiku-4-5-20251001:
+    provider: anthropic
+    input_price_per_mtok: 1.0
+    cache_write_5m_price_per_mtok: 1.25
+    cache_write_1h_price_per_mtok: 2.0
+    cached_input_price_per_mtok: 0.10
+    output_price_per_mtok: 5.0
+    tokenizer_multiplier: 1.35
+    pricing_source: "https://platform.claude.com/docs/en/about-claude/pricing"
+    pricing_verified_on: 2026-06-01
+  claude-haiku-4-5:
+    provider: anthropic
+    input_price_per_mtok: 1.0
+    cache_write_5m_price_per_mtok: 1.25
+    cache_write_1h_price_per_mtok: 2.0
+    cached_input_price_per_mtok: 0.10
+    output_price_per_mtok: 5.0
+    tokenizer_multiplier: 1.35
+    pricing_source: "https://platform.claude.com/docs/en/about-claude/pricing"
+    pricing_verified_on: 2026-06-01
+  gemini-3.5-flash:
+    provider: google
+    context_window_tokens: 1048576
+    input_price_per_mtok: 1.5
+    output_price_per_mtok: 9.0
+    pricing_source: "https://ai.google.dev/gemini-api/docs/pricing"
+    pricing_verified_on: 2026-07-09
+  gemini-3.1-flash-lite:
+    provider: google
+    context_window_tokens: 1048576
+    input_price_per_mtok: 0.25
+    output_price_per_mtok: 1.5
+    pricing_source: "https://ai.google.dev/gemini-api/docs/pricing"
+    pricing_verified_on: 2026-07-09
+  gpt-5.5:
+    provider: openai
+    context_window_tokens: 258400
+    input_price_per_mtok: 5.0
+    cached_input_price_per_mtok: 0.50
+    output_price_per_mtok: 30.0
+    pricing_source: "https://developers.openai.com/api/docs/pricing"
+    pricing_verified_on: 2026-06-01
+  gpt-5.6:
+    provider: openai
+    context_window_tokens: 258400
+    input_price_per_mtok: 5.0
+    cached_input_price_per_mtok: 0.50
+    cache_write_30m_price_per_mtok: 6.25
+    output_price_per_mtok: 30.0
+    pricing_source: "https://developers.openai.com/api/docs/pricing"
+    pricing_verified_on: 2026-07-09
+    pricing_note: "Alias priced conservatively as GPT-5.6 Sol until an explicit alias rate is published."
+  gpt-5.6-sol:
+    provider: openai
+    context_window_tokens: 258400
+    input_price_per_mtok: 5.0
+    cached_input_price_per_mtok: 0.50
+    cache_write_30m_price_per_mtok: 6.25
+    output_price_per_mtok: 30.0
+    pricing_source: "https://developers.openai.com/api/docs/pricing"
+    pricing_verified_on: 2026-07-09
+  gpt-5.6-terra:
+    provider: openai
+    context_window_tokens: 258400
+    input_price_per_mtok: 2.50
+    cached_input_price_per_mtok: 0.25
+    cache_write_30m_price_per_mtok: 3.125
+    output_price_per_mtok: 15.0
+    pricing_source: "https://developers.openai.com/api/docs/pricing"
+    pricing_verified_on: 2026-07-09
+  gpt-5.6-luna:
+    provider: openai
+    context_window_tokens: 258400
+    input_price_per_mtok: 1.00
+    cached_input_price_per_mtok: 0.10
+    cache_write_30m_price_per_mtok: 1.25
+    output_price_per_mtok: 6.0
+    pricing_source: "https://developers.openai.com/api/docs/pricing"
+    pricing_verified_on: 2026-07-09
+  gpt-5.4:
+    provider: openai
+    input_price_per_mtok: 2.50
+    cached_input_price_per_mtok: 0.25
+    output_price_per_mtok: 15.0
+    pricing_source: "https://developers.openai.com/api/docs/pricing"
+    pricing_verified_on: 2026-06-01
+  gpt-5.4-mini:
+    provider: openai
+    input_price_per_mtok: 0.75
+    cached_input_price_per_mtok: 0.075
+    output_price_per_mtok: 4.50
+    pricing_source: "https://developers.openai.com/api/docs/pricing"
+    pricing_verified_on: 2026-06-01
+  gpt-5.3-codex:
+    provider: openai
+    input_price_per_mtok: 1.75
+    cached_input_price_per_mtok: 0.175
+    output_price_per_mtok: 14.0
+    pricing_source: "https://developers.openai.com/api/docs/pricing"
+    pricing_verified_on: 2026-06-01
+  gpt-5-codex:
+    provider: openai
+    input_price_per_mtok: 1.25
+    cached_input_price_per_mtok: 0.125
+    output_price_per_mtok: 10.0
+    pricing_source: "https://developers.openai.com/api/docs/models/gpt-5-codex"
+    pricing_verified_on: 2026-06-01

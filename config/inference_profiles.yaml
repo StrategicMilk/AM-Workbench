@@ -1,0 +1,43 @@
+schema_version: "1"
+profiles:
+  planning:
+    temperature: 0.3
+    top_p: 0.9
+    top_k: 40
+    max_tokens: 8192
+  worker_build:
+    temperature: 0.15
+    top_p: 0.9
+    top_k: 40
+    max_tokens: 8192
+    tuning_metadata:
+      backend_tuning_group: llama_cpp
+      benchmark_required_before_promotion: true
+      candidate_only: true
+  worker_vision:
+    temperature: 0.2
+    top_p: 0.9
+    top_k: 40
+    max_tokens: 4096
+    tuning_metadata:
+      backend_tuning_group: llama_cpp
+      benchmark_required_before_promotion: true
+      candidate_only: true
+  worker_image_generation:
+    not_applicable: true
+  worker_video_generation:
+    not_applicable: true
+  worker_asr:
+    deterministic: true
+  worker_tts:
+    deterministic: true
+  embedder:
+    temperature: 0.0
+    top_p: 1.0
+    top_k: 1
+    max_tokens: 1024
+  reranker:
+    temperature: 0.0
+    top_p: 1.0
+    top_k: 1
+    max_tokens: 1024

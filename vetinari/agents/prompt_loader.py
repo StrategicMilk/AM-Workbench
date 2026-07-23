@@ -20,9 +20,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+from vetinari.context.window_manager import count_tokens
 from vetinari.utils.frontmatter import FrontmatterError, parse_frontmatter
 
 logger = logging.getLogger(__name__)
+
 
 # Root of the project — resolved relative to this file's location
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -42,10 +44,6 @@ _section_cache: dict[str, tuple[float, dict[str, str]]] = {}
 # Section header regex: ## Title
 _SECTION_RE = re.compile(r"^##\s+(.+)$", re.MULTILINE)
 _MODE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
-
-# Approximate chars-per-token for budget estimation (conservative)
-_CHARS_PER_TOKEN = 4
-
 
 # -- Per-mode file loading (preferred) ----------------------------------------
 
@@ -113,11 +111,11 @@ def _load_per_mode(agent_name: str, mode: str | None = None) -> str | None:
 
     _prompt_cache[cache_key] = (mtime, result)
     logger.debug(
-        "Loaded per-mode prompt for %s/%s (%d chars, ~%d tokens)",
+        "Loaded per-mode prompt for %s/%s (%d chars, %d tokens)",
         agent_name,
         mode or "identity-only",
         len(result),
-        len(result) // _CHARS_PER_TOKEN,
+        count_tokens(result),
     )
 
     return result
@@ -321,7 +319,7 @@ def check_prompt_budget(
 ) -> dict[str, Any]:
     """Check whether a prompt + response fits within the model's context window.
 
-    Estimates token counts from character lengths and verifies that
+    Uses AM Engine token counts and verifies that
     ``system_tokens + task_tokens + max_tokens <= n_ctx``.
 
     Args:
@@ -334,8 +332,8 @@ def check_prompt_budget(
         Dict with keys: fits (bool), system_tokens, task_tokens, max_tokens,
         total_tokens, n_ctx, headroom.
     """
-    system_tokens = len(system_prompt) // _CHARS_PER_TOKEN
-    task_tokens = len(task_prompt) // _CHARS_PER_TOKEN
+    system_tokens = count_tokens(system_prompt)
+    task_tokens = count_tokens(task_prompt)
     total = system_tokens + task_tokens + max_tokens
     headroom = n_ctx - total
 

@@ -9,49 +9,39 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from types import SimpleNamespace
 
+from vetinari.runtime.workbench_scheduler import Lane, RustSchedulerBridge
+from vetinari.training.idle_scheduler_runtime import _TrainingSchedulerRuntimeMixin
+from vetinari.training.idle_scheduler_types import (
+    MIN_FREE_VRAM_GB as _MIN_FREE_VRAM_GB,
+)
+from vetinari.training.idle_scheduler_types import (
+    MIN_TRAINING_RECORDS as _MIN_TRAINING_RECORDS,
+)
+from vetinari.training.idle_scheduler_types import (
+    OUTPUTS_SCRATCH_TTL_DAYS as _OUTPUTS_SCRATCH_TTL_DAYS,
+)
+from vetinari.training.idle_scheduler_types import (
+    POLL_INTERVAL_SECONDS as _POLL_INTERVAL_SECONDS,
+)
+from vetinari.training.idle_scheduler_types import (
+    IdleTrainingJob,
+)
 from vetinari.types import StatusEnum
 
 logger = logging.getLogger(__name__)
 
-# Polling interval for the background scheduler loop
-POLL_INTERVAL_SECONDS = 60
+# Re-export constants from the legacy module path.
+POLL_INTERVAL_SECONDS = _POLL_INTERVAL_SECONDS
+MIN_FREE_VRAM_GB = _MIN_FREE_VRAM_GB
+MIN_TRAINING_RECORDS = _MIN_TRAINING_RECORDS
+OUTPUTS_SCRATCH_TTL_DAYS = _OUTPUTS_SCRATCH_TTL_DAYS
 
-# Minimum free VRAM required before starting a training cycle (in GB)
-MIN_FREE_VRAM_GB = 8.0
-
-# Minimum number of training records required before starting a training cycle
-MIN_TRAINING_RECORDS = 100
-
-
-@dataclass
-class IdleTrainingJob:
-    """Represents a single idle-time training job.
-
-    Attributes:
-        job_id: Unique identifier for the job.
-        status: Current status — one of "pending", "running", "paused", "completed", "failed".
-        activity_description: Human-readable description of the training activity.
-        started_at: ISO-8601 UTC timestamp when the job started.
-        progress: Fraction complete in [0.0, 1.0].
-    """
-
-    job_id: str
-    status: str
-    activity_description: str
-    started_at: str
-    progress: float = 0.0
-
-    def __repr__(self) -> str:
-        """Show key identifying fields for debugging."""
-        return f"TrainingJob(job_id={self.job_id!r}, status={self.status!r}, progress={self.progress!r})"
-
-
-# Alias for backward compatibility
+# Alias for backward compatibility with callers importing from this module.
 TrainingJob = IdleTrainingJob
 
 
@@ -128,7 +118,7 @@ class IdleDetector:
             return idle_seconds / 60
 
 
-class TrainingScheduler:
+class TrainingScheduler(_TrainingSchedulerRuntimeMixin):
     """Orchestrates idle-time training activities.
 
     Polls the system every :data:`POLL_INTERVAL_SECONDS` seconds.  When
@@ -150,6 +140,7 @@ class TrainingScheduler:
         self,
         idle_detector: IdleDetector,
         vram_manager: object | None = None,
+        rust_bridge: RustSchedulerBridge | None = None,
     ) -> None:
         """Initialise the scheduler.
 
@@ -160,9 +151,12 @@ class TrainingScheduler:
                 ``free_vram_gb`` attribute (or ``get_free_vram_gb()`` method)
                 is queried before starting a cycle.  When ``None`` the VRAM
                 check is skipped.
+            rust_bridge: Optional Rust scheduler bridge override for tests and
+                packaged-kernel integration.
         """
         self._idle_detector: IdleDetector = idle_detector
         self._vram_manager: object | None = vram_manager
+        self._rust_bridge = rust_bridge or RustSchedulerBridge()
 
         self._shutdown_event: threading.Event = threading.Event()
         self._paused: bool = False
@@ -170,10 +164,12 @@ class TrainingScheduler:
 
         self._current_job: IdleTrainingJob | None = None
         self._thread: threading.Thread | None = None
+        self._training_threads: set[threading.Thread] = set()
 
         # History of all manually triggered and idle-time training jobs.
         # Each entry is a dict with job_id, activity_description, started_at.
         self._history: list[dict] = []
+        self._training_lease_by_job: dict[str, str] = {}
 
     # ── Public control API ──────────────────────────────────────────────────
 
@@ -208,6 +204,7 @@ class TrainingScheduler:
             self._thread.join()
             logger.info("TrainingScheduler stopped")
         self._thread = None
+        self.join_training_workers(timeout=5.0)
 
     def pause_for_user_request(self) -> None:
         """Gracefully pause any current training job for an incoming request.
@@ -251,6 +248,7 @@ class TrainingScheduler:
     def start_manual_cycle(
         self,
         activity_description: str = "Manual training cycle",
+        task_type: str | None = None,
     ) -> str:
         """Trigger a manual training cycle immediately, bypassing idle detection.
 
@@ -264,13 +262,20 @@ class TrainingScheduler:
         Args:
             activity_description: Human-readable description of the activity to
                 run.  Defaults to ``"Manual training cycle"`` when omitted.
+            task_type: Optional task or skill type to train. When provided,
+                execution is routed through the training pipeline for that
+                task type instead of the generic curriculum path.
 
         Returns:
             A ``"manual-"``-prefixed hex job ID on success, or
             ``"already_running"`` when a job is already in flight.
+
+        Raises:
+            RustSchedulerBridgeUnavailable: If the Rust scheduler authority
+                rejects or cannot record the training lease request.
         """
         with self._lock:
-            if self._current_job is not None:
+            if self._current_job is not None and self._current_job.status == StatusEnum.RUNNING.value:
                 logger.info(
                     "start_manual_cycle: job %s already running — ignoring request",
                     self._current_job.job_id,
@@ -283,16 +288,41 @@ class TrainingScheduler:
             status="running",
             activity_description=activity_description,
             started_at=datetime.now(timezone.utc).isoformat(),
+            task_type=task_type,
             progress=0.0,
         )
 
         with self._lock:
+            if self._current_job is not None and self._current_job.status == StatusEnum.RUNNING.value:
+                logger.info(
+                    "start_manual_cycle: job %s already running - ignoring request",
+                    self._current_job.job_id,
+                )
+                return "already_running"
             self._current_job = job
             self._history.append({
                 "job_id": job_id,
                 "activity_description": activity_description,
+                "task_type": task_type,
                 "started_at": job.started_at,
             })
+
+        try:
+            rust_lease_id = self._rust_bridge.register_lease_request(
+                lane=Lane.TRAINING,
+                request=SimpleNamespace(capability=task_type or "idle-training"),
+                caller_subsystem="training",
+                project_id="default",
+            )
+        except Exception:
+            with self._lock:
+                if self._current_job is not None and self._current_job.job_id == job_id:
+                    self._current_job = None
+                self._history = [item for item in self._history if item.get("job_id") != job_id]
+            raise
+
+        with self._lock:
+            self._training_lease_by_job[job_id] = rust_lease_id
 
         logger.info(
             "start_manual_cycle: started job=%s activity=%r",
@@ -301,12 +331,105 @@ class TrainingScheduler:
         )
 
         thread = threading.Thread(
-            target=self._execute_training_cycle,
+            target=self._run_tracked_training_cycle,
+            args=(job,),
             name=f"manual-training-{job_id[:8]}",
             daemon=True,
         )
+        with self._lock:
+            self._training_threads.add(thread)
         thread.start()
         return job_id
+
+    def join_training_workers(self, timeout: float | None = None) -> None:
+        """Wait for manually-triggered training workers to finish."""
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        current = threading.current_thread()
+        while True:
+            with self._lock:
+                threads = [thread for thread in self._training_threads if thread is not current]
+            if not threads:
+                return
+            for thread in threads:
+                if deadline is None:
+                    thread.join()
+                else:
+                    remaining = max(0.0, deadline - time.monotonic())
+                    thread.join(remaining)
+            if deadline is not None and time.monotonic() >= deadline:
+                return
+
+    def _run_tracked_training_cycle(self, job: IdleTrainingJob) -> None:
+        try:
+            self._execute_training_cycle_with_rust_receipt(job)
+        finally:
+            current = threading.current_thread()
+            with self._lock:
+                self._training_threads.discard(current)
+
+    def _start_idle_cycle_with_rust_receipt(self) -> None:
+        """Start one idle-detected training cycle behind the Rust lease boundary."""
+        activity_description = self._get_next_curriculum_activity()
+        if activity_description is None:
+            self._handle_missing_activity()
+            return
+
+        job_id = "idle-" + uuid.uuid4().hex
+        job = IdleTrainingJob(
+            job_id=job_id,
+            status="running",
+            activity_description=activity_description,
+            started_at=datetime.now(timezone.utc).isoformat(),
+            task_type=None,
+            progress=0.0,
+        )
+        with self._lock:
+            if self._current_job is not None and self._current_job.status == StatusEnum.RUNNING.value:
+                return
+            self._current_job = job
+            self._history.append({
+                "job_id": job_id,
+                "activity_description": activity_description,
+                "task_type": None,
+                "started_at": job.started_at,
+            })
+
+        try:
+            rust_lease_id = self._rust_bridge.register_lease_request(
+                lane=Lane.TRAINING,
+                request=SimpleNamespace(capability="idle-training"),
+                caller_subsystem="training",
+                project_id="default",
+            )
+        except Exception:
+            with self._lock:
+                if self._current_job is not None and self._current_job.job_id == job_id:
+                    self._current_job = None
+                self._history = [item for item in self._history if item.get("job_id") != job_id]
+            raise
+
+        with self._lock:
+            self._training_lease_by_job[job_id] = rust_lease_id
+        self._execute_training_cycle_with_rust_receipt(job)
+
+    def _execute_training_cycle_with_rust_receipt(self, job: IdleTrainingJob) -> None:
+        """Run training and receipt the Rust scheduler lease."""
+        try:
+            self._execute_training_cycle(job)
+        finally:
+            with self._lock:
+                lease_id = self._training_lease_by_job.pop(job.job_id, "")
+                status = self._current_job.status if self._current_job is not None else "unknown"
+            if lease_id:
+                self._rust_bridge.record_receipt(
+                    lease_id=lease_id,
+                    outcome="ok" if status == "completed" else "error",
+                    rollback_performed=status != "completed",
+                )
+
+    def rust_authority_snapshot(self) -> object:
+        """Return the Rust scheduler bridge snapshot used by training callers."""
+        return self._rust_bridge.snapshot()
 
     # ── Properties ─────────────────────────────────────────────────────────
 
@@ -329,510 +452,6 @@ class TrainingScheduler:
         """
         with self._lock:
             return self._current_job is not None and self._current_job.status == StatusEnum.RUNNING.value
-
-    # ── Internal loop ───────────────────────────────────────────────────────
-
-    def _run_loop(self) -> None:
-        """Main background loop that drives training cycles.
-
-        Polls every :data:`POLL_INTERVAL_SECONDS` seconds.  On each tick:
-
-        1. Check whether the system is idle.
-        2. Check whether the scheduler is paused.
-        3. Check whether a job is already running.
-        4. Verify all preconditions via :meth:`_can_train`.
-        5. Execute a training cycle via :meth:`_execute_training_cycle`.
-        """
-        while not self._shutdown_event.is_set():
-            try:
-                self._shutdown_event.wait(timeout=POLL_INTERVAL_SECONDS)
-                if self._shutdown_event.is_set():
-                    break
-
-                with self._lock:
-                    paused = self._paused
-                    already_running = (
-                        self._current_job is not None and self._current_job.status == StatusEnum.RUNNING.value
-                    )
-
-                if not self._idle_detector.idle:
-                    logger.debug("TrainingScheduler: system is not idle, skipping cycle")
-                    continue
-
-                if paused:
-                    logger.debug("TrainingScheduler: scheduler is paused, skipping cycle")
-                    continue
-
-                if already_running:
-                    logger.debug("TrainingScheduler: job already running, skipping cycle")
-                    continue
-
-                if not self._can_train():
-                    logger.info("TrainingScheduler: preconditions not met, skipping cycle")
-                    continue
-
-                self._execute_training_cycle()
-
-            except Exception:
-                logger.exception("TrainingScheduler._run_loop: unexpected error during cycle")
-
-    def _can_train(self) -> bool:
-        """Check whether all preconditions for a training cycle are satisfied.
-
-        Evaluates:
-        - Sufficient free VRAM (≥ :data:`MIN_FREE_VRAM_GB` GB) if a
-          VRAMManager is present.
-        - No training job already running.
-        - Sufficient training records (≥ :data:`MIN_TRAINING_RECORDS`).
-
-        Logs the specific reason for each failing check so operators can
-        diagnose why training is not starting.
-
-        Returns:
-            ``True`` if all checks pass, ``False`` otherwise.
-        """
-        can = True
-
-        # ── VRAM check ──────────────────────────────────────────────────────
-        if self._vram_manager is not None:
-            try:
-                free_gb: float
-                if hasattr(self._vram_manager, "get_free_vram_gb"):
-                    free_gb = float(self._vram_manager.get_free_vram_gb())
-                elif hasattr(self._vram_manager, "free_vram_gb"):
-                    free_gb = float(self._vram_manager.free_vram_gb)
-                else:
-                    logger.warning(
-                        "_can_train: VRAMManager has no known VRAM attribute, skipping VRAM check",
-                    )
-                    free_gb = MIN_FREE_VRAM_GB  # treat as sufficient
-
-                if free_gb < MIN_FREE_VRAM_GB:
-                    logger.info(
-                        "_can_train: insufficient free VRAM (%.1f GB available, need %.1f GB)",
-                        free_gb,
-                        MIN_FREE_VRAM_GB,
-                    )
-                    can = False
-            except Exception:
-                logger.exception("_can_train: error querying VRAMManager, skipping VRAM check")
-
-        # ── Active job check ────────────────────────────────────────────────
-        with self._lock:
-            if self._current_job is not None and self._current_job.status == StatusEnum.RUNNING.value:
-                logger.info("_can_train: a training job is already running (%s)", self._current_job.job_id)
-                can = False
-
-        # ── Training data check ─────────────────────────────────────────────
-        record_count = self._count_training_records()
-        if record_count < MIN_TRAINING_RECORDS:
-            logger.info(
-                "_can_train: insufficient training records (%d available, need %d)",
-                record_count,
-                MIN_TRAINING_RECORDS,
-            )
-            can = False
-
-        # ── Model availability check ──────────────────────────────────────────
-        try:
-            from vetinari.training.pipeline import TrainingPipeline
-
-            pipeline = TrainingPipeline()
-            resolved = pipeline._resolve_base_model("auto")
-            if not resolved or resolved == "auto":
-                logger.info("_can_train: no model available for training")
-                can = False
-        except Exception:
-            logger.warning("_can_train: model availability check skipped")
-
-        return can
-
-    def _count_training_records(self) -> int:
-        """Return the number of available training records.
-
-        Attempts to query the training pipeline.  Falls back to 0 on any
-        error so that a missing or broken pipeline never prevents the
-        scheduler from making a decision (it will simply skip the cycle).
-
-        Returns:
-            Count of available training records, or 0 on failure.
-        """
-        try:
-            from vetinari.learning.training_data import get_training_collector
-
-            collector = get_training_collector()
-            stats = collector.get_stats()
-            return stats.get("total", 0)
-        except ImportError:
-            logger.debug("_count_training_records: training_data module not available")
-            return 0
-        except Exception:
-            logger.warning("_count_training_records: could not count records", exc_info=True)
-            return 0
-
-    def _execute_training_cycle(self) -> None:
-        """Execute one idle-time training cycle.
-
-        Retrieves the next activity from the curriculum (if the curriculum
-        module is available) and runs it.  Creates a :class:`TrainingJob`
-        to track progress.  Logs a warning and returns gracefully if the
-        curriculum module is not yet available.
-        """
-        activity_description = self._get_next_curriculum_activity()
-        if activity_description is None:
-            # Check if the MetaOptimizer detected collapse risk before simply skipping.
-            # COLLAPSE_RISK means training is actively hurting quality — halt the scheduler
-            # to prevent further degradation until a human intervenes.
-            try:
-                from vetinari.learning.meta_optimizer import LearningPhase, MetaOptimizer
-
-                phase = MetaOptimizer().detect_phase()
-                if phase == LearningPhase.COLLAPSE_RISK:
-                    logger.warning(
-                        "_execute_training_cycle: MetaOptimizer detected COLLAPSE_RISK"
-                        " — halting scheduler to prevent further quality degradation"
-                    )
-                    self._shutdown_event.set()
-                    return
-            except Exception:
-                logger.warning(
-                    "_execute_training_cycle: could not check MetaOptimizer phase"
-                    " — proceeding with normal skip (scheduler continues)"
-                )
-            logger.info("_execute_training_cycle: no curriculum activity available, skipping")
-            return
-
-        job = IdleTrainingJob(
-            job_id=uuid.uuid4().hex,
-            status="running",
-            activity_description=activity_description,
-            started_at=datetime.now(timezone.utc).isoformat(),
-            progress=0.0,
-        )
-
-        with self._lock:
-            self._current_job = job
-
-        logger.info(
-            "TrainingScheduler: starting training cycle job=%s activity=%r",
-            job.job_id,
-            job.activity_description,
-        )
-
-        try:
-            self._run_activity(job)
-        except Exception:
-            logger.exception(
-                "TrainingScheduler: training cycle failed for job=%s",
-                job.job_id,
-            )
-            with self._lock:
-                if self._current_job is not None and self._current_job.job_id == job.job_id:
-                    self._current_job.status = "failed"
-        else:
-            with self._lock:
-                if (
-                    self._current_job is not None
-                    and self._current_job.job_id == job.job_id
-                    and self._current_job.status == StatusEnum.RUNNING.value
-                ):
-                    self._current_job.status = "completed"
-                    self._current_job.progress = 1.0
-            logger.info("TrainingScheduler: completed training cycle job=%s", job.job_id)
-
-            # Notify the meta-optimizer that a training cycle completed so it
-            # can track per-strategy ROI and detect saturation/collapse phases.
-            try:
-                from vetinari.learning.meta_optimizer import MetaOptimizer
-
-                MetaOptimizer().record_cycle(
-                    strategy_name="training",
-                    quality_gain=0.0,  # actual gain unknown at this level; collector provides detail
-                    success=True,
-                )
-            except ImportError:
-                logger.debug("MetaOptimizer not available — skipping cycle record")
-            except Exception:
-                logger.warning(
-                    "Could not record training cycle in MetaOptimizer — ROI tracking will be incomplete",
-                    exc_info=True,
-                )
-
-            # Reinforce the current best config with a positive quality signal now
-            # that a training cycle completed successfully.  Uses a conservative
-            # baseline score (0.7) because actual quality gain is unknown at this
-            # level — the archive's EMA smooths out this uncertainty over time.
-            try:
-                from vetinari.learning.improvement_archive import get_improvement_archive
-                from vetinari.types import AgentType
-
-                _archive = get_improvement_archive()
-                for _agent_type in AgentType:
-                    _top = _archive.get_best_configs(_agent_type.value, limit=1)
-                    if _top:
-                        _archive.update_score(_top[0].config_id, 0.7)
-            except ImportError:
-                logger.debug("ImprovementArchive not available — config score update skipped")
-            except Exception:
-                logger.warning(
-                    "Could not update config scores in ImprovementArchive — archive quality signals will be stale",
-                    exc_info=True,
-                )
-
-        # Run memory consolidation as housekeeping during idle time
-        self._consolidate_memory()
-
-    def _consolidate_memory(self) -> None:
-        """Run memory consolidation during idle time.
-
-        Performs four housekeeping operations in order:
-        1. Session-to-long-term promotion (existing ``consolidate()``)
-        2. Ebbinghaus decay pruning — remove memories below strength threshold
-        3. Episode-to-semantic promotion — extract patterns from recurring episodes
-        4. Contradiction flagging — log entries with conflicting relationship types
-
-        Also prunes stale improvement archive stepping-stones and old plan
-        records to keep storage bounded during long-running sessions.
-        """
-        try:
-            from vetinari.memory.unified import get_unified_store
-
-            store = get_unified_store()
-
-            # 1. Session-to-long-term promotion
-            promoted = store.consolidate()
-            if promoted > 0:
-                logger.info(
-                    "TrainingScheduler: memory consolidation promoted %d entries to long-term storage",
-                    promoted,
-                )
-
-            # 2. Ebbinghaus decay pruning — remove weak memories
-            self._prune_weak_memories(store)
-
-            # 3. Episode-to-semantic promotion
-            try:
-                pattern_count = store.promote_episodes_to_semantic()
-                if pattern_count > 0:
-                    logger.info(
-                        "TrainingScheduler: promoted %d episode groups to semantic patterns",
-                        pattern_count,
-                    )
-            except Exception:
-                logger.warning(
-                    "Episode-to-semantic promotion failed — patterns will not be extracted this cycle",
-                    exc_info=True,
-                )
-
-            # 4. Flag contradictions
-            self._flag_contradictions(store)
-
-        except ImportError:
-            logger.debug("Memory consolidation skipped — unified memory store not available")
-        except Exception:
-            logger.warning("Memory consolidation failed during idle cycle — will retry next cycle", exc_info=True)
-
-        # Prune improvement archive stepping-stones for all known agent types
-        # so the archive stays bounded and stale configs don't accumulate.
-        try:
-            from vetinari.learning.improvement_archive import ImprovementArchive
-            from vetinari.types import AgentType
-
-            archive = ImprovementArchive()
-            for agent_type in AgentType:
-                pruned = archive.prune_stepping_stones(agent_type.value)
-                if pruned > 0:
-                    logger.info(
-                        "TrainingScheduler: pruned %d stepping-stone configs for agent=%s",
-                        pruned,
-                        agent_type.value,
-                    )
-        except ImportError:
-            logger.debug("ImprovementArchive not available — stepping-stone pruning skipped")
-        except Exception:
-            logger.warning(
-                "Could not prune improvement archive stepping-stones — archive may grow unbounded",
-                exc_info=True,
-            )
-
-        # Prune plan records older than the default retention window.
-        try:
-            from vetinari.memory.plan_tracking import MemoryStore
-
-            deleted = MemoryStore().prune_old_plans()
-            if deleted > 0:
-                logger.info("TrainingScheduler: pruned %d old plan records from memory store", deleted)
-        except ImportError:
-            logger.debug("MemoryStore not available — plan pruning skipped")
-        except Exception:
-            logger.warning(
-                "Could not prune old plan records from memory store — storage may grow unbounded",
-                exc_info=True,
-            )
-
-    def _prune_weak_memories(self, store: Any) -> None:
-        """Remove memories whose Ebbinghaus retention strength has decayed below threshold.
-
-        Uses the decay model from memory_storage.ebbinghaus_strength to
-        identify entries that are no longer worth retaining.
-        """
-        try:
-            from vetinari.memory.memory_storage import PRUNE_THRESHOLD, ebbinghaus_strength
-
-            with store._lock:
-                rows = store._conn.execute(
-                    "SELECT id, importance, timestamp, recall_count FROM memories WHERE forgotten = 0"
-                ).fetchall()
-
-            weak_ids: list[str] = []
-            for row in rows:
-                # timestamp is ISO or epoch-ms — normalise to ms
-                ts = row["timestamp"]
-                if isinstance(ts, str):
-                    continue  # ISO timestamps handled by SQL eviction; skip here
-                strength = ebbinghaus_strength(
-                    importance=float(row["importance"] or 0.5),
-                    created_ts_ms=int(ts),
-                    recall_count=int(row["recall_count"] or 0),
-                )
-                if strength < PRUNE_THRESHOLD:
-                    weak_ids.append(row["id"])
-
-            for entry_id in weak_ids:
-                store.forget(entry_id, reason="Ebbinghaus strength below prune threshold")
-
-            if weak_ids:
-                logger.info(
-                    "TrainingScheduler: pruned %d weak memories (Ebbinghaus decay)",
-                    len(weak_ids),
-                )
-        except ImportError:
-            logger.debug("Ebbinghaus pruning skipped — memory_storage not available")
-        except Exception:
-            logger.warning(
-                "Ebbinghaus decay pruning failed — weak memories will persist until next cycle",
-                exc_info=True,
-            )
-
-    def _flag_contradictions(self, store: Any) -> None:
-        """Log memories linked by CONTRADICTS relationships for human review.
-
-        Scans the relationship graph for contradiction edges and logs both
-        sides so operators can resolve conflicting knowledge.
-        """
-        try:
-            with store._lock:
-                rows = store._conn.execute(
-                    "SELECT id, supersedes_id, content FROM memories "
-                    "WHERE relationship_type = 'contradicts' AND forgotten = 0"
-                ).fetchall()
-
-            for row in rows:
-                logger.info(
-                    "TrainingScheduler: contradiction detected — memory %s contradicts %s: %.100s",
-                    row["id"],
-                    row["supersedes_id"],
-                    row["content"],
-                )
-        except Exception:
-            logger.warning("Contradiction flagging skipped — column may not exist yet", exc_info=True)
-
-    def _get_next_curriculum_activity(self) -> str | None:
-        """Retrieve the next activity description from the curriculum module.
-
-        Performs a late import of the curriculum module so that the
-        scheduler degrades gracefully when the curriculum has not yet been
-        implemented.
-
-        Returns:
-            Activity description string, or ``None`` if none is available.
-        """
-        try:
-            from vetinari.training.curriculum import TrainingCurriculum  # late import
-
-            curriculum = TrainingCurriculum()
-            activity = curriculum.next_activity()
-            if activity is None:
-                logger.debug("_get_next_curriculum_activity: curriculum returned no activity")
-                return self._fallback_activity_from_meta_optimizer()
-            # Accept either a string or an object with a ``description`` attribute
-            if isinstance(activity, str):
-                return activity
-            return str(getattr(activity, "description", activity))
-        except ImportError:
-            logger.warning(
-                "_get_next_curriculum_activity: vetinari.training.curriculum not available yet",
-            )
-            return self._fallback_activity_from_meta_optimizer()
-        except Exception:
-            logger.exception("_get_next_curriculum_activity: error fetching curriculum activity")
-            return None
-
-    def _fallback_activity_from_meta_optimizer(self) -> str | None:
-        """Ask the MetaOptimizer for the highest-ROI strategy when curriculum is unavailable.
-
-        Returns:
-            Activity description derived from the strategy suggestion, or None if
-            the MetaOptimizer is unavailable or recommends halting.
-        """
-        try:
-            from vetinari.learning.meta_optimizer import MetaOptimizer
-
-            suggestion = MetaOptimizer().suggest_next_strategy()
-            if suggestion is None:
-                logger.warning(
-                    "_fallback_activity_from_meta_optimizer: MetaOptimizer recommends halting — collapse risk detected"
-                )
-                return None
-            logger.info("_fallback_activity_from_meta_optimizer: MetaOptimizer suggests strategy=%s", suggestion)
-            return f"MetaOptimizer-suggested activity: {suggestion}"
-        except ImportError:
-            logger.debug("MetaOptimizer not available — no fallback activity")
-            return None
-        except Exception:
-            logger.warning(
-                "Could not get MetaOptimizer strategy suggestion — idle cycle will be skipped",
-                exc_info=True,
-            )
-            return None
-
-    def _run_activity(self, job: IdleTrainingJob) -> None:
-        """Execute the training activity for the given job.
-
-        Attempts to delegate to the curriculum module's ``run_activity``
-        method.  Falls back to logging the activity description when the
-        curriculum module is unavailable, ensuring the scheduler never
-        crashes on a missing dependency.
-
-        Args:
-            job: The :class:`TrainingJob` describing the work to perform.
-        """
-        try:
-            from vetinari.training.curriculum import TrainingCurriculum  # late import
-
-            curriculum = TrainingCurriculum()
-            if hasattr(curriculum, "run_activity"):
-                curriculum.run_activity(job.activity_description, job_id=job.job_id)
-                with self._lock:
-                    if self._current_job is not None and self._current_job.job_id == job.job_id:
-                        self._current_job.progress = 1.0
-                return
-        except ImportError:
-            logger.warning(
-                "_run_activity: vetinari.training.curriculum not available, logging activity only",
-            )
-        except Exception:
-            logger.exception("_run_activity: error running curriculum activity, logging only")
-
-        # Fallback: log the activity so the cycle is not silently lost
-        logger.info(
-            "_run_activity: [TRAINING CYCLE] job=%s activity=%r (curriculum module pending)",
-            job.job_id,
-            job.activity_description,
-        )
-        with self._lock:
-            if self._current_job is not None and self._current_job.job_id == job.job_id:
-                self._current_job.progress = 1.0
 
 
 # ---------------------------------------------------------------------------

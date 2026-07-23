@@ -1,0 +1,31 @@
+[package]
+name = "amw-tauri-shell"
+version = "0.6.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+rust-version = "1.88.0"
+
+[lib]
+name = "amw_tauri_shell"
+path = "src/lib.rs"
+
+[[bin]]
+name = "amw-tauri-shell"
+path = "src/main.rs"
+
+[dependencies]
+amw-kernel = { path = "../crates/amw-kernel", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Cargo.lock preserves the audited release build; this bounded manifest policy
+# allows compatible patch/minor security updates while preventing a Tauri 3 jump.
+tauri = { version = "2.9.5", features = ["test"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+pretty_assertions = "1"
+
+[build-dependencies]
+serde_json = "1"
+tauri-build = { version = "2.5.3", features = [] }

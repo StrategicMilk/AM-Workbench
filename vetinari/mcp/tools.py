@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
+from vetinari.security.fail_closed import sanitize_untrusted_text
+from vetinari.security.redaction import redact_text
+from vetinari.utils import privacy_receipt
 from vetinari.utils.registry import BaseRegistry
 
 logger = logging.getLogger(__name__)
 
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+_JSON_SCHEMA_TYPES = frozenset({"string", "number", "integer", "boolean", "object", "array"})
 
-@dataclass
+
+@dataclass(frozen=True, slots=True)
 class MCPToolParameter:
     """A single parameter definition for an MCP tool.
 
@@ -59,6 +67,8 @@ class MCPTool:
             A dict conforming to the MCP inputSchema specification, with
             ``name``, ``description``, and ``inputSchema`` keys.
         """
+        _validate_tool_metadata(self)
+        _validate_tool_signature(self)
         properties = {}
         required = []
         for p in self.parameters:
@@ -77,16 +87,109 @@ class MCPTool:
         }
 
 
+def _validate_tool_signature(tool: MCPTool) -> None:
+    """Ensure advertised MCP parameters match an inspectable keyword handler."""
+    if tool.handler is None:
+        return
+    try:
+        signature = inspect.signature(tool.handler)
+    except (TypeError, ValueError):
+        logger.warning("MCP tool %s handler signature is not inspectable; schema drift check skipped", tool.name)
+        return
+
+    parameters = list(signature.parameters.values())
+    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters):
+        return
+
+    keyword_parameters = [
+        parameter
+        for parameter in parameters
+        if parameter.kind in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+    ]
+    handler_names = {parameter.name for parameter in keyword_parameters}
+    schema_names = {parameter.name for parameter in tool.parameters}
+    missing_from_schema = sorted(handler_names - schema_names)
+    missing_from_handler = sorted(schema_names - handler_names)
+    if missing_from_schema or missing_from_handler:
+        parts = []
+        if missing_from_schema:
+            parts.append(f"handler-only={missing_from_schema}")
+        if missing_from_handler:
+            parts.append(f"schema-only={missing_from_handler}")
+        raise ValueError(
+            f"MCP tool {tool.name!r} parameter schema does not match handler signature: {'; '.join(parts)}"
+        )
+
+    declared = {parameter.name: parameter for parameter in tool.parameters}
+    required_mismatches = []
+    for parameter in keyword_parameters:
+        handler_required = parameter.default is inspect.Parameter.empty
+        if declared[parameter.name].required is not handler_required:
+            required_mismatches.append(parameter.name)
+    if required_mismatches:
+        raise ValueError(
+            f"MCP tool {tool.name!r} required parameters do not match handler defaults: "
+            f"{', '.join(sorted(required_mismatches))}"
+        )
+
+
+def _validate_identifier(value: object, *, label: str) -> str:
+    text = sanitize_untrusted_text(value, max_length=128)
+    if not _IDENTIFIER_RE.fullmatch(text):
+        from vetinari.security.fail_closed import UntrustedInputError
+
+        raise UntrustedInputError(f"{label} contains unsupported characters")
+    return text
+
+
+def _validate_tool_metadata(tool: MCPTool) -> None:
+    """Fail closed before tool schemas are exposed to worker prompts."""
+    _validate_identifier(tool.name, label="tool name")
+    sanitize_untrusted_text(tool.description, max_length=2_000)
+    seen: set[str] = set()
+    for parameter in tool.parameters:
+        name = _validate_identifier(parameter.name, label="parameter name")
+        if name in seen:
+            from vetinari.security.fail_closed import UntrustedInputError
+
+            raise UntrustedInputError(f"duplicate parameter name: {name}")
+        seen.add(name)
+        if parameter.type not in _JSON_SCHEMA_TYPES:
+            from vetinari.security.fail_closed import UntrustedInputError
+
+            raise UntrustedInputError(f"unsupported parameter type: {parameter.type!r}")
+        sanitize_untrusted_text(parameter.description, max_length=1_000)
+
+
 class MCPToolRegistry(BaseRegistry[str, MCPTool]):
     """Registry of MCP tools available to external callers."""
 
-    def register(self, tool: MCPTool) -> None:  # type: ignore[override]
-        """Register a tool, keying it on its name.
+    def register(self, tool: MCPTool | str, item: MCPTool | None = None) -> None:
+        """Register a tool, keying it on its name by default.
 
         Args:
-            tool: The MCPTool instance to register.
+            tool: The MCPTool instance to register, or an explicit registry key.
+            item: Optional explicit MCPTool item for BaseRegistry-compatible calls.
+
+        Raises:
+            TypeError: If called with an invalid key/item shape.
         """
-        super().register(tool.name, tool)
+        if item is None:
+            if not isinstance(tool, MCPTool):
+                msg = "register(tool) requires an MCPTool when item is omitted"
+                raise TypeError(msg)
+            _validate_tool_metadata(tool)
+            _validate_tool_signature(tool)
+            super().register(tool.name, tool)
+            return
+
+        if not isinstance(tool, str):
+            msg = "register(key, item) requires a string key"
+            raise TypeError(msg)
+        _validate_identifier(tool, label="registry key")
+        _validate_tool_metadata(item)
+        _validate_tool_signature(item)
+        super().register(tool, item)
 
     def list_tools(self) -> list[dict[str, Any]]:
         """Return the MCP schema for every registered tool.
@@ -336,7 +439,8 @@ class MCPToolRegistry(BaseRegistry[str, MCPTool]):
 
     # ── Tool handlers ──────────────────────────────────────────────────────────
 
-    def _handle_plan(self, goal: str, context: str = "") -> dict[str, Any]:
+    @staticmethod
+    def _handle_plan(goal: str, context: str = "") -> dict[str, Any]:
         """Generate an execution plan for *goal* via TwoLayerOrchestrator.
 
         Delegates to ``TwoLayerOrchestrator.generate_plan_only()`` which runs
@@ -370,7 +474,8 @@ class MCPToolRegistry(BaseRegistry[str, MCPTool]):
             logger.exception("vetinari_plan failed for goal %r", goal)
             return {"error": f"Plan generation failed: {type(exc).__name__}", "tool": "vetinari_plan"}
 
-    def _handle_search(self, query: str, limit: int = 10) -> dict[str, Any]:
+    @staticmethod
+    def _handle_search(query: str, limit: int = 10) -> dict[str, Any]:
         """Search the codebase using CocoIndexAdapter semantic search.
 
         Args:
@@ -396,7 +501,8 @@ class MCPToolRegistry(BaseRegistry[str, MCPTool]):
                 "tool": "vetinari_search",
             }
 
-    def _handle_execute(self, task: str) -> dict[str, Any]:
+    @staticmethod
+    def _handle_execute(task: str) -> dict[str, Any]:
         """Execute a task through the Vetinari pipeline via TwoLayerOrchestrator.
 
         Calls ``execute_with_agent_graph()`` which generates a plan and then
@@ -416,12 +522,13 @@ class MCPToolRegistry(BaseRegistry[str, MCPTool]):
             from vetinari.orchestration.two_layer import get_two_layer_orchestrator
 
             orch = get_two_layer_orchestrator()
-            return orch.execute_with_agent_graph(task)
+            return cast(dict[str, Any], orch.execute_with_agent_graph(task))
         except Exception as exc:
             logger.exception("vetinari_execute failed for task %r", task)
             return {"error": f"Task execution failed: {type(exc).__name__}", "tool": "vetinari_execute"}
 
-    def _handle_memory(self, action: str, content: str) -> dict[str, Any]:
+    @staticmethod
+    def _handle_memory(action: str, content: str) -> dict[str, Any]:
         """Query or store an entry in the Vetinari dual memory system.
 
         Supports three actions:
@@ -446,7 +553,20 @@ class MCPToolRegistry(BaseRegistry[str, MCPTool]):
             store = get_unified_memory_store()
 
             if action == "store":
-                entry = MemoryEntry(content=content, agent="mcp")
+                safe_content = redact_text(content)
+                entry = MemoryEntry(
+                    content=safe_content,
+                    agent="mcp",
+                    metadata={
+                        "privacy_receipt": privacy_receipt(
+                            privacy_class="subject_data",
+                            subject_id="mcp-local-user",
+                            retention_days=30,
+                            source="mcp.memory.store",
+                            redaction_applied=safe_content != content,
+                        )
+                    },
+                )
                 entry_id = store.remember(entry)
                 return {"status": "stored", "id": entry_id}
 
@@ -460,7 +580,8 @@ class MCPToolRegistry(BaseRegistry[str, MCPTool]):
             logger.exception("vetinari_memory failed for action %r", action)
             return {"error": f"Memory operation failed: {type(exc).__name__}", "tool": "vetinari_memory"}
 
-    def _handle_benchmark(self, suite: str, limit: int = 10) -> dict[str, Any]:
+    @staticmethod
+    def _handle_benchmark(suite: str, limit: int = 10) -> dict[str, Any]:
         """Run a named benchmark suite and return its summary.
 
         Args:
@@ -476,7 +597,7 @@ class MCPToolRegistry(BaseRegistry[str, MCPTool]):
 
             runner = get_default_runner()
             report = runner.run_suite(suite, limit=limit)
-            return report.summary_dict()
+            return cast(dict[str, Any], report.summary_dict())
         except Exception as exc:
             logger.exception("vetinari_benchmark failed for suite %r", suite)
             return {"error": f"Benchmark execution failed: {type(exc).__name__}", "tool": "vetinari_benchmark"}

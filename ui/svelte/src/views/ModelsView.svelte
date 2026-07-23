@@ -9,8 +9,13 @@
   import ModelCard from '$components/models/ModelCard.svelte';
   import ModelDownload from '$components/models/ModelDownload.svelte';
   import ModelRecommendations from '$components/models/ModelRecommendations.svelte';
+  import BackendStatus from '$components/models/BackendStatus.svelte';
+  import AgentStreamPanel from '$components/models/AgentStreamPanel.svelte';
+  import ModelHubBrowser from '$components/workbench/ModelHubBrowser.svelte';
   import * as api from '$lib/api.js';
   import { showToast } from '$lib/stores/toast.svelte.js';
+  import HelpPopover from '$lib/components/help/HelpPopover.svelte';
+  import HelpTooltip from '$lib/components/help/HelpTooltip.svelte';
 
   let models = $state([]);
   let catalog = $state([]);
@@ -23,6 +28,7 @@
   let searchQuery = $state('');
   let selectedDownload = $state(null);
   let activeTab = $state('local');
+  let activeModality = $state('text');
 
   let filteredModels = $derived(
     searchQuery.length === 0
@@ -60,7 +66,7 @@
       // Use null sentinels so we can tell a failed fetch from an empty response.
       const [modelsData, popularData] = await Promise.all([
         api.listModels().catch(() => null),
-        api.getPopularModels().catch(() => null),
+        api.getPopularModels({ modality: activeModality }).catch(() => null),
       ]);
 
       // If both primary fetches failed the backend is unreachable — show an
@@ -128,6 +134,29 @@
     }
   }
 
+  async function handleRemoveModel(modelId, modelName) {
+    if (!modelId) return;
+    const confirmed = confirm(
+      `Remove model "${modelName}" from the local relay catalog? This cannot be undone from the UI.`
+    );
+    if (!confirmed) return;
+
+    try {
+      await api.workbenchKernelRequest(`/api/v1/models/${encodeURIComponent(modelId)}/delete`, {
+        method: 'POST',
+        body: JSON.stringify({
+          confirmed_by: 'local-ui',
+          reason: `User confirmed model removal for ${modelId}`,
+          confirmed_at_utc: new Date().toISOString(),
+        }),
+      });
+      showToast('Model removed', 'info');
+      await loadModels();
+    } catch (err) {
+      showToast(`Remove failed: ${err.message}`, 'error');
+    }
+  }
+
   async function handleRefresh() {
     loading = true;
     try {
@@ -163,12 +192,12 @@
 <div class="models-view">
   <div class="models-header">
     <h2>
-      <i class="fas fa-microchip"></i>
+      <i class="fas fa-microchip" aria-hidden="true"></i>
       Models
     </h2>
     <div class="models-actions">
       <div class="search-container">
-        <i class="fas fa-search search-icon"></i>
+        <i class="fas fa-search search-icon" aria-hidden="true"></i>
         <input
           type="text"
           class="input search-input"
@@ -177,21 +206,28 @@
           aria-label="Search models"
         />
         {#if searching}
-          <i class="fas fa-spinner fa-spin search-spinner"></i>
+          <i class="fas fa-spinner fa-spin search-spinner" aria-hidden="true"></i>
         {/if}
       </div>
       <button class="btn btn-secondary" onclick={handleRefresh} disabled={loading}>
-        <i class="fas fa-sync-alt" class:fa-spin={loading}></i>
+        <i class="fas fa-sync-alt" class:fa-spin={loading} aria-hidden="true"></i>
         Refresh
       </button>
     </div>
   </div>
 
   <!-- Tab switcher -->
-  <div class="tab-bar" role="tablist">
-    <button
+  <div class="tab-bar" role="tablist" tabindex="0" onkeydown={(e) => {
+    const tabs = ['local', 'discover'];
+    const idx = tabs.indexOf(activeTab);
+    if (e.key === 'ArrowRight') { e.preventDefault(); activeTab = tabs[(idx + 1) % tabs.length]; }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); activeTab = tabs[(idx - 1 + tabs.length) % tabs.length]; }
+  }}>
+      <button
       class="tab" class:active={activeTab === 'local'}
       role="tab" aria-selected={activeTab === 'local'}
+      aria-controls="models-panel"
+      tabindex={activeTab === 'local' ? 0 : -1}
       onclick={() => { activeTab = 'local'; }}
     >
       Local Models ({filteredModels.length})
@@ -199,13 +235,15 @@
     <button
       class="tab" class:active={activeTab === 'discover'}
       role="tab" aria-selected={activeTab === 'discover'}
+      aria-controls="models-panel"
+      tabindex={activeTab === 'discover' ? 0 : -1}
       onclick={() => { activeTab = 'discover'; }}
     >
       Discover ({discoverModels.length})
     </button>
   </div>
 
-  <div class="models-content">
+  <div class="models-content" id="models-panel" role="tabpanel">
     <div class="models-main">
       {#if loading}
         <div class="models-loading">
@@ -213,7 +251,7 @@
           Loading models...
         </div>
       {:else if fetchError}
-        <div class="models-fetch-error" role="alert">
+        <div class="models-fetch-error" role="alert" aria-live="assertive">
           <i class="fas fa-exclamation-triangle"></i>
           <p>{fetchError}</p>
           <button class="btn btn-secondary" onclick={loadModels}>Retry</button>
@@ -230,14 +268,14 @@
         {:else}
           <div class="model-grid">
             {#each filteredModels as model (model.id)}
-              <ModelCard {model} onselect={handleSelectModel} />
+              <ModelCard {model} onselect={handleSelectModel} onremove={handleRemoveModel} />
             {/each}
           </div>
         {/if}
       {:else}
         {#if discoverModels.length === 0}
           <div class="models-empty">
-            <i class="fas fa-search"></i>
+            <i class="fas fa-search" aria-hidden="true"></i>
             <p>No models found — try searching HuggingFace above</p>
           </div>
         {:else}
@@ -248,8 +286,9 @@
                 <button
                   class="btn btn-small btn-secondary download-btn"
                   onclick={() => selectForDownload(model)}
+                  aria-label={`Download model ${model.name ?? model.id ?? 'unknown'}`}
                 >
-                  <i class="fas fa-download"></i>
+                  <i class="fas fa-download" aria-hidden="true"></i>
                   Download
                 </button>
               </div>
@@ -260,7 +299,10 @@
     </div>
 
     <div class="models-sidebar">
+      <BackendStatus />
+      <AgentStreamPanel />
       <ModelRecommendations {recommendations} onselect={handleSelectModel} />
+      <ModelHubBrowser />
       {#if selectedDownload}
         <ModelDownload
           model={selectedDownload}
@@ -391,6 +433,7 @@
 
   .download-btn {
     margin-top: 8px;
+    min-height: 44px;
     width: 100%;
   }
 

@@ -1,28 +1,37 @@
 <script>
   import { getToasts, dismissToast } from '$lib/stores/toast.svelte.js';
+  import AriaLiveRegion from '$lib/a11y/AriaLiveRegion.svelte';
+  import Icon from '$lib/a11y/Icon.svelte';
 
   let toasts = $derived(getToasts());
 
   const ICONS = {
-    info: 'fas fa-info-circle',
-    success: 'fas fa-check-circle',
-    warning: 'fas fa-exclamation-triangle',
-    error: 'fas fa-times-circle',
+    info: 'info-circle',
+    success: 'check-circle',
+    warning: 'exclamation-triangle',
+    error: 'times-circle',
   };
 </script>
 
+<AriaLiveRegion />
+
 {#if toasts.length > 0}
-  <div class="toast-stack" aria-live="polite" role="status">
+  <div class="toast-stack" aria-label="Notifications">
     {#each toasts as toast (toast.id)}
-      <div class="toast toast-{toast.type}">
-        <i class={ICONS[toast.type] ?? ICONS.info}></i>
+      <div
+        class="toast toast-{toast.type}"
+        role={toast.type === 'error' ? 'alert' : 'status'}
+        aria-live={toast.type === 'error' ? 'assertive' : 'polite'}
+      >
+        <Icon name={ICONS[toast.type] ?? ICONS.info} />
         <span class="toast-message">{toast.message}</span>
         <button
+          type="button"
           class="toast-close"
           onclick={() => dismissToast(toast.id)}
-          aria-label="Dismiss notification"
+          aria-label={`Dismiss notification: ${toast.message}`}
         >
-          <i class="fas fa-times"></i>
+          <Icon name="times" />
         </button>
       </div>
     {/each}
@@ -85,5 +94,12 @@
   @keyframes toast-in {
     from { opacity: 0; transform: translateY(10px); }
     to   { opacity: 1; transform: translateY(0); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .toast {
+      animation: none;
+      transition: none;
+    }
   }
 </style>

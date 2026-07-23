@@ -23,8 +23,11 @@ from vetinari.integrations.issue_tracker import (
     IssueTracker,
     IssueTrackerError,
 )
+from vetinari.security.fail_closed import UntrustedInputError, assert_closed_schema, sanitize_untrusted_text
+from vetinari.security.redaction import redact_route_payload, redact_text
 
 logger = logging.getLogger(__name__)
+
 
 # -- Constants ----------------------------------------------------------------
 
@@ -62,7 +65,9 @@ def _parse_priority_from_labels(labels: list[dict[str, Any]]) -> IssuePriority:
     Returns:
         The highest priority found, or IssuePriority.MEDIUM if none matched.
     """
-    label_names = {lbl.get("name", "").lower() for lbl in labels}
+    for label in labels:
+        assert_closed_schema(label, allowed_keys={"id", "node_id", "url", "name", "color", "default", "description"})
+    label_names = {sanitize_untrusted_text(lbl.get("name", ""), max_length=256).lower() for lbl in labels}
     # Check in descending priority order so we return the highest one present.
     for priority in (IssuePriority.CRITICAL, IssuePriority.HIGH, IssuePriority.LOW):
         if _PRIORITY_LABEL[priority].lower() in label_names:
@@ -81,6 +86,40 @@ def _parse_issue(raw: dict[str, Any], owner: str, repo: str) -> Issue:
     Returns:
         A populated Issue with all standard fields set.
     """
+    normalized_raw = {"state": "open", **raw}
+    assert_closed_schema(
+        normalized_raw,
+        allowed_keys={
+            "number",
+            "title",
+            "body",
+            "labels",
+            "assignee",
+            "state",
+            "html_url",
+            "pull_request",
+            "id",
+            "node_id",
+            "url",
+            "repository_url",
+            "comments_url",
+            "events_url",
+            "labels_url",
+            "user",
+            "locked",
+            "comments",
+            "created_at",
+            "updated_at",
+            "closed_at",
+            "author_association",
+            "active_lock_reason",
+            "draft",
+            "performed_via_github_app",
+            "state_reason",
+        },
+        required_keys={"number", "title", "state"},
+    )
+    raw = normalized_raw
     labels_raw: list[dict[str, Any]] = raw.get("labels", [])
     label_names = [lbl.get("name", "") for lbl in labels_raw if lbl.get("name")]
     priority = _parse_priority_from_labels(labels_raw)
@@ -91,15 +130,15 @@ def _parse_issue(raw: dict[str, Any], owner: str, repo: str) -> Issue:
 
     return Issue(
         id=str(raw.get("number", "")),
-        title=raw.get("title", ""),
-        description=raw.get("body") or "",
+        title=sanitize_untrusted_text(raw.get("title", ""), max_length=512),
+        description=redact_text(raw.get("body") or ""),
         priority=priority,
         status=status,
         labels=label_names,
         assignee=assignee,
-        url=raw.get("html_url", ""),
+        url=sanitize_untrusted_text(raw.get("html_url", ""), max_length=2048),
         tracker_type="github",
-        raw_data=raw,
+        raw_data=redact_route_payload(raw),
     )
 
 
@@ -120,12 +159,13 @@ class GitHubIssueTracker(IssueTracker):
     """
 
     def __init__(self, token: str, owner: str, repo: str) -> None:
-        self._owner = owner
-        self._repo = repo
-        self._base = f"{_GITHUB_API_BASE}/repos/{owner}/{repo}"
+        self._owner = sanitize_untrusted_text(owner, max_length=128)
+        self._repo = sanitize_untrusted_text(repo, max_length=128)
+        safe_token = sanitize_untrusted_text(token, max_length=4096)
+        self._base = f"{_GITHUB_API_BASE}/repos/{self._owner}/{self._repo}"
         self._session = create_session(
             headers={
-                "Authorization": f"token {token}",
+                "Authorization": f"token {safe_token}",
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
             }
@@ -140,7 +180,10 @@ class GitHubIssueTracker(IssueTracker):
         Returns:
             Absolute GitHub API URL.
         """
-        return f"{self._base}{path}"
+        safe_path = sanitize_untrusted_text(path, max_length=512)
+        if not safe_path.startswith("/") or ".." in safe_path.split("/"):
+            raise UntrustedInputError("GitHub API path must be repo-relative")
+        return f"{self._base}{safe_path}"
 
     def create_issue(self, request: CreateIssueRequest) -> Issue:
         """Create a new GitHub issue.
@@ -159,15 +202,20 @@ class GitHubIssueTracker(IssueTracker):
                                network call fails.
         """
         priority_label = _PRIORITY_LABEL[request.priority]
-        all_labels = list(dict.fromkeys([priority_label, *request.labels]))
+        all_labels = list(
+            dict.fromkeys([
+                priority_label,
+                *(sanitize_untrusted_text(label, max_length=256) for label in request.labels),
+            ])
+        )
 
         payload: dict[str, Any] = {
-            "title": request.title,
-            "body": request.description,
+            "title": sanitize_untrusted_text(request.title, max_length=512),
+            "body": sanitize_untrusted_text(request.description, max_length=20_000) if request.description else "",
             "labels": all_labels,
         }
         if request.assignee:
-            payload["assignees"] = [request.assignee]
+            payload["assignees"] = [sanitize_untrusted_text(request.assignee, max_length=128)]
 
         try:
             resp = self._session.post(
@@ -209,14 +257,17 @@ class GitHubIssueTracker(IssueTracker):
         Raises:
             IssueTrackerError: On connection failure or non-404 error responses.
         """
+        safe_issue_id = sanitize_untrusted_text(issue_id, max_length=32)
+        if not safe_issue_id.isdigit():
+            raise UntrustedInputError("GitHub issue_id must be numeric")
         try:
             resp = self._session.get(
-                self._url(f"/issues/{issue_id}"),
+                self._url(f"/issues/{safe_issue_id}"),
                 timeout=_REQUEST_TIMEOUT,
             )
         except requests.RequestException as exc:
             raise IssueTrackerError(
-                f"GitHub API connection failed while fetching issue #{issue_id} "
+                f"GitHub API connection failed while fetching issue #{safe_issue_id} "
                 f"in {self._owner}/{self._repo} — check network connectivity"
             ) from exc
 
@@ -224,7 +275,7 @@ class GitHubIssueTracker(IssueTracker):
             return None
         if not resp.ok:
             raise IssueTrackerError(
-                f"GitHub API returned {resp.status_code} when fetching issue #{issue_id} "
+                f"GitHub API returned {resp.status_code} when fetching issue #{safe_issue_id} "
                 f"in {self._owner}/{self._repo}: {resp.text[:200]}",
                 status_code=resp.status_code,
             )
@@ -249,6 +300,8 @@ class GitHubIssueTracker(IssueTracker):
         Raises:
             IssueTrackerError: On connection failure or API errors.
         """
+        if limit < 1:
+            raise ValueError("limit must be positive")
         params: dict[str, Any] = {"per_page": min(limit, 100)}
 
         if status is None:
@@ -298,17 +351,20 @@ class GitHubIssueTracker(IssueTracker):
         Raises:
             IssueTrackerError: On connection failure or non-404 API errors.
         """
+        safe_issue_id = sanitize_untrusted_text(issue_id, max_length=32)
+        if not safe_issue_id.isdigit():
+            raise UntrustedInputError("GitHub issue_id must be numeric")
         github_state = "closed" if status in (IssueStatus.CLOSED, IssueStatus.RESOLVED) else "open"
 
         try:
             resp = self._session.patch(
-                self._url(f"/issues/{issue_id}"),
+                self._url(f"/issues/{safe_issue_id}"),
                 json={"state": github_state},
                 timeout=_REQUEST_TIMEOUT,
             )
         except requests.RequestException as exc:
             raise IssueTrackerError(
-                f"GitHub API connection failed while updating issue #{issue_id} "
+                f"GitHub API connection failed while updating issue #{safe_issue_id} "
                 f"in {self._owner}/{self._repo} — check network connectivity"
             ) from exc
 
@@ -316,7 +372,7 @@ class GitHubIssueTracker(IssueTracker):
             return False
         if not resp.ok:
             raise IssueTrackerError(
-                f"GitHub API returned {resp.status_code} when updating issue #{issue_id}: {resp.text[:200]}",
+                f"GitHub API returned {resp.status_code} when updating issue #{safe_issue_id}: {resp.text[:200]}",
                 status_code=resp.status_code,
             )
         return True
@@ -334,15 +390,19 @@ class GitHubIssueTracker(IssueTracker):
         Raises:
             IssueTrackerError: On connection failure or non-404 API errors.
         """
+        safe_issue_id = sanitize_untrusted_text(issue_id, max_length=32)
+        if not safe_issue_id.isdigit():
+            raise UntrustedInputError("GitHub issue_id must be numeric")
+        safe_comment = sanitize_untrusted_text(comment, max_length=20_000)
         try:
             resp = self._session.post(
-                self._url(f"/issues/{issue_id}/comments"),
-                json={"body": comment},
+                self._url(f"/issues/{safe_issue_id}/comments"),
+                json={"body": safe_comment},
                 timeout=_REQUEST_TIMEOUT,
             )
         except requests.RequestException as exc:
             raise IssueTrackerError(
-                f"GitHub API connection failed while adding comment to issue #{issue_id} "
+                f"GitHub API connection failed while adding comment to issue #{safe_issue_id} "
                 f"in {self._owner}/{self._repo} — check network connectivity"
             ) from exc
 
@@ -350,7 +410,7 @@ class GitHubIssueTracker(IssueTracker):
             return False
         if not resp.ok:
             raise IssueTrackerError(
-                f"GitHub API returned {resp.status_code} when adding comment to issue #{issue_id}: {resp.text[:200]}",
+                f"GitHub API returned {resp.status_code} when adding comment to issue #{safe_issue_id}: {resp.text[:200]}",
                 status_code=resp.status_code,
             )
         return True

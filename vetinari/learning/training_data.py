@@ -45,6 +45,7 @@ from .training_record import TrainingRecord
 
 logger = logging.getLogger(__name__)
 
+
 __all__ = [
     "TrainingDataCollector",
     "TrainingRecord",

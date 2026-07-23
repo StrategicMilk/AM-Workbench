@@ -1,0 +1,27 @@
+schema_version: 1
+family_id: ml_genai_practitioner_modes
+live_catalog_path: config/workbench_modes.yaml
+mode_ids:
+  - ml_genai_eval_design
+  - ml_genai_prompt_iteration
+  - ml_genai_dataset_curation
+  - ml_genai_annotation
+  - ml_genai_training_run_setup
+  - ml_genai_model_selection
+  - ml_genai_deployment_promotion_review
+  - ml_genai_incident_autopsy
+  - ml_genai_runtime_tuning
+required_capabilities:
+  - eval design
+  - prompt iteration
+  - dataset curation
+  - annotation
+  - training run setup
+  - model selection
+  - deployment and promotion review
+  - incident autopsy
+  - runtime tuning
+contract:
+  source_pack: roadmap-LW-WORKBENCH-ML-GENAI-PRACTITIONER-MODES
+  live_registration_surface: config/workbench_modes.yaml
+  runtime_loader: vetinari.workbench.modes.templates.load_mode_template_catalog

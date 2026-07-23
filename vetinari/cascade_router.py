@@ -40,18 +40,29 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from vetinari.cascade_confidence import heuristic_confidence as _heuristic_confidence
+from vetinari.cascade_router_factory import build_cascade_from_router, get_cascade_router, reset_cascade_router
 from vetinari.constants import INFERENCE_STATUS_OK
 from vetinari.exceptions import ConfigurationError
 from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
+
+__all__ = (
+    "CascadeResult",
+    "CascadeRouter",
+    "CascadeTier",
+    "build_cascade_from_router",
+    "get_cascade_router",
+    "reset_cascade_router",
+)
+
 
 _CONFIDENCE_THRESHOLD = float(os.environ.get("CASCADE_CONFIDENCE_THRESHOLD", "0.7"))
 _MAX_ESCALATIONS = int(os.environ.get("CASCADE_MAX_ESCALATIONS", "2"))
@@ -109,93 +120,6 @@ class CascadeResult:
 # ---------------------------------------------------------------------------
 # Confidence estimators
 # ---------------------------------------------------------------------------
-
-
-def _heuristic_confidence(response_text: str, task_description: str = "") -> float:
-    """Estimate confidence from response text, optionally using LLM judgment.
-
-    Uses fast heuristics first (regex patterns). When cascade routing is
-    active and an LLM is available, enhances the score with task-conditioned
-    confidence estimation (~200 tokens) — a 10-word answer to "What's the
-    HTTP status for not found?" is fine, but a 10-word answer to "Design a
-    microservice architecture" is not. The heuristic can't tell the
-    difference; the LLM can.
-
-    Args:
-        response_text: The model's response text to evaluate.
-        task_description: Original task description for LLM-conditioned scoring.
-
-    Returns:
-        Confidence score in [0.0, 1.0].
-    """
-    if not response_text:
-        return 0.0
-
-    text = response_text.strip()
-    score = 1.0
-
-    # Very short response
-    if len(text) < 20:
-        score -= 0.4
-
-    # Uncertainty language
-    uncertainty_patterns = [
-        r"\bi('m| am) not sure\b",
-        r"\bi don'?t know\b",
-        r"\bit('s| is) unclear\b",
-        r"\buncertain\b",
-        r"\bI cannot (determine|say|tell)\b",
-        r"\bI'?m unable to\b",
-        r"\bI lack (the |)information\b",
-        r"\bcannot (answer|provide|help)\b",
-    ]
-    for pattern in uncertainty_patterns:
-        if re.search(pattern, text, re.IGNORECASE):
-            score -= 0.2
-
-    # Refusal phrases
-    refusal_patterns = [
-        r"\bI can'?t (help|do|provide)\b",
-        r"\bI (am|'m) not able to\b",
-        r"\bThis (is|seems) beyond\b",
-    ]
-    for pattern in refusal_patterns:
-        if re.search(pattern, text, re.IGNORECASE):
-            score -= 0.15
-
-    # Trailing incomplete sentence (ends mid-sentence without punctuation)
-    if text and text[-1] not in ".!?\"'`":
-        score -= 0.05
-
-    # Repetition (same sentence repeated 3+ times)
-    sentences = re.split(r"[.!?]+", text)
-    if len(sentences) > 3:
-        unique = len({s.strip().lower() for s in sentences if s.strip()})
-        if unique < len(sentences) * 0.5:
-            score -= 0.2
-
-    heuristic_score = max(0.0, min(1.0, score))
-
-    # ── LLM-conditioned confidence when task context is available ──────
-    if task_description:
-        try:
-            from vetinari.llm_helpers import score_confidence_via_llm
-
-            llm_score = score_confidence_via_llm(task_description, text[:500])
-            if llm_score is not None:
-                # Blend: 40% heuristic + 60% LLM (LLM understands task-response fit)
-                blended = heuristic_score * 0.4 + llm_score * 0.6
-                logger.debug(
-                    "Confidence blend: heuristic=%.2f, llm=%.2f, blended=%.2f",
-                    heuristic_score,
-                    llm_score,
-                    blended,
-                )
-                return round(blended, 3)
-        except Exception:
-            logger.warning("LLM confidence scoring unavailable — using heuristic score only for routing")
-
-    return heuristic_score
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +305,123 @@ class CascadeRouter:
         with self._lock:
             return list(self._tiers)
 
+    def _route_tiers_snapshot(self) -> list[CascadeTier]:
+        """Return the cascade tiers for a route attempt, including cloud failover."""
+        with self._lock:
+            tiers = list(self._tiers)
+            if self._should_include_cloud():
+                tiers = tiers + list(self._cloud_tiers)
+                self._stats["cloud_failovers"] += 1
+        return tiers
+
+    def _attempt_cascade_route(
+        self,
+        request: Any,
+        adapter_fn: Callable[[Any], Any],
+        tiers: list[CascadeTier],
+    ) -> tuple[Any, str, float, int, list[str]]:
+        """Run tier attempts and return the best response plus route metadata."""
+        tiers_tried: list[str] = []
+        best_response = None
+        best_confidence = 0.0
+        best_model = tiers[0].model_id
+        escalation_count = 0
+        max_tiers = 1 + self.max_escalations if self.enabled else 1
+
+        for index, tier in enumerate(tiers[:max_tiers]):
+            tier_request = self._apply_tier(request, tier)
+            tiers_tried.append(tier.model_id)
+            try:
+                response = adapter_fn(tier_request)
+            except Exception as exc:
+                logger.warning("CascadeRouter: tier %s failed: %s", tier.model_id, exc)
+                escalation_count += 1
+                continue
+
+            status = getattr(response, "status", "ok")
+            if status != INFERENCE_STATUS_OK:
+                logger.debug("CascadeRouter: tier %s returned status=%s, escalating", tier.model_id, status)
+                escalation_count += 1
+                if best_response is None:
+                    best_response = response
+                    best_model = tier.model_id
+                continue
+
+            confidence = self._estimate_confidence(getattr(response, "output", "") or "")
+            logger.debug(
+                "CascadeRouter: tier %s confidence=%.3f (threshold=%.2f)",
+                tier.model_id,
+                confidence,
+                self.confidence_threshold,
+            )
+            if confidence > best_confidence:
+                best_confidence = confidence
+                best_response = response
+                best_model = tier.model_id
+            if not self.enabled or confidence >= self.confidence_threshold:
+                self._record_accepted(index)
+                break
+            if index < max_tiers - 1:
+                self._log_escalation(tiers, index, confidence)
+                escalation_count += 1
+                self._record_accepted(None)
+            else:
+                self._record_accepted(index)
+        return best_response, best_model, best_confidence, escalation_count, tiers_tried
+
+    def _log_escalation(self, tiers: list[CascadeTier], index: int, confidence: float) -> None:
+        """Log an escalation from one cascade tier to the next."""
+        logger.info(
+            "CascadeRouter: confidence %.3f < %.2f, escalating %s -> %s",
+            confidence,
+            self.confidence_threshold,
+            tiers[index].model_id,
+            tiers[index + 1].model_id if index + 1 < len(tiers) else "end",
+        )
+
+    @staticmethod
+    def _fallback_response(tiers: list[CascadeTier], total_latency: float) -> Any:
+        """Build the absolute fallback response when every tier fails."""
+        from vetinari.adapters.base import InferenceResponse
+
+        return InferenceResponse(
+            model_id=tiers[0].model_id,
+            output="",
+            latency_ms=int(total_latency),
+            tokens_used=0,
+            status="error",
+            error="All cascade tiers failed",
+        )
+
+    def _build_route_result(
+        self,
+        *,
+        response: Any,
+        model_id: str,
+        confidence: float,
+        escalation_count: int,
+        tiers_tried: list[str],
+        tiers: list[CascadeTier],
+        total_latency: float,
+    ) -> CascadeResult:
+        """Record route stats and build the final CascadeResult."""
+        used_tier_cost = next((tier.cost_per_1k_tokens for tier in tiers if tier.model_id == model_id), 0.0)
+        largest_tier_cost = tiers[-1].cost_per_1k_tokens if tiers else 0.0
+        tokens = getattr(response, "tokens_used", 0) or 0
+        with self._lock:
+            self._stats["total_requests"] += 1
+            self._stats["escalations"] += escalation_count
+            self._stats["total_cost_usd"] += used_tier_cost * tokens / 1000.0
+        return CascadeResult(
+            response=response,
+            model_id=model_id,
+            confidence=confidence,
+            escalation_count=escalation_count,
+            total_latency_ms=total_latency,
+            tiers_tried=tiers_tried,
+            cost_saved_vs_largest=max(0.0, (largest_tier_cost - used_tier_cost) * tokens / 1000.0),
+        )
+
     def route(
         self,
         request: Any,
@@ -400,118 +441,33 @@ class CascadeRouter:
         Raises:
             ValueError: If the operation fails.
         """
-        with self._lock:
-            tiers = list(self._tiers)
-            # Include cloud tiers when local queue is saturated (Item 1.7)
-            if self._should_include_cloud():
-                tiers = tiers + list(self._cloud_tiers)
-                self._stats["cloud_failovers"] += 1
-
+        tiers = self._route_tiers_snapshot()
         if not tiers:
             raise ConfigurationError("CascadeRouter has no tiers configured. Call add_tier() first.")
 
         start_total = time.monotonic()
-        tiers_tried: list[str] = []
-        best_response = None
-        best_confidence = 0.0
-        best_model = tiers[0].model_id
-        escalation_count = 0
-        largest_tier_cost = tiers[-1].cost_per_1k_tokens if tiers else 0.0
-
-        max_tiers = 1 + self.max_escalations if self.enabled else 1
-
-        for i, tier in enumerate(tiers[:max_tiers]):
-            # Clone request with this tier's model_id
-            tier_request = self._apply_tier(request, tier)
-            tiers_tried.append(tier.model_id)
-
-            try:
-                response = adapter_fn(tier_request)
-            except Exception as exc:
-                logger.warning("CascadeRouter: tier %s failed: %s", tier.model_id, exc)
-                escalation_count += 1
-                continue
-
-            output_text = getattr(response, "output", "") or ""
-            status = getattr(response, "status", "ok")
-
-            if status != INFERENCE_STATUS_OK:
-                logger.debug("CascadeRouter: tier %s returned status=%s, escalating", tier.model_id, status)
-                escalation_count += 1
-                if best_response is None:
-                    best_response = response
-                    best_model = tier.model_id
-                continue
-
-            confidence = self._estimate_confidence(output_text)
-            logger.debug(
-                "CascadeRouter: tier %s confidence=%.3f (threshold=%.2f)",
-                tier.model_id,
-                confidence,
-                self.confidence_threshold,
-            )
-
-            if confidence > best_confidence:
-                best_confidence = confidence
-                best_response = response
-                best_model = tier.model_id
-
-            if not self.enabled or confidence >= self.confidence_threshold:
-                # Accepted — no escalation needed
-                self._record_accepted(i)
-                break
-
-            # Escalate
-            if i < max_tiers - 1:
-                logger.info(
-                    "CascadeRouter: confidence %.3f < %.2f, escalating %s -> %s",
-                    confidence,
-                    self.confidence_threshold,
-                    tier.model_id,
-                    tiers[i + 1].model_id if i + 1 < len(tiers) else "end",
-                )
-                escalation_count += 1
-                self._record_accepted(None)
-            else:
-                # Exhausted chain
-                self._record_accepted(i)
-
+        best_response, best_model, best_confidence, escalation_count, tiers_tried = self._attempt_cascade_route(
+            request,
+            adapter_fn,
+            tiers,
+        )
         total_latency = (time.monotonic() - start_total) * 1000
 
-        # Calculate cost saved vs always using largest tier
-        used_tier_cost = next((t.cost_per_1k_tokens for t in tiers if t.model_id == best_model), 0.0)
-        tokens = getattr(best_response, "tokens_used", 0) or 0
-        cost_saved = max(0.0, (largest_tier_cost - used_tier_cost) * tokens / 1000.0)
-
-        with self._lock:
-            self._stats["total_requests"] += 1
-            self._stats["escalations"] += escalation_count
-            self._stats["total_cost_usd"] += used_tier_cost * tokens / 1000.0
-
         if best_response is None:
-            # Absolute fallback — should not happen
-            from vetinari.adapters.base import InferenceResponse
+            best_response = self._fallback_response(tiers, total_latency)
 
-            best_response = InferenceResponse(
-                model_id=tiers[0].model_id,
-                output="",
-                latency_ms=int(total_latency),
-                tokens_used=0,
-                status="error",
-                error="All cascade tiers failed",
-            )
-
-        return CascadeResult(
+        return self._build_route_result(
             response=best_response,
             model_id=best_model,
             confidence=best_confidence,
             escalation_count=escalation_count,
-            total_latency_ms=total_latency,
             tiers_tried=tiers_tried,
-            cost_saved_vs_largest=cost_saved,
+            tiers=tiers,
+            total_latency=total_latency,
         )
 
-    def _apply_tier(self, request: Any, tier: CascadeTier) -> Any:
+    @staticmethod
+    def _apply_tier(request: Any, tier: CascadeTier) -> Any:
         """Return a copy of the request with the tier's model_id applied."""
         import copy
 
@@ -560,98 +516,3 @@ class CascadeRouter:
                 "total_cost_usd": 0.0,
                 "cloud_failovers": 0,
             }
-
-
-# ---------------------------------------------------------------------------
-# Integration helper: wire into DynamicModelRouter
-# ---------------------------------------------------------------------------
-
-
-def build_cascade_from_router(
-    dynamic_router: Any,
-    task_type: Any,
-    confidence_threshold: float = _CONFIDENCE_THRESHOLD,
-    max_escalations: int = _MAX_ESCALATIONS,
-) -> CascadeRouter:
-    """Build a CascadeRouter from the models registered in a DynamicModelRouter,.
-
-    ordered by cost (cheapest first).
-
-    Args:
-        dynamic_router: DynamicModelRouter instance.
-        task_type: TaskType used to filter/sort candidate models.
-        confidence_threshold: Confidence threshold for escalation.
-        max_escalations: Max escalation steps.
-
-    Returns:
-        Configured CascadeRouter.
-    """
-    cr = CascadeRouter(
-        confidence_threshold=confidence_threshold,
-        max_escalations=max_escalations,
-    )
-
-    # Get all available models, sorted by cost
-    models = dynamic_router.get_available_models()
-    # Sort by cost_per_1k or latency as proxy for "cheapness"
-    models_sorted = sorted(
-        models,
-        key=lambda m: (
-            getattr(m, "metadata", {}).get("cost_per_1k_tokens", 0.0) if hasattr(m, "metadata") else 0.0,
-            getattr(m, "avg_latency_ms", 0.0),
-        ),
-    )
-
-    for priority, model in enumerate(models_sorted):
-        cost = model.metadata.get("cost_per_1k_tokens", 0.0) if hasattr(model, "metadata") and model.metadata else 0.0
-        provider = getattr(model, "provider", None)
-        provider_val = provider.value if hasattr(provider, "value") else (str(provider) if provider is not None else "")
-        if provider_val in ("openai", "anthropic", "cloud"):
-            cr.add_cloud_tier(model.id, cost_per_1k_tokens=cost, priority=priority)
-        else:
-            cr.add_tier(model.id, cost_per_1k_tokens=cost, priority=priority)
-
-    return cr
-
-
-# ---------------------------------------------------------------------------
-# Singleton
-# ---------------------------------------------------------------------------
-
-_cascade_router: CascadeRouter | None = None
-_cr_lock = threading.Lock()
-
-
-def get_cascade_router(
-    confidence_threshold: float = _CONFIDENCE_THRESHOLD,
-    max_escalations: int = _MAX_ESCALATIONS,
-) -> CascadeRouter:
-    """Get or create the global CascadeRouter instance.
-
-    Args:
-        confidence_threshold: Minimum confidence score to accept a response without
-            escalating. Only used when creating a new instance.
-        max_escalations: Maximum number of escalation steps after the first tier.
-            Only used when creating a new instance.
-
-    Returns:
-        The singleton CascadeRouter, creating one with the given parameters on first call.
-    """
-    global _cascade_router
-    if _cascade_router is None:
-        with _cr_lock:
-            if _cascade_router is None:
-                _cascade_router = CascadeRouter(
-                    confidence_threshold=confidence_threshold,
-                    max_escalations=max_escalations,
-                )
-    return _cascade_router
-
-
-def reset_cascade_router() -> None:
-    """Reset the global CascadeRouter, clearing stats before releasing (useful for testing)."""
-    global _cascade_router
-    with _cr_lock:
-        if _cascade_router is not None:
-            _cascade_router.reset_stats()
-        _cascade_router = None

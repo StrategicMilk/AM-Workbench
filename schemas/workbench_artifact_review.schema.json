@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_artifact_review.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["review_id", "project_id", "subject_id", "kind", "before_artifact", "after_artifact", "diff", "lint_findings", "risk_tags", "review_state", "requested_at_utc"],
+  "properties": {
+    "review_id": {"type": "string", "minLength": 1},
+    "project_id": {"type": "string", "minLength": 1},
+    "subject_id": {"type": "string", "minLength": 1},
+    "kind": {"type": "string", "minLength": 1},
+    "before_artifact": {
+      "type": "object",
+      "properties": {
+        "artifact_id": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1}
+      },
+      "required": ["artifact_id", "kind", "path"],
+      "additionalProperties": false,
+      "maxProperties": 64
+    },
+    "after_artifact": {
+      "type": "object",
+      "properties": {
+        "artifact_id": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1}
+      },
+      "required": ["artifact_id", "kind", "path"],
+      "additionalProperties": false,
+      "maxProperties": 64
+    },
+    "diff": {
+      "type": "object",
+      "required": ["subject_id", "kind", "before_signature", "after_signature", "changed_sections", "is_noop"],
+      "properties": {
+        "subject_id": {"type": "string"},
+        "kind": {"type": "string"},
+        "before_signature": {"type": "string"},
+        "after_signature": {"type": "string"},
+        "is_noop": {"type": "boolean"},
+        "changed_sections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "before_value_repr", "after_value_repr", "change_kind"],
+            "properties": {
+              "path": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^(?!.*(?:^|/)\\.\\.(?:/|$)).+"},
+              "before_value_repr": {"type": "string", "maxLength": 4000},
+              "after_value_repr": {"type": "string", "maxLength": 4000},
+              "change_kind": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "lint_findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule_id", "severity", "risk_tags", "message", "location"],
+        "properties": {
+          "rule_id": {"type": "string"},
+          "severity": {"enum": ["INFO", "WARNING", "ERROR", "BLOCKER"]},
+          "risk_tags": {"type": "array", "items": {"type": "string"}},
+          "message": {"type": "string"},
+          "location": {"type": "string"}
+        }
+      }
+    },
+    "risk_tags": {"type": "array", "items": {"type": "string"}},
+    "review_state": {"enum": ["PENDING", "LINT_RUNNING", "LINT_PASSED", "LINT_FAILED", "APPROVED", "REJECTED", "BLOCKED_BY_LINT"]},
+    "requested_at_utc": {"type": "string"},
+    "decided_at_utc": {"type": ["string", "null"]},
+    "decided_by": {"type": ["string", "null"]},
+    "rationale": {"type": ["string", "null"]}
+  }
+}

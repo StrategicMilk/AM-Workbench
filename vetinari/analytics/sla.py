@@ -53,6 +53,11 @@ from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
 
+_MAX_OBSERVATIONS_PER_SLO = 10_000
+_MAX_MODEL_OBSERVATIONS = 10_000
+_MAX_BREACH_HISTORY = 5_000
+
+
 # ---------------------------------------------------------------------------
 # Enumerations
 # ---------------------------------------------------------------------------
@@ -75,7 +80,7 @@ class SLOType(Enum):
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class SLOTarget:
     """A single Service Level Objective."""
 
@@ -102,7 +107,7 @@ class SLOTarget:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class SLABreach:
     """A single moment when an SLO was violated."""
 
@@ -162,7 +167,7 @@ class SLAReport:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class _Obs:
     value: float
     timestamp: float
@@ -215,7 +220,7 @@ class SLATracker:
         self._slos: dict[str, SLOTarget] = {}
         # keyed by SLO name → deque of _Obs within a rolling window
         self._obs: dict[str, deque[_Obs]] = {}
-        self._breaches: list[SLABreach] = []
+        self._breaches: deque[SLABreach] = deque(maxlen=_MAX_BREACH_HISTORY)
         # Per-model latency observations for model-level compliance queries
         self._model_obs: dict[str, deque[_Obs]] = {}
 
@@ -227,7 +232,7 @@ class SLATracker:
         """Register slo."""
         with self._lock:
             self._slos[slo.name] = slo
-            self._obs.setdefault(slo.name, deque())
+            self._obs.setdefault(slo.name, deque(maxlen=_MAX_OBSERVATIONS_PER_SLO))
             logger.debug("Registered SLO: %s (%s budget=%s)", slo.name, slo.slo_type.value, slo.budget)
 
     def unregister_slo(self, name: str) -> bool:
@@ -269,7 +274,7 @@ class SLATracker:
                 if slo.slo_type in (SLOType.LATENCY_P50, SLOType.LATENCY_P95, SLOType.LATENCY_P99):
                     self._push(slo.name, _Obs(value=latency_ms, timestamp=now, success=success))
             # Also track per-model for model-level compliance queries
-            q = self._model_obs.setdefault(key, deque())
+            q = self._model_obs.setdefault(key, deque(maxlen=_MAX_MODEL_OBSERVATIONS))
             q.append(_Obs(value=latency_ms, timestamp=now, success=success))
             # Evict observations older than 1 hour
             cutoff = now - CACHE_TTL_ONE_HOUR
@@ -308,6 +313,7 @@ class SLATracker:
     def _push(self, slo_name: str, obs: _Obs) -> None:
         """Must be called under self._lock."""
         q = self._obs[slo_name]
+        # maxlen bounds bursty same-window traffic; timestamp eviction preserves SLO semantics.
         q.append(obs)
         # Evict observations outside the window
         slo = self._slos[slo_name]
@@ -421,7 +427,7 @@ class SLATracker:
             budget_ms: The budget ms.
 
         Returns:
-            The computed value.
+            Resolved model compliance value.
         """
         with self._lock:
             q = self._model_obs.get(model_id)
@@ -435,6 +441,7 @@ class SLATracker:
         """Record breach."""
         _validate_breach(breach)
         with self._lock:
+            # maxlen is enforced by self._breaches' deque(maxlen=_MAX_BREACH_HISTORY).
             self._breaches.append(breach)
 
     # ------------------------------------------------------------------
@@ -463,7 +470,7 @@ class SLATracker:
             self._breaches.clear()
             self._model_obs.clear()
             for name in self._slos:
-                self._obs[name] = deque()
+                self._obs[name] = deque(maxlen=_MAX_OBSERVATIONS_PER_SLO)
 
 
 # ---------------------------------------------------------------------------

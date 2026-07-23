@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_conversation.schema.json",
+  "title": "Workbench Conversation",
+  "type": "object",
+  "required": [
+    "conversation_id",
+    "active_mode",
+    "active_branch_id",
+    "messages",
+    "branches",
+    "workspace_binding",
+    "state",
+    "affordances"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "conversation_id": { "type": "string", "minLength": 1 },
+    "active_mode": {
+      "type": "string",
+      "enum": ["casual", "chat", "research", "writing", "creative_writing"]
+    },
+    "active_branch_id": { "type": "string", "minLength": 1 },
+    "messages": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "items": { "$ref": "#/$defs/message" }
+    },
+    "branches": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/branch" }
+    },
+    "workspace_binding": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/workspace_binding" }
+      ]
+    },
+    "state": {
+      "type": "object",
+      "required": ["casual_first", "trace_console_visible", "acceptance_flow_required"],
+      "properties": {
+        "casual_first": { "const": true },
+        "trace_console_visible": { "const": false },
+        "acceptance_flow_required": { "const": false },
+        "structured_route": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "affordances": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "$ref": "#/$defs/affordance" }
+    }
+  },
+  "$defs": {
+    "message": {
+      "type": "object",
+      "required": ["message_id", "role", "content", "branch_id", "created_at_utc", "evidence_refs", "authority_ref"],
+      "additionalProperties": false,
+      "properties": {
+        "message_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "role": { "type": "string", "enum": ["user", "assistant", "system"] },
+        "content": { "type": "string", "minLength": 1, "maxLength": 20000 },
+        "branch_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "created_at_utc": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "evidence_refs": {
+          "type": "array",
+          "maxItems": 50,
+          "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+        },
+        "authority_ref": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "minLength": 1, "maxLength": 512 }
+          ]
+        }
+      }
+    },
+    "branch": {
+      "type": "object",
+      "required": ["branch_id", "title", "parent_branch_id", "message_ids"],
+      "additionalProperties": false,
+      "properties": {
+        "branch_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "parent_branch_id": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "minLength": 1, "maxLength": 128 }
+          ]
+        },
+        "message_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 200,
+          "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+        }
+      }
+    },
+    "workspace_binding": {
+      "type": "object",
+      "required": [
+        "workspace_id",
+        "project_id",
+        "spine_object_refs",
+        "bound_by_authority_ref",
+        "consent_ref",
+        "evidence_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "workspace_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "project_id": { "type": "string", "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$" },
+        "spine_object_refs": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+        },
+        "bound_by_authority_ref": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "consent_ref": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+        }
+      }
+    },
+    "affordance": {
+      "type": "object",
+      "required": [
+        "kind",
+        "label",
+        "enabled",
+        "requires_consent",
+        "requires_project_context",
+        "requires_authority",
+        "requires_evidence",
+        "blocked_reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "continue_casual",
+            "save_transcript",
+            "promote_to_plan",
+            "promote_to_evidence_notebook",
+            "attach_workspace"
+          ]
+        },
+        "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "enabled": { "type": "boolean" },
+        "requires_consent": { "type": "boolean" },
+        "requires_project_context": { "type": "boolean" },
+        "requires_authority": { "type": "boolean" },
+        "requires_evidence": { "type": "boolean" },
+        "blocked_reason": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "minLength": 1, "maxLength": 512 }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -4,10 +4,20 @@
    *
    * @prop {object} model - Model data from API.
    * @prop {(modelId: string) => void} [onselect] - Called when model is selected.
+   * @prop {(modelId: string, modelName: string) => void} [onremove] - Called after the caller confirms removal.
    */
   import { fileSize, decimal } from '$lib/utils/format.js';
 
-  let { model, onselect } = $props();
+  let { model, onselect, onremove } = $props();
+  const MAX_USE_CASES = 8;
+
+  function boundedStringList(values, maxItems = MAX_USE_CASES) {
+    if (!Array.isArray(values)) return [];
+    return values
+      .map((value) => String(value ?? '').trim())
+      .filter(Boolean)
+      .slice(0, maxItems);
+  }
 
   let score = $derived(model.fitness_score ?? model.score ?? null);
   let scoreClass = $derived(
@@ -18,8 +28,8 @@
 
   // Use-case tags: from recommended_for, capabilities, or HF tags
   let useCases = $derived.by(() => {
-    if (model.recommended_for?.length) return model.recommended_for;
-    if (model.capabilities?.length) return model.capabilities;
+    if (model.recommended_for?.length) return boundedStringList(model.recommended_for);
+    if (model.capabilities?.length) return boundedStringList(model.capabilities);
     // Map HF pipeline tags to human-friendly labels
     const tagMap = {
       'text-generation': 'general',
@@ -34,11 +44,11 @@
       'text-classification': 'classification',
       'token-classification': 'extraction',
     };
-    const tags = model.metrics?.tags ?? [];
+    const tags = boundedStringList(model.metrics?.tags, 32);
     const mapped = tags
       .map((t) => tagMap[t])
       .filter(Boolean);
-    return [...new Set(mapped)];
+    return [...new Set(mapped)].slice(0, MAX_USE_CASES);
   });
 
   let statusLabel = $derived(
@@ -51,6 +61,8 @@
     model.status === 'loaded' ? 'status-loaded' :
     model.status === 'available' ? 'status-available' : 'status-remote'
   );
+
+  let canRemove = $derived(Boolean(onremove) && model.status !== 'remote');
 </script>
 
 <div class="model-card" class:active={model.active}>
@@ -59,7 +71,7 @@
       {model.name ?? model.id ?? 'Unknown'}
     </div>
     {#if score != null}
-      <div class="model-score {scoreClass}" title="Fitness score">
+      <div class="model-score {scoreClass}" title="Fitness score" aria-label={`Fitness score ${decimal(score * 100, 0)}`}>
         {decimal(score * 100, 0)}
       </div>
     {/if}
@@ -96,7 +108,7 @@
   {/if}
 
   <div class="model-footer">
-    <span class="model-status {statusClass}">
+    <span class="model-status {statusClass}" role="status" aria-label={`Model status ${statusLabel}`}>
       {statusLabel}
     </span>
     {#if onselect}
@@ -104,8 +116,20 @@
         class="btn btn-small btn-primary"
         onclick={() => onselect(model.id)}
         disabled={model.active}
+        aria-label={`${model.active ? 'Active model' : 'Select model'} ${model.name ?? model.id ?? 'unknown'}`}
       >
         {model.active ? 'Active' : 'Select'}
+      </button>
+    {/if}
+    {#if canRemove}
+      <button
+        class="btn btn-small btn-danger"
+        onclick={() => onremove(model.id, model.name ?? model.id)}
+        disabled={model.active}
+        title={model.active ? 'Active model cannot be removed' : 'Remove model'}
+        aria-label={`Remove model ${model.name ?? model.id ?? 'unknown'}`}
+      >
+        Remove
       </button>
     {/if}
   </div>
@@ -207,6 +231,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 8px;
   }
 
   .model-status {
@@ -218,4 +243,18 @@
   .status-loaded   { color: var(--success); }
   .status-available { color: var(--primary); }
   .status-remote    { color: var(--text-muted); }
+
+  .btn-danger {
+    background: var(--danger-muted);
+    color: var(--danger);
+    border: 1px solid rgba(240, 98, 98, 0.35);
+  }
+
+  .btn-danger:hover:not(:disabled) {
+    background: rgba(240, 98, 98, 0.2);
+  }
+
+  .model-footer :global(.btn) {
+    min-height: 44px;
+  }
 </style>

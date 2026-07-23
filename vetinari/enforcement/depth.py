@@ -10,6 +10,8 @@ import logging
 
 from vetinari.agents.contracts import get_agent_spec
 from vetinari.exceptions import DelegationDepthExceeded
+from vetinari.guards import GateError
+from vetinari.reliability_guards import require_not_none
 from vetinari.types import AgentType
 
 logger = logging.getLogger(__name__)
@@ -37,13 +39,12 @@ class DelegationDepthValidator:
         Raises:
             DelegationDepthExceeded: If current_depth > spec.max_delegation_depth.
         """
-        spec = get_agent_spec(agent_type)
-        if spec is None:
-            logger.warning(
-                "No AgentSpec found for %s — skipping depth validation",
-                agent_type,
+        if not isinstance(agent_type, AgentType):
+            raise GateError(
+                "delegation_depth",
+                f"unknown agent type: {agent_type!r} - add to AgentType enum before use",
             )
-            return
+        spec = require_not_none(get_agent_spec(agent_type), label=f"AgentSpec[{agent_type!r}]")
 
         max_depth = spec.max_delegation_depth
         if current_depth > max_depth:

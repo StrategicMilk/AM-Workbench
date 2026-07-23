@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_tool_guide.schema.json",
+  "title": "Workbench Tool Guide Catalog And Selection",
+  "type": "object",
+  "required": ["schema_version", "guides"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "default_token_budget": { "type": "integer", "minimum": 1 },
+    "guides": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/tool_guide" }
+    },
+    "selection_response": { "$ref": "#/$defs/selection_response" }
+  },
+  "$defs": {
+    "tool_guide": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "guide_id",
+        "version",
+        "title",
+        "tool_ids",
+        "surface_kinds",
+        "workflow_action_ids",
+        "capability_fingerprints",
+        "safety_notes",
+        "examples",
+        "stale_after",
+        "authored_at",
+        "provenance_refs",
+        "token_budget",
+        "guidance"
+      ],
+      "properties": {
+        "guide_id": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "tool_ids": { "$ref": "#/$defs/string_list_non_empty" },
+        "surface_kinds": { "$ref": "#/$defs/string_list" },
+        "workflow_action_ids": { "$ref": "#/$defs/string_list" },
+        "capability_fingerprints": { "$ref": "#/$defs/string_list" },
+        "capability_pack_ids": { "$ref": "#/$defs/string_list" },
+        "safety_notes": { "$ref": "#/$defs/string_list_non_empty" },
+        "examples": { "$ref": "#/$defs/string_list" },
+        "stale_after": { "type": "string", "format": "date" },
+        "authored_at": { "type": "string", "format": "date" },
+        "provenance_refs": { "$ref": "#/$defs/string_list_non_empty" },
+        "token_budget": { "type": "integer", "minimum": 1 },
+        "guidance": { "type": "string", "minLength": 1 }
+      }
+    },
+    "selection_response": {
+      "type": "object",
+      "required": ["selected_guides", "diagnostics", "bounded_text", "total_token_count", "token_budget"],
+      "properties": {
+        "selected_guides": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/selected_guide" }
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/diagnostic" }
+        },
+        "bounded_text": { "type": "string" },
+        "total_token_count": { "type": "integer", "minimum": 0 },
+        "token_budget": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "selected_guide": {
+      "type": "object",
+      "required": ["guide_id", "version", "text", "token_count", "attribution", "provenance_refs"],
+      "properties": {
+        "guide_id": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "token_count": { "type": "integer", "minimum": 1 },
+        "attribution": { "type": "string", "minLength": 1 },
+        "provenance_refs": { "$ref": "#/$defs/string_list_non_empty" },
+        "safety_notes": { "$ref": "#/$defs/string_list" },
+        "examples": { "$ref": "#/$defs/string_list" }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "required": ["status", "message"],
+      "properties": {
+        "status": {
+          "enum": [
+            "selected",
+            "inactive_tool",
+            "stale_guide",
+            "fingerprint_mismatch",
+            "over_token_budget",
+            "blocked"
+          ]
+        },
+        "message": { "type": "string", "minLength": 1 },
+        "guide_id": { "type": ["string", "null"] },
+        "detail": { "type": ["string", "null"] },
+        "provenance_refs": { "$ref": "#/$defs/string_list" }
+      }
+    },
+    "string_list": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "string_list_non_empty": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    }
+  }
+}

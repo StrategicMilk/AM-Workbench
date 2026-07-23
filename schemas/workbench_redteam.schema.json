@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_redteam.schema.json",
+  "title": "Vetinari Workbench Red-Team Suite Schema",
+  "description": "Vetinari workbench red-team suite schema. Compatible with Promptfoo redteam format as documented at https://www.promptfoo.dev/docs/red-team/configuration/ and https://www.promptfoo.dev/docs/configuration/guide/ (fetched 2026-04-30, version reference: promptfoo npm 0.121.9; docs describe targets/providers, redteam.plugins, redteam.strategies, prompts, providers, tests, vars, and assert). Restricts redteam.plugins to the six Vetinari attack kinds; layers the assets[] block on top so every suite declares which Workbench asset_id/asset_revision is under attack.",
+  "type": "object",
+  "properties": {
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Suite description."
+    },
+    "prompts": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Promptfoo-compatible prompt strings or references."
+    },
+    "providers": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/provider"},
+      "description": "Promptfoo-compatible providers."
+    },
+    "tests": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/testCase"},
+      "description": "Promptfoo-compatible test cases with Vetinari attack kind metadata."
+    },
+    "redteam": {
+      "type": "object",
+      "properties": {
+        "plugins": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "prompt_injection",
+              "agent_tool_misuse",
+              "rag_poisoning",
+              "gateway_route_abuse",
+              "coding_agent_repo_injection",
+              "verifier_integrity"
+            ]
+          },
+          "description": "Restricted Vetinari red-team attack kinds."
+        },
+        "strategies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["direct", "adversarial", "resampling", "crowdstrike_redteam", "burp_suite"]
+          },
+          "description": "Promptfoo red-team strategies allowed by the workbench red-team harness."
+        }
+      },
+      "additionalProperties": true,
+      "description": "Promptfoo redteam block."
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/asset"},
+      "description": "Workbench assets under attack."
+    }
+  },
+  "required": ["description", "providers", "tests", "assets"],
+  "additionalProperties": false,
+  "$defs": {
+    "attackKind": {
+      "type": "string",
+      "enum": [
+        "prompt_injection",
+        "agent_tool_misuse",
+        "rag_poisoning",
+        "gateway_route_abuse",
+        "coding_agent_repo_injection",
+        "verifier_integrity"
+      ]
+    },
+    "provider": {
+      "oneOf": [
+        {"type": "string", "minLength": 1},
+        {
+          "type": "object",
+          "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "providerId": {"type": "string", "minLength": 1},
+            "config": {"type": "object", "additionalProperties": true}
+          },
+          "anyOf": [{"required": ["id"]}, {"required": ["providerId"]}],
+          "additionalProperties": true
+        }
+      ],
+      "description": "Promptfoo provider string or object."
+    },
+    "testCase": {
+      "type": "object",
+      "properties": {
+        "case_id": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "kind": {"$ref": "#/$defs/attackKind"},
+        "vars": {"type": "object", "additionalProperties": true},
+        "provider": {"$ref": "#/$defs/provider"},
+        "assert": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/assertion"}
+        }
+      },
+      "required": ["description", "kind", "assert"],
+      "additionalProperties": true
+    },
+    "assertion": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["icontains", "contains-any", "regex", "javascript", "llm-rubric", "is-refusal"]
+        },
+        "value": {
+          "oneOf": [
+            {"type": "string"},
+            {"type": "array", "items": {"type": "string"}},
+            {"type": "object", "additionalProperties": true}
+          ]
+        },
+        "metric": {"type": "string"}
+      },
+      "required": ["type", "value"],
+      "additionalProperties": true
+    },
+    "asset": {
+      "type": "object",
+      "properties": {
+        "asset_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:/-]{1,128}$"
+        },
+        "asset_revision": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,64}$"
+        },
+        "artifact_path": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["asset_id", "asset_revision"],
+      "additionalProperties": true
+    }
+  }
+}

@@ -86,25 +86,23 @@ _COST_ANALYSIS_PROMPT = (
     "- Always include: input token cost, output token cost, latency, quality score\n"
     "- Calculate cost-per-quality-point ($/quality) for meaningful comparisons\n"
     "- Factor in hidden costs: retry overhead, escalation chains, batch vs real-time\n"
-    "- Compare tiers: small (7B, <$0.001/1k), medium (30B, ~$0.001/1k),\n"
-    "  large (72B, ~$0.002/1k), premium (cloud APIs, $0.003-0.015/1k)\n"
+    "- Compare tiers using the configured model pricing table and provider metadata\n"
     "- Local models: amortised hardware cost = $0 per token after purchase\n\n"
     "## Optimisation Strategies\n"
-    "- Cascade routing: start cheap, escalate only on low confidence (saves 40-60%)\n"
-    "- Batch processing: queue non-urgent work for 50% API discount\n"
-    "- Prompt caching: reuse system prompts to cut input costs (Anthropic: 90% reduction)\n"
+    "- Cascade routing: start cheap, escalate only on low confidence when quality gates allow\n"
+    "- Batch processing: use provider batch rates only when present in the configured pricing table\n"
+    "- Prompt caching: use provider-specific cache rates from the configured pricing table\n"
     "- Token budgeting: set per-task max_tokens to prevent runaway costs\n"
     "- SLM preprocessing: use small models for classification/routing before expensive inference\n\n"
     "## Output Format\n"
     "Return JSON with 'comparisons' (array of model cost breakdowns), 'recommendation'\n"
-    "(cheapest adequate model), 'estimated_savings', and 'forecast' when applicable.\n"
+    "(cheapest adequate model), 'pricing_basis', and 'forecast' when applicable.\n"
     "Always include concrete dollar amounts, not just relative comparisons.\n\n"
     "## Example\n"
-    "Input: 'Compare costs for coding tasks between local 7B and cloud Sonnet'\n"
-    'Output: {"comparisons": [{"model": "qwen2.5-coder-7b", "cost_per_task": 0.0, '
-    '"avg_latency_ms": 2100}, {"model": "claude-sonnet-4", "cost_per_task": 0.045, '
-    '"avg_latency_ms": 1800}], "recommendation": "qwen2.5-coder-7b", '
-    '"estimated_savings": "$4.50/100 tasks"}'
+    "Input: 'Compare costs for selected coding-task models using configured rates'\n"
+    'Output: {"comparisons": [{"model": "<model-id>", "cost_per_task": 0.0, '
+    '"avg_latency_ms": 0}], "recommendation": "<computed recommendation>", '
+    '"pricing_basis": "configured model pricing table"}'
 )
 
 _EXPERIMENT_PROMPT = (
@@ -114,7 +112,7 @@ _EXPERIMENT_PROMPT = (
     "## Core Responsibilities\n"
     "- Design controlled experiments with proper baselines and control groups\n"
     "- Define clear hypotheses, primary/secondary metrics, and success criteria\n"
-    "- Calculate required sample sizes for statistical power (target: 80% power, α=0.05)\n"  # noqa: RUF001 - prompt text intentionally keeps unicode punctuation
+    "- Calculate required sample sizes for statistical power (target: 80% power, alpha=0.05)\n"
     "- Analyse results with appropriate statistical tests (t-test, chi-squared, Mann-Whitney)\n"
     "- Recommend go/no-go decisions based on evidence, not intuition\n\n"
     "## Experiment Design Principles\n"

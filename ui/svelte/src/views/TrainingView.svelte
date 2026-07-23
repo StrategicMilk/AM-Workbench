@@ -6,6 +6,9 @@
   import * as api from '$lib/api.js';
   import * as fmt from '$lib/utils/format.js';
   import { showToast } from '$lib/stores/toast.svelte.js';
+  import HelpPopover from '$lib/components/help/HelpPopover.svelte';
+  import HelpTooltip from '$lib/components/help/HelpTooltip.svelte';
+  import { requireEvidence } from '$lib/evidence/evidenceGuard.js';
 
   // -- State -------------------------------------------------------------------
 
@@ -16,13 +19,16 @@
   let actionPending = $state(false);
   let expandedRunId = $state(null);
 
-  let config = $state({
-    learning_rate: 0.0001,
-    epochs: 3,
-    batch_size: 8,
-    warmup_steps: 100,
-    max_seq_len: 2048,
-  });
+  const emptyTrainingConfig = {
+    skill: '',
+    learning_rate: null,
+    epochs: null,
+    batch_size: null,
+    warmup_steps: null,
+    max_seq_len: null,
+  };
+
+  let config = $state({ ...emptyTrainingConfig });
 
   let syntheticConfig = $state({
     num_samples: 100,
@@ -50,19 +56,86 @@
     status?.progress != null ? Math.min(100, Math.max(0, status.progress)) : 0
   );
 
+  function coerceNumber(value, min, max) {
+    if (value == null || value === '') return null;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return null;
+    return Math.max(min, Math.min(max, parsed));
+  }
+
+  function normalizeTrainingConfig(raw = {}) {
+    const epochs = coerceNumber(raw.epochs, 1, 100);
+    const batchSize = coerceNumber(raw.batch_size, 1, 256);
+    const warmupSteps = coerceNumber(raw.warmup_steps, 0, 10000);
+    const maxSeqLen = coerceNumber(raw.max_seq_len, 128, 131072);
+    return {
+      skill: String(raw.skill ?? '').trim(),
+      learning_rate: coerceNumber(raw.learning_rate, 0.000001, 0.1),
+      epochs: epochs == null ? null : Math.round(epochs),
+      batch_size: batchSize == null ? null : Math.round(batchSize),
+      warmup_steps: warmupSteps == null ? null : Math.round(warmupSteps),
+      max_seq_len: maxSeqLen == null ? null : Math.round(maxSeqLen),
+    };
+  }
+
+  function missingTrainingConfigFields(normalizedConfig) {
+    return ['skill', 'learning_rate', 'epochs', 'batch_size', 'warmup_steps', 'max_seq_len']
+      .filter((key) => normalizedConfig[key] == null || normalizedConfig[key] === '');
+  }
+
+  function normalizeTrainingStatus(raw = null) {
+    if (!raw) return null;
+    const currentJob = raw.current_job ?? raw.job ?? null;
+    const running = raw.is_training === true || currentJob?.status === 'running';
+    const paused = currentJob?.status === 'paused' || raw.phase === 'paused';
+    const progress = currentJob?.progress != null
+      ? Number(currentJob.progress) * 100
+      : raw.progress != null
+        ? Number(raw.progress)
+        : 0;
+    return {
+      ...raw,
+      state: running ? 'running' : paused ? 'paused' : raw.phase ?? raw.state ?? 'idle',
+      progress: Number.isFinite(progress) ? progress : 0,
+      current_epoch: raw.current_epoch ?? currentJob?.current_epoch,
+      total_epochs: raw.total_epochs ?? config.epochs,
+      current_step: raw.current_step ?? currentJob?.current_step,
+      total_steps: raw.total_steps ?? currentJob?.total_steps,
+      current_loss: raw.current_loss ?? currentJob?.current_loss,
+      eta_ms: raw.eta_ms ?? currentJob?.eta_ms,
+      last_run: raw.last_run?.updated_at_utc ?? raw.last_run?.started_at ?? raw.last_run,
+      last_run_result: raw.last_run?.status ?? raw.last_run_result,
+    };
+  }
+
+  function normalizeTrainingHistory(raw = {}) {
+    const rows = raw.jobs ?? raw.agents ?? raw.runs ?? raw.history ?? raw;
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  function validateTrainingHistoryRefs(rows) {
+    const refs = rows.map((run) => run.id ?? run.run_id).filter(Boolean);
+    if (refs.length > 0) {
+      requireEvidence(refs, 'training.history_run_refs');
+    }
+  }
+
   // -- Data loading ------------------------------------------------------------
 
   async function loadAll() {
     loading = true;
     try {
-      const [s, h, i] = await Promise.all([
+      const [s, h, i, prefs] = await Promise.all([
         api.getTrainingStatus().catch(() => null),
         api.getTrainingHistory().catch(() => ({ agents: [] })),
         api.getIdleTrainingStats().catch(() => null),
+        api.getPreferences().catch(() => ({ preferences: {} })),
       ]);
-      status = s;
-      history = h?.agents ?? (Array.isArray(h) ? h : []);
+      status = normalizeTrainingStatus(s);
+      history = normalizeTrainingHistory(h);
+      validateTrainingHistoryRefs(history);
       idleStats = i;
+      config = normalizeTrainingConfig(prefs?.preferences?.trainingConfig ?? config);
     } catch (err) {
       showToast(`Failed to load training data: ${err.message}`, 'error');
     } finally {
@@ -75,9 +148,17 @@
   // -- Actions -----------------------------------------------------------------
 
   async function handleStart() {
+    const normalizedConfig = normalizeTrainingConfig(config);
+    const missingFields = missingTrainingConfigFields(normalizedConfig);
+    if (missingFields.length > 0) {
+      showToast(`Training configuration is incomplete: ${missingFields.join(', ')}`, 'error');
+      return;
+    }
     actionPending = true;
     try {
-      await api.startTraining(config);
+      await api.setPreferences({ trainingConfig: normalizedConfig }).catch(() => null);
+      await api.startTraining(normalizedConfig);
+      config = normalizedConfig;
       showToast('Training started', 'success');
       await loadAll();
     } catch (err) {
@@ -101,6 +182,7 @@
   }
 
   async function handleStop() {
+    if (!confirm('Stop the current training run? Progress after the last checkpoint may be lost.')) return;
     actionPending = true;
     try {
       await api.stopTraining();
@@ -114,9 +196,17 @@
   }
 
   async function handleDryRun() {
+    const normalizedConfig = normalizeTrainingConfig(config);
+    const missingFields = missingTrainingConfigFields(normalizedConfig);
+    if (missingFields.length > 0) {
+      showToast(`Training dry run requires configuration: ${missingFields.join(', ')}`, 'error');
+      return;
+    }
     actionPending = true;
     try {
-      const result = await api.dryRunTraining(config);
+      await api.setPreferences({ trainingConfig: normalizedConfig }).catch(() => null);
+      const result = await api.dryRunTraining(normalizedConfig);
+      config = normalizedConfig;
       showToast(
         `Dry run complete — estimated ${fmt.duration(result?.estimated_duration_ms)} for ${result?.estimated_steps ?? '?'} steps`,
         'info'
@@ -163,6 +253,11 @@
       <i class="fas fa-graduation-cap"></i>
       Training
     </h2>
+    <HelpPopover
+      title="Training"
+      body="Training records collected from completed runs in this project. Each record captures the agent type, task description, output quality score, and the inference parameters used — forming the dataset for future fine-tuning or Thompson Sampling weight updates. Records with quality score below the project threshold are flagged and excluded from the active training corpus automatically. Use the filter controls to review flagged records before manual promotion or deletion."
+      severity="info"
+    />
     <div class="header-actions">
       <button
         class="btn btn-secondary btn-sm"
@@ -190,7 +285,7 @@
         <section class="card status-card" aria-label="Training status">
           <div class="card-header">
             <h3><i class="fas fa-circle-notch"></i> Status</h3>
-            <span class="status-badge status-{statusColor}" aria-label="Training state: {statusLabel}">
+            <span class="status-badge status-{statusColor}" role="status" aria-label="Training state: {statusLabel}" aria-live="polite">
               {statusLabel}
             </span>
           </div>
@@ -293,6 +388,14 @@
             <form class="config-form" onsubmit={(e) => { e.preventDefault(); handleStart(); }} aria-label="Training hyperparameters">
               <div class="form-grid">
                 <label class="form-group">
+                  <span class="form-label">Skill</span>
+                  <input
+                    class="input"
+                    bind:value={config.skill}
+                    aria-label="Training skill"
+                  />
+                </label>
+                <label class="form-group">
                   <span class="form-label">Learning Rate</span>
                   <input
                     type="number"
@@ -357,10 +460,11 @@
           {:else}
             <dl class="config-summary">
               <dt>LR</dt><dd>{config.learning_rate}</dd>
+              <dt>Skill</dt><dd>{config.skill}</dd>
               <dt>Epochs</dt><dd>{config.epochs}</dd>
               <dt>Batch</dt><dd>{config.batch_size}</dd>
               <dt>Warmup</dt><dd>{config.warmup_steps}</dd>
-              <dt>Max Seq</dt><dd>{fmt.integer(config.max_seq_len)}</dd>
+              <dt>Max Seq</dt><dd>{config.max_seq_len == null ? '—' : fmt.integer(config.max_seq_len)}</dd>
             </dl>
           {/if}
         </section>
@@ -762,9 +866,14 @@
   }
 
   .input:focus {
-    outline: none;
+    outline: 2px solid transparent;
+    outline-offset: 2px;
     border-color: var(--primary);
     box-shadow: 0 0 0 2px var(--primary-muted);
+  }
+
+  .input:focus-visible {
+    outline-color: var(--primary);
   }
 
   /* Config summary */

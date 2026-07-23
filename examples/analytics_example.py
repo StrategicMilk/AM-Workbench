@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
 Example: Vetinari Analytics — Phase 5
 
@@ -9,15 +9,31 @@ Demonstrates all four analytics modules:
   4. Forecasting and capacity planning
 
 Run from the project root:
-    python examples/analytics_example.py
+    python.cmd examples/analytics_example.py
 """
 
+import atexit
 import math
-import sys
-import time
+import os
+import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+_EXAMPLE_STATE = tempfile.TemporaryDirectory(prefix="vetinari-analytics-example-")
+atexit.register(_EXAMPLE_STATE.cleanup)
+_EXAMPLE_STATE_DIR = Path(_EXAMPLE_STATE.name)
+_COST_ENTRIES_PATH = _EXAMPLE_STATE_DIR / "cost_entries.jsonl"
+_COST_BUDGET_ALERTS_PATH = _EXAMPLE_STATE_DIR / "cost_budget_alerts.jsonl"
+for _path in (
+    _COST_ENTRIES_PATH,
+    _EXAMPLE_STATE_DIR / "cost_entries.jsonl.1",
+    _EXAMPLE_STATE_DIR / "cost_entries.jsonl.2",
+    _EXAMPLE_STATE_DIR / "cost_entries.jsonl.3",
+    _COST_BUDGET_ALERTS_PATH,
+):
+    _path.touch()
+os.environ["VETINARI_USER_DIR"] = str(_EXAMPLE_STATE_DIR / "user")
+os.environ["VETINARI_COST_ENTRIES_PATH"] = str(_COST_ENTRIES_PATH)
+os.environ["VETINARI_COST_BUDGET_ALERTS_PATH"] = str(_COST_BUDGET_ALERTS_PATH)
 
 from vetinari.analytics import (
     AnomalyConfig, get_anomaly_detector, reset_anomaly_detector,

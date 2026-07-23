@@ -1,0 +1,105 @@
+schema_version: 1
+rubric_slug: category-leadership
+category: local-first AI workstation
+product: AM Workbench
+tiers:
+  baseline:
+    label: Baseline
+    threshold: 1
+  credible:
+    label: Credible
+    threshold: 2
+  category_leading:
+    label: Category-leading
+    threshold: 3
+dimensions:
+  time_to_value:
+    question: How quickly can a serious operator reach useful local work?
+    measurement_procedure:
+      - Start from a clean install or exported package.
+      - Time the path to first successful local run, first evidence receipt, and first recovery from a failed check.
+      - Record blockers that require maintainer knowledge.
+    tier_thresholds:
+      baseline: Documented path exists.
+      credible: First useful run completes with one documented recovery path.
+      category_leading: First useful run, evidence, and recovery are all discoverable without maintainer help.
+  perceived_performance:
+    question: Does the product feel fast and honest under real local constraints?
+    measurement_procedure:
+      - Measure startup, route-change, command feedback, and long-running job state updates.
+      - Verify loading and progress copy maps to measured work.
+      - Record stalls, unbounded waits, and missing receipts.
+    tier_thresholds:
+      baseline: Slow paths expose status.
+      credible: Common workflows provide bounded feedback and receipts.
+      category_leading: Operators can distinguish slow, blocked, and failed work without shell access.
+  feature_parity:
+    question: Are expected workstation capabilities present across core surfaces?
+    measurement_procedure:
+      - Compare the project identity capability surfaces to UI, CLI, API, docs, and tests.
+      - Mark absent, partial, hidden, and fully reachable capabilities.
+      - Require source evidence for terminal closure.
+    tier_thresholds:
+      baseline: Major surfaces are named.
+      credible: Named surfaces have reachable product paths or explicit limitations.
+      category_leading: Capability coverage is broad, tested, and gap-tracked with owner paths.
+  discoverability:
+    question: Can a new operator find important capabilities and limits?
+    measurement_procedure:
+      - Trace navigation from first screen, README, runbooks, and CLI help.
+      - Check whether recovery and limitation docs are near the workflow that needs them.
+      - Record dead ends and duplicate authorities.
+    tier_thresholds:
+      baseline: Capabilities are documented.
+      credible: Capabilities are discoverable from primary entry points.
+      category_leading: Operators can find capability, evidence, limitation, and recovery paths in one flow.
+  vocabulary:
+    question: Does the product use category language consistently?
+    measurement_procedure:
+      - Compare public docs, internal docs, UI labels, and config names against the project identity snapshot and voice guide.
+      - Flag conflicting names, stale category claims, and unsupported leadership wording.
+      - Require non-claims where external evidence is missing.
+    tier_thresholds:
+      baseline: Canonical product and category names exist.
+      credible: Major surfaces use canonical names and non-claims.
+      category_leading: Naming, copy, and evidence language stay consistent across product and workflow artifacts.
+  ecosystem_readiness:
+    question: Can external tools, extensions, and workflows integrate without private knowledge?
+    measurement_procedure:
+      - Inventory API, CLI, extension, MCP, package, and export contracts.
+      - Verify examples and schema references are current.
+      - Mark unsupported or private-only paths explicitly.
+    tier_thresholds:
+      baseline: Integration surfaces are named.
+      credible: Integration surfaces have runnable examples or explicit blockers.
+      category_leading: External-facing contracts are documented, versioned, and boundary-checked.
+  compliance:
+    question: Are governance, privacy, licensing, and release claims evidence-backed?
+    measurement_procedure:
+      - Compare claims to support matrix, release checks, publication boundary checks, and privacy lifecycle docs.
+      - Verify missing or unknown evidence fails closed.
+      - Record any legal or policy claim that lacks primary proof.
+    tier_thresholds:
+      baseline: Governance and privacy boundaries are documented.
+      credible: Checks exist for release, publication, and sensitive data boundaries.
+      category_leading: Compliance-sensitive claims are traceable to current checks and fail closed when evidence is missing.
+  trust_verifiability:
+    question: Can operators verify what happened and why?
+    measurement_procedure:
+      - Inspect receipts, evidence assets, trace records, approvals, and promotion gates.
+      - Check whether failed and successful paths preserve enough diagnostic context.
+      - Verify summaries do not replace source evidence.
+    tier_thresholds:
+      baseline: Evidence artifacts exist for key workflows.
+      credible: Evidence is linked from workflow state and tests.
+      category_leading: Every terminal claim has source, test, config, UI, receipt, or release evidence.
+  anti_pattern_resistance:
+    question: Does the product resist common AI-workflow failure modes?
+    measurement_procedure:
+      - Probe for status-only closure, stale plans, unverified claims, hidden skips, vague copy, and weakened tests.
+      - Check whether validators reject known-bad inputs.
+      - Record gaps as blockers instead of follow-up success.
+    tier_thresholds:
+      baseline: Known anti-patterns are documented.
+      credible: Validators catch representative known-bad cases.
+      category_leading: Gates and tests prevent false-green claims across planning, implementation, and release surfaces.

@@ -1,0 +1,16 @@
+schema_version: 1
+profiles:
+  - id: default
+    fallback_chain: []
+    timeouts:
+      total_seconds: 30
+    budget_caps:
+      daily_usd: 0.0
+    cache:
+      ttl_seconds: 0
+    guardrails_pre:
+      - id: default-deny
+        action: block
+    guardrails_post:
+      - id: audit-log
+        action: log

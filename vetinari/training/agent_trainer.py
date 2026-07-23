@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from vetinari.boundary_guards import require_nonempty
 from vetinari.constants import get_user_dir
 from vetinari.training.continual_learning import ReplayBuffer
 from vetinari.types import AgentType
@@ -41,6 +42,8 @@ _WEIGHT_DAYS_SINCE_TRAINING = 0.30
 
 # Days since last training to normalise the staleness component (cap at 90 days)
 _STALENESS_CAP_DAYS = 90
+_HISTORY_RETENTION_DAYS = 365
+_HISTORY_MAX_RECORDS = 10000
 
 
 class AgentTrainer:
@@ -183,7 +186,9 @@ class AgentTrainer:
         # When current_examples is empty (replay-only rehearsal) we still want
         # up to replay_sample_size past examples; clamping to len(current_examples)
         # would give zero samples in that case (defect 6 fix).
-        effective_replay_size = replay_sample_size if not current_examples else min(replay_sample_size, len(current_examples))
+        effective_replay_size = (
+            replay_sample_size if not current_examples else min(replay_sample_size, len(current_examples))
+        )
         replay_samples = self._replay_buffer.get_replay_batch(effective_replay_size)
         training_examples = current_examples + replay_samples
 
@@ -226,6 +231,7 @@ class AgentTrainer:
         }
 
         try:
+            _prune_history_file(history_path)
             with history_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(record) + "\n")
             logger.info(
@@ -321,6 +327,72 @@ class AgentTrainer:
 
         return records
 
+    def _base_agent_metrics_from_history(self) -> dict[str, dict[str, float]]:
+        now = datetime.now(tz=timezone.utc)
+        metrics: dict[str, dict[str, float]] = {}
+        for agent_name in _DEFAULT_PRIORITY_ORDER:
+            last_ts = self.get_last_trained(agent_name)
+            days_stale = float("inf")
+            try:
+                raw_ts = require_nonempty(last_ts, field_name="last_trained_at")
+                last_dt = datetime.fromisoformat(raw_ts)
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+                days_stale = (now - last_dt).total_seconds() / 86400.0
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    "agent_trainer: corrupt last_trained_at=%r; treating as never-trained (days_stale=inf)",
+                    last_ts,
+                    exc_info=exc,
+                )
+            metrics[agent_name] = {
+                "rejection_rate": 0.0,
+                "quality_decline_rate": 0.0,
+                "days_since_training": days_stale,
+            }
+        return metrics
+
+    def _enrich_feedback_metrics(self, metrics: dict[str, dict[str, float]]) -> None:
+        try:
+            from vetinari.learning.feedback_loop import get_feedback_loop
+
+            feedback = get_feedback_loop()
+            try:
+                from vetinari.memory import get_memory_store
+
+                memory = get_memory_store()
+                for agent_name in list(metrics.keys()):
+                    self._apply_agent_performance(metrics, agent_name, memory)
+            except ImportError:
+                logger.debug("agent performance metrics module not available")
+            _ = feedback
+        except ImportError:
+            logger.debug("feedback_loop not available; skipping live rejection rate enrichment")
+
+    @staticmethod
+    def _apply_agent_performance(metrics: dict[str, dict[str, float]], agent_name: str, memory: Any) -> None:
+        try:
+            perf = memory.get_agent_performance(agent_name)
+            if perf:
+                metrics[agent_name]["rejection_rate"] = float(perf.get("rejection_rate", 0.0))
+                metrics[agent_name]["quality_decline_rate"] = float(perf.get("quality_decline_rate", 0.0))
+        except Exception as agent_exc:
+            logger.warning("Could not fetch performance metrics for agent '%s': %s", agent_name, agent_exc)
+
+    @staticmethod
+    def _enrich_kaizen_metrics(metrics: dict[str, dict[str, float]]) -> None:
+        try:
+            from vetinari.kaizen.aggregator import ImprovementAggregator
+
+            report = ImprovementAggregator().generate_weekly_report()
+            for rec in getattr(report, "recommendations", []):
+                agent = str(rec.get("agent", "")).upper() if isinstance(rec, dict) else ""
+                if agent in metrics:
+                    decline = float(rec.get("quality_decline_rate", 0.0)) if isinstance(rec, dict) else 0.0
+                    metrics[agent]["quality_decline_rate"] = max(metrics[agent]["quality_decline_rate"], decline)
+        except (ImportError, Exception) as exc:
+            logger.warning("kaizen aggregator not available or failed: %s", exc)
+
     def _collect_agent_metrics(self) -> dict[str, dict[str, float]]:
         """Collect live rejection rate and quality decline metrics per agent.
 
@@ -334,82 +406,9 @@ class AgentTrainer:
         Raises:
             ImportError: If neither feedback_loop nor kaizen modules are importable.
         """
-        # Build base metrics from history staleness alone
-        now = datetime.now(tz=timezone.utc)
-        metrics: dict[str, dict[str, float]] = {}
-
-        for agent_name in _DEFAULT_PRIORITY_ORDER:
-            last_ts = self.get_last_trained(agent_name)
-            if last_ts:
-                try:
-                    last_dt = datetime.fromisoformat(last_ts)
-                    # Ensure timezone-aware comparison
-                    if last_dt.tzinfo is None:
-                        last_dt = last_dt.replace(tzinfo=timezone.utc)
-                    days_stale = (now - last_dt).total_seconds() / 86400.0
-                except ValueError:
-                    days_stale = 0.0
-            else:
-                # Never trained — treat as maximally stale
-                days_stale = float(_STALENESS_CAP_DAYS)
-
-            metrics[agent_name] = {
-                "rejection_rate": 0.0,
-                "quality_decline_rate": 0.0,
-                "days_since_training": days_stale,
-            }
-
-        # Attempt to enrich with live feedback loop data
-        try:
-            from vetinari.learning.feedback_loop import get_feedback_loop
-
-            feedback = get_feedback_loop()
-            # feedback_loop does not expose per-agent rejection rates directly,
-            # so we use EMA quality scores if available via the memory store.
-            try:
-                from vetinari.memory import get_memory_store
-
-                memory = get_memory_store()
-                for agent_name in list(metrics.keys()):
-                    try:
-                        perf = memory.get_agent_performance(agent_name)
-                        if perf:
-                            metrics[agent_name]["rejection_rate"] = float(
-                                perf.get("rejection_rate", 0.0),
-                            )
-                            metrics[agent_name]["quality_decline_rate"] = float(
-                                perf.get("quality_decline_rate", 0.0),
-                            )
-                    except Exception as agent_exc:
-                        logger.warning(
-                            "Could not fetch performance metrics for agent '%s': %s",
-                            agent_name,
-                            agent_exc,
-                        )
-            except ImportError:
-                logger.debug("agent performance metrics module not available")
-            _ = feedback  # referenced to satisfy linters
-        except ImportError:
-            logger.debug("feedback_loop not available; skipping live rejection rate enrichment")
-
-        # Attempt to enrich with kaizen quality decline data
-        try:
-            from vetinari.kaizen.aggregator import ImprovementAggregator
-
-            aggregator = ImprovementAggregator()
-            report = aggregator.generate_weekly_report()
-            # Map top defect categories back to agent quality_decline_rate
-            for rec in getattr(report, "recommendations", []):
-                agent = str(rec.get("agent", "")).upper() if isinstance(rec, dict) else ""
-                if agent in metrics:
-                    decline = float(rec.get("quality_decline_rate", 0.0)) if isinstance(rec, dict) else 0.0
-                    metrics[agent]["quality_decline_rate"] = max(
-                        metrics[agent]["quality_decline_rate"],
-                        decline,
-                    )
-        except (ImportError, Exception) as exc:
-            logger.warning("kaizen aggregator not available or failed: %s", exc)
-
+        metrics = self._base_agent_metrics_from_history()
+        self._enrich_feedback_metrics(metrics)
+        self._enrich_kaizen_metrics(metrics)
         return metrics
 
     def record_retraining_signal(self, event: Any) -> None:
@@ -447,6 +446,39 @@ class AgentTrainer:
                 "forecast_method": forecast_method,
             },
         )
+
+
+def _prune_history_file(
+    history_path: Path,
+    *,
+    retention_days: int = _HISTORY_RETENTION_DAYS,
+    max_records: int = _HISTORY_MAX_RECORDS,
+) -> int:
+    """Bound the persistent agent-training history JSONL file."""
+    if not history_path.exists():
+        return 0
+    cutoff_ts = datetime.now(timezone.utc).timestamp() - max(retention_days, 0) * 86400
+    kept: list[str] = []
+    removed = 0
+    for line in history_path.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+            timestamp = datetime.fromisoformat(str(row.get("timestamp", "")).replace("Z", "+00:00"))
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            logger.warning("Dropping malformed agent-training history row", exc_info=True)
+            removed += 1
+            continue
+        if timestamp.timestamp() < cutoff_ts:
+            removed += 1
+            continue
+        kept.append(json.dumps(row) + "\n")
+    if max_records > 0 and len(kept) > max_records:
+        removed += len(kept) - max_records
+        kept = kept[-max_records:]
+    history_path.write_text("".join(kept), encoding="utf-8")
+    return removed
 
 
 # ---------------------------------------------------------------------------

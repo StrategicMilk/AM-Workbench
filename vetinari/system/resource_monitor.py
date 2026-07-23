@@ -22,6 +22,7 @@ from vetinari.constants import _PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
+
 # Safety buffer: 2% of total volume, capped at 2GB, never below 200MB.
 # A flat 500MB reserve overwhelms small (<25GB) volumes.
 _SAFETY_BUFFER_RATIO = 0.02  # 2%
@@ -179,7 +180,8 @@ class ResourceMonitor:
         self._total_checks: int = 0
         self._total_warnings: int = 0
 
-    def _cache_key(self, path: str | Path | None) -> str:
+    @staticmethod
+    def _cache_key(path: str | Path | None) -> str:
         """Return a stable string key for the given path (or project root)."""
         return str(path or _PROJECT_ROOT)
 
@@ -241,6 +243,14 @@ class ResourceMonitor:
                 "total_warnings": self._total_warnings,
                 "paths": {k: repr(v[0]) for k, v in self._cache.items()},
             }
+
+    def get_usage_percent(self) -> float:
+        """Return the current project-root disk usage percentage.
+
+        Returns:
+            Disk usage percentage from the canonical disk-space check.
+        """
+        return self.check().usage_percent
 
 
 def get_resource_monitor() -> ResourceMonitor:

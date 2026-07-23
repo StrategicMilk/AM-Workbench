@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from vetinari.boundary_guards import require_nonempty
+
 # ============================================================
 # Enums
 # ============================================================
@@ -63,6 +65,16 @@ class BenchmarkCase:
     metadata: dict[str, Any] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
     expected_keys: list[str] = field(default_factory=list)  # suite.py pattern
+
+    def __post_init__(self) -> None:
+        """Reject benchmark records that omit required identity fields."""
+        self.case_id = require_nonempty(self.case_id, field_name="case_id")
+        if self.suite_name:
+            self.suite_name = require_nonempty(self.suite_name, field_name="suite_name")
+        if self.agent_type:
+            self.agent_type = require_nonempty(self.agent_type, field_name="agent_type")
+        if self.task_type:
+            self.task_type = require_nonempty(self.task_type, field_name="task_type")
 
     def __repr__(self) -> str:
         """Show identifying fields for debugging."""
@@ -138,6 +150,12 @@ class BenchmarkReport:
     error_recovery_rate: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """Reject aggregate reports without benchmark identity fields."""
+        self.run_id = require_nonempty(self.run_id, field_name="run_id")
+        self.suite_name = require_nonempty(self.suite_name, field_name="suite_name")
+        self.started_at = require_nonempty(self.started_at, field_name="started_at")
+
     def __repr__(self) -> str:
         """Show key fields for debugging."""
         return (
@@ -150,8 +168,12 @@ class BenchmarkReport:
         if not self.results:
             return
         self.total_cases = len(self.results)
-        self.passed_cases = sum(1 for r in self.results if r.passed)
-        self.pass_at_1 = self.passed_cases / self.total_cases
+        first_attempts: dict[str, BenchmarkResult] = {}
+        for result in self.results:
+            first_attempts.setdefault(result.case_id, result)
+        first_attempt_values = tuple(first_attempts.values())
+        self.passed_cases = sum(1 for r in first_attempt_values if r.passed)
+        self.pass_at_1 = self.passed_cases / len(first_attempt_values)
         self.avg_score = sum(r.score for r in self.results) / self.total_cases
         self.avg_latency_ms = sum(r.latency_ms for r in self.results) / self.total_cases
         self.total_tokens = sum(r.tokens_consumed for r in self.results)
@@ -159,6 +181,8 @@ class BenchmarkReport:
         recoveries = sum(r.error_recovery_count for r in self.results)
         errors_possible = sum(1 for r in self.results if r.error_recovery_count > 0 or r.error)
         self.error_recovery_rate = recoveries / errors_possible if errors_possible > 0 else 0.0
+        self.metadata.setdefault("unique_case_count", len(first_attempt_values))
+        self.metadata.setdefault("trial_count", len(self.results))
 
     def summary_dict(self) -> dict[str, Any]:
         """Return a JSON-serialisable summary.
@@ -237,7 +261,7 @@ class BenchmarkSuiteAdapter(ABC):
         Returns:
             List of BenchmarkCase instances.
         """
-        ...  # noqa: VET032 - ellipsis marks protocol placeholder behavior under test
+        ...
 
     @abstractmethod
     def run_case(self, case: BenchmarkCase, run_id: str) -> BenchmarkResult:
@@ -250,7 +274,7 @@ class BenchmarkSuiteAdapter(ABC):
         Returns:
             BenchmarkResult with score and pass/fail status.
         """
-        ...  # noqa: VET032 - ellipsis marks protocol placeholder behavior under test
+        ...
 
     @abstractmethod
     def evaluate(self, result: BenchmarkResult) -> float:
@@ -262,7 +286,7 @@ class BenchmarkSuiteAdapter(ABC):
         Returns:
             Float score in [0.0, 1.0].
         """
-        ...  # noqa: VET032 - ellipsis marks protocol placeholder behavior under test
+        ...
 
     def description(self) -> str:
         """Human-readable description of this benchmark suite.

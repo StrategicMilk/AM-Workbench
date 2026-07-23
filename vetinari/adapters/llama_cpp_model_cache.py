@@ -1,11 +1,11 @@
-"""llama.cpp model cache mixin — VRAM budget management and model lifecycle.
+"""llama.cpp model cache support — VRAM budget management and model lifecycle.
 
-Contains ``LlamaCppModelCacheMixin``, which encapsulates the per-model locking,
+Contains ``LlamaCppModelCache``, which encapsulates the per-model locking,
 LRU eviction, speculative-decoding attachment, and background calibration logic
 shared by ``LlamaCppProviderAdapter``.
 
 Concrete subclasses must initialise the following instance attributes in
-their own ``__init__`` before calling any mixin method:
+their own ``__init__`` before calling any cache method:
 
     - ``_models_dir: Path`` — directory containing .gguf files
     - ``_gpu_layers: int`` — configured GPU layer count (-1 = all)
@@ -25,23 +25,37 @@ and maintained independently of the inference dispatch logic.
 from __future__ import annotations
 
 import logging
+import operator
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+from vetinari.adapters.llama_cpp_adapter_helpers import _extract_embedded_chat_template
 from vetinari.utils.lazy_import import lazy_import
 
 from .llama_cpp_model_info import (
     _estimate_memory_gb,
     _infer_context_window,
     _LoadedModel,
+    validate_gguf_file,
 )
 
 logger = logging.getLogger(__name__)
+__all__ = (
+    "LlamaCppModelCache",
+    "_estimate_memory_gb",
+    "_infer_context_window",
+    "validate_gguf_file",
+)
+_WARMUP_MAX_TOKENS = 1
+_WARMUP_TEMPERATURE = 0.0
+_LLAMA_CONSTRUCTOR = operator.attrgetter("Llama")
+
 
 # Optional llama-cpp-python — same pattern as the parent adapter
-llama_cpp, _LLAMA_CPP_AVAILABLE = lazy_import("llama_cpp")  # type: ignore[assignment]
+llama_cpp: Any
+llama_cpp, _LLAMA_CPP_AVAILABLE = lazy_import("llama_cpp")
 
 # Maps config string (e.g. "q4_0") to the llama_cpp module attribute name for that GGML type.
 # Used to resolve the correct constant at runtime when the config type is known.
@@ -72,29 +86,6 @@ def _resolve_kv_quant_type(type_name: str, llama_cpp_mod: Any) -> Any:
     return type_name
 
 
-def _extract_embedded_chat_template(llm: Any) -> str | None:
-    for attr_name in ("metadata", "model_metadata", "_metadata"):
-        metadata = getattr(llm, attr_name, None)
-        if callable(metadata):
-            try:
-                metadata = metadata()
-            except Exception as exc:
-                logger.warning("Could not read llama.cpp metadata attribute %s: %s", attr_name, exc)
-                continue
-        if not isinstance(metadata, dict):
-            continue
-        for key in (
-            "tokenizer.chat_template",
-            "tokenizer.ggml.chat_template",
-            "chat_template",
-            "llama.chat_template",
-        ):
-            value = metadata.get(key)
-            if isinstance(value, str) and value.strip():
-                return value
-    return None
-
-
 def _has_trusted_chat_template(model_id: str, llm: Any) -> bool:
     embedded_template = _extract_embedded_chat_template(llm)
     if embedded_template is None:
@@ -103,6 +94,21 @@ def _has_trusted_chat_template(model_id: str, llm: Any) -> bool:
 
     _template, validation = validate_template(model_id, embedded_template)
     return validation.is_trusted and not validation.fallback_used
+
+
+def _create_llama_instance(llama_cpp_mod: Any, model_path: Path, llama_kwargs: dict[str, Any]) -> Any:
+    """Create a llama.cpp model instance after all pre-load checks pass.
+
+    Args:
+        llama_cpp_mod: Imported llama_cpp module or test double.
+        model_path: Validated GGUF path to load.
+        llama_kwargs: Constructor keyword arguments.
+
+    Returns:
+        Loaded llama.cpp model instance.
+    """
+    constructor = _LLAMA_CONSTRUCTOR(llama_cpp_mod)
+    return constructor(model_path=str(model_path), **llama_kwargs)
 
 
 # ── Module-level lazy getters ─────────────────────────────────────────────────
@@ -178,16 +184,16 @@ def _get_calibration_fns() -> tuple[Any, Any, Any, Any]:
     return _calibrate_model_fn, _seed_thompson_priors_fn, _load_cached_profile_fn, _save_profile_fn
 
 
-# ── LlamaCppModelCacheMixin ───────────────────────────────────────────────────
+# ── LlamaCppModelCache ───────────────────────────────────────────────────
 
 
-class LlamaCppModelCacheMixin:
-    """Mixin providing VRAM-budgeted LRU model caching for llama.cpp adapters.
+class LlamaCppModelCache:
+    """VRAM-budgeted LRU model caching for llama.cpp adapters.
 
     Encapsulates per-model locking, LRU eviction, speculative-decoding
     attachment, and background calibration. The concrete subclass
     (``LlamaCppProviderAdapter``) initialises all required instance attributes
-    before any mixin method is invoked.
+    before any cache method is invoked.
 
     Required subclass attributes (set in ``__init__`` before use):
         _models_dir: Directory containing .gguf files.
@@ -376,7 +382,7 @@ class LlamaCppModelCacheMixin:
         Returns:
             Total estimated VRAM usage in GB.
         """
-        return sum(m.memory_gb for m in self._loaded_models.values())
+        return cast("float", sum(m.memory_gb for m in self._loaded_models.values()))
 
     def _get_or_load_model(self, model_id: str, model_path: Path) -> Any:
         """Get a cached model or load it from disk, enforcing the VRAM budget.
@@ -395,217 +401,12 @@ class LlamaCppModelCacheMixin:
         Raises:
             RuntimeError: If the model cannot be loaded after eviction attempts.
         """
-        # Fast path: check cache under the lightweight registry lock
-        with self._registry_lock:
-            if model_id in self._loaded_models:
-                loaded = self._loaded_models[model_id]
-                loaded.last_used = time.time()
-                return loaded.model
+        from vetinari.adapters.llama_cpp_model_loader import get_or_load_model
 
-        # Slow path: acquire per-model lock to load without blocking other models
-        model_lock = self._get_model_lock(model_id)
-        with model_lock:
-            # Double-check: another thread may have loaded while we waited
-            with self._registry_lock:
-                if model_id in self._loaded_models:
-                    loaded = self._loaded_models[model_id]
-                    loaded.last_used = time.time()
-                    return loaded.model
+        return get_or_load_model(self, model_id, model_path)
 
-            # Acquire a concurrent-load slot to prevent VRAM oversubscription when
-            # multiple threads race to load different models simultaneously.
-            _vram_mgr = None
-            _slot_acquired = False
-            try:
-                from vetinari.models.vram_manager import get_vram_manager
-
-                _vram_mgr = get_vram_manager()
-                _slot_acquired = _vram_mgr.acquire_load_slot()
-                if not _slot_acquired:
-                    logger.warning(
-                        "Load slot timeout for %s — concurrent model loads at limit, proceeding anyway",
-                        model_id,
-                    )
-            except Exception:
-                logger.warning(
-                    "VRAMManager load slot unavailable for %s — proceeding without concurrency control",
-                    model_id,
-                )
-
-            _reservation_placed = False
-            try:
-                with self._registry_lock:
-                    memory_needed = _estimate_memory_gb(model_path)
-                    gpu_layers = self._compute_gpu_layers(model_id, model_path, memory_needed)
-                    self._ensure_vram_budget(memory_needed, gpu_layers)
-
-                # Atomically reserve VRAM before loading starts, preventing TOCTOU
-                # races when multiple threads load different models concurrently.
-                # The reservation is cleared by register_load() on success or by
-                # release_reservation() in the finally block on failure.
-                if _vram_mgr is not None:
-                    try:
-                        _reserved = _vram_mgr.reserve(model_id, memory_needed)
-                        _reservation_placed = True
-                        if not _reserved:
-                            logger.warning(
-                                "VRAM reservation for %s denied (%.1f GB requested) — "
-                                "proceeding anyway; budget may be exceeded",
-                                model_id,
-                                memory_needed,
-                            )
-                    except Exception:
-                        logger.warning(
-                            "VRAM reservation call failed for %s — proceeding without reservation",
-                            model_id,
-                        )
-
-                # Profile the model via ModelProfiler for optimal constructor params
-                try:
-                    profiler = _get_model_profiler_fn()()
-                    profile = profiler.profile_model(model_path)
-                    llama_kwargs = profile.get_llama_kwargs()
-                    llama_kwargs["n_gpu_layers"] = gpu_layers
-                    context_length = llama_kwargs.get("n_ctx", self._default_context_length)
-                    logger.info(
-                        "Loading model %s via ModelProfiler (family=%s, ctx=%d, gpu_layers=%d, batch=%d)",
-                        model_id,
-                        profile.family,
-                        context_length,
-                        gpu_layers,
-                        llama_kwargs.get("n_batch", 512),
-                    )
-                except Exception:
-                    logger.debug("ModelProfiler unavailable; using default loading for %s", model_id, exc_info=True)
-                    context_length = _infer_context_window(model_id) or self._default_context_length
-                    llama_kwargs = {
-                        "n_gpu_layers": gpu_layers,
-                        "n_ctx": context_length,
-                        "flash_attn": True,
-                        "verbose": False,
-                    }
-                    logger.info(
-                        "Loading model %s from %s (est. %.1f GB, ctx=%d, gpu_layers=%d)",
-                        model_id,
-                        model_path,
-                        memory_needed,
-                        context_length,
-                        gpu_layers,
-                    )
-
-                # Apply KV quantization type from config — resolves "f16"/"q8_0"/"q4_0"
-                # to the llama_cpp GGML_TYPE_* constant (or falls back to the string).
-                llama_kwargs["type_k"] = _resolve_kv_quant_type(self._cache_type_k, llama_cpp)
-                llama_kwargs["type_v"] = _resolve_kv_quant_type(self._cache_type_v, llama_cpp)
-
-                # Speculative decoding: try draft model first, fall back to PromptLookupDecoding
-                _draft_attached = False
-                try:
-                    resolver = _get_draft_pair_resolver_fn()()
-                    available_gguf = sorted(self._models_dir.rglob("*.gguf")) if self._models_dir.exists() else []
-                    pair = resolver.find_pair(model_path, available_gguf)
-                    if pair is not None:
-                        draft_model = pair.to_llama_draft_model()
-                        if draft_model is not None:
-                            llama_kwargs["draft_model"] = draft_model
-                            _draft_attached = True
-                            logger.info(
-                                "Speculative decoding (draft model): %s -> %s (%.1fx)",
-                                model_id,
-                                pair.draft_model_path.stem,
-                                pair.size_ratio,
-                            )
-                except Exception:
-                    logger.warning("Draft pair resolution failed for %s", model_id, exc_info=True)
-
-                # PromptLookupDecoding fallback: no extra VRAM, 1.3-1.8x speedup on structured output
-                if llama_cpp is not None and not _draft_attached and hasattr(llama_cpp, "LlamaPromptLookupDecoding"):
-                    try:
-                        llama_kwargs["draft_model"] = llama_cpp.LlamaPromptLookupDecoding(num_pred_tokens=10)
-                        logger.info("Speculative decoding (PromptLookup): %s with num_pred_tokens=10", model_id)
-                    except Exception:
-                        logger.warning(
-                            "PromptLookupDecoding not available for %s — speculative decoding disabled", model_id
-                        )
-
-                if llama_cpp is None:
-                    msg = "llama-cpp-python is not available"
-                    raise RuntimeError(msg)
-                llm = llama_cpp.Llama(model_path=str(model_path), **llama_kwargs)
-
-                with self._registry_lock:
-                    self._loaded_models[model_id] = _LoadedModel(
-                        model=llm,
-                        model_id=model_id,
-                        file_path=model_path,
-                        memory_gb=memory_needed,
-                        context_length=context_length,
-                    )
-
-                # Notify VRAMManager that loading succeeded so its budget
-                # accounting is accurate and the pending reservation is cleared.
-                if _vram_mgr is not None:
-                    try:
-                        _vram_mgr.register_load(model_id, memory_needed)
-                        _reservation_placed = False  # reservation cleared by register_load
-                    except Exception:
-                        logger.warning(
-                            "VRAMManager register_load failed for %s — VRAM budget may be stale",
-                            model_id,
-                        )
-
-                logger.info("Model %s loaded successfully", model_id)
-                template_is_trusted = _has_trusted_chat_template(model_id, llm)
-
-                # Warm up the model: forces weight dequantization and KV cache allocation
-                # so the first real request does not pay the dequant penalty.
-                if template_is_trusted:
-                    self._warm_up_model(model_id, llm)
-
-                # Run calibration in background — never block inference
-                def _background_calibrate(cal_model_id: str, cal_llm: Any) -> None:
-                    try:
-                        calibrate_model, seed_thompson_priors, _load_cached_profile, _save_profile = (
-                            _get_calibration_fns()
-                        )
-                        cached = _load_cached_profile(cal_model_id)
-                        if cached is None or "calibration" not in cached:
-                            cal_result = calibrate_model(cal_model_id, cal_llm)
-                            seed_thompson_priors(cal_model_id, cal_result)
-                            profile_data = cached if cached is not None else {}
-                            profile_data["calibration"] = cal_result.to_dict()
-                            _save_profile(cal_model_id, profile_data)
-                            logger.info("Background calibration completed for %s", cal_model_id)
-                    except Exception:
-                        logger.warning("Background calibration failed for %s", cal_model_id, exc_info=True)
-
-                if template_is_trusted:
-                    self._calibration_pool.submit(_background_calibrate, model_id, llm)
-                else:
-                    logger.warning(
-                        "Skipping background calibration for %s because embedded chat template is untrusted",
-                        model_id,
-                    )
-
-                return llm
-            finally:
-                # Release any pending VRAM reservation if loading failed.
-                # On success, register_load() already cleared it so this is a no-op.
-                if _reservation_placed and _vram_mgr is not None:
-                    try:
-                        _vram_mgr.release_reservation(model_id)
-                    except Exception:
-                        logger.warning(
-                            "Could not release VRAM reservation for %s after load failure — "
-                            "VRAM budget may show %s as still reserved",
-                            model_id,
-                            model_id,
-                        )
-                # Always release the load slot, whether loading succeeded or failed
-                if _slot_acquired and _vram_mgr is not None:
-                    _vram_mgr.release_load_slot()
-
-    def _warm_up_model(self, model_id: str, llm: Any) -> None:
+    @staticmethod
+    def _warm_up_model(model_id: str, llm: Any) -> None:
         """Run a single dummy inference to prime weight dequantization and KV cache allocation.
 
         llama.cpp defers weight dequantization until first use; the KV cache allocator
@@ -625,8 +426,8 @@ class LlamaCppModelCacheMixin:
             _start = time.time()
             llm.create_chat_completion(
                 messages=[{"role": "user", "content": "hi"}],
-                max_tokens=1,  # noqa: VET129 — 1-token warmup probe (deterministic)
-                temperature=0.0,  # noqa: VET129 — deterministic warmup
+                max_tokens=_WARMUP_MAX_TOKENS,
+                temperature=_WARMUP_TEMPERATURE,
             )
             _ms = int((time.time() - _start) * 1000)
             logger.info("Model %s warmed up in %d ms (dequant + KV alloc complete)", model_id, _ms)

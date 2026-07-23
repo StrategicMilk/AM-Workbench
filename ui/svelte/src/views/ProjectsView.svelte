@@ -9,6 +9,8 @@
   import * as fmt from '$lib/utils/format.js';
   import { showToast } from '$lib/stores/toast.svelte.js';
   import ProjectReceiptStrip from '$components/projects/ProjectReceiptStrip.svelte';
+  import HelpPopover from '$lib/components/help/HelpPopover.svelte';
+  import HelpTooltip from '$lib/components/help/HelpTooltip.svelte';
 
   // -- State -------------------------------------------------------------------
 
@@ -196,6 +198,11 @@
       Projects
       <span class="project-count">{projects.length}</span>
     </h2>
+    <HelpPopover
+      title="Projects"
+      body="Each project is an isolated Workbench context with its own run history, memory store, training corpus, gateway policy profile, and resource lease namespace. Switching the active project changes all panels. Creating a project provisions a persistent spine record and an empty memory store; it does not start any runs automatically. Archiving a project stops future runs but preserves history — archived projects can be reopened."
+      severity="info"
+    />
     <div class="header-actions">
       <button
         class="btn btn-primary"
@@ -534,9 +541,14 @@
   }
 
   .input:focus {
-    outline: none;
+    outline: 2px solid transparent;
+    outline-offset: 2px;
     border-color: var(--primary);
     box-shadow: 0 0 0 2px var(--primary-muted);
+  }
+
+  .input:focus-visible {
+    outline-color: var(--primary);
   }
 
   .textarea { resize: vertical; }

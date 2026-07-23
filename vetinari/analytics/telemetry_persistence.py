@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import builtins
 import contextlib
+import hashlib
 import json
 import logging
 import threading
@@ -24,7 +25,13 @@ import time
 import weakref
 from typing import Any
 
+from vetinari.analytics.telemetry_persistence_alerts import TelemetryAlertMixin
+from vetinari.analytics.telemetry_retention import _build_retention_receipt
+from vetinari.boundary_guards import require_nonempty
+from vetinari.privacy.envelope import require_privacy_envelope, wrap_for_persistence
+
 logger = logging.getLogger(__name__)
+
 
 # Default configuration constants
 _DEFAULT_INTERVAL_S: int = 60  # How often to flush a snapshot to SQLite
@@ -40,9 +47,32 @@ CREATE TABLE IF NOT EXISTS telemetry_snapshots (
     data      TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tel_snapshots_ts ON telemetry_snapshots(timestamp);
+CREATE TABLE IF NOT EXISTS telemetry_retention_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    created_at REAL NOT NULL,
+    cutoff REAL NOT NULL,
+    retention_days INTEGER NOT NULL,
+    owner_ref TEXT NOT NULL,
+    dry_run INTEGER NOT NULL,
+    pruned_count INTEGER NOT NULL,
+    payload TEXT NOT NULL
+);
 """
 
 _ACTIVE_INSTANCES_ATTR = "_vetinari_telemetry_persistence_instances"
+_RETENTION_OWNER_REF = "telemetry-retention-policy"
+_DEFAULT_TELEMETRY_ROUTE = "runtime-observability"
+
+
+class TelemetryRetentionError(RuntimeError):
+    """Raised when telemetry retention cannot prove deletion provenance."""
+
+
+def _payload_proof(value: Any) -> dict[str, Any]:
+    """Return non-restorable proof metadata for a deleted payload."""
+    raw = str(value)
+    data = raw.encode("utf-8", errors="replace")
+    return {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
 
 
 def _active_instances() -> weakref.WeakSet[Any]:
@@ -54,7 +84,7 @@ def _active_instances() -> weakref.WeakSet[Any]:
     return instances
 
 
-class TelemetryPersistence:
+class TelemetryPersistence(TelemetryAlertMixin):
     """Periodically persists telemetry snapshots and enforces alert thresholds.
 
     Starts a daemon background thread on ``start()``.  The thread wakes every
@@ -79,11 +109,15 @@ class TelemetryPersistence:
         retention_days: int = _DEFAULT_RETENTION_DAYS,
         error_rate_threshold: float = _DEFAULT_ERROR_RATE_THRESHOLD,
         p95_latency_threshold_ms: float = _DEFAULT_P95_LATENCY_THRESHOLD_MS,
+        local_collection_consent: bool | None = None,
+        otlp_disclosure_acknowledged: bool | None = None,
     ) -> None:
         self._interval_s = interval_s
         self._retention_days = retention_days
         self._error_rate_threshold = error_rate_threshold
         self._p95_latency_threshold_ms = p95_latency_threshold_ms
+        self._local_collection_consent = local_collection_consent
+        self._otlp_disclosure_acknowledged = otlp_disclosure_acknowledged
 
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -110,7 +144,7 @@ class TelemetryPersistence:
             self._thread = threading.Thread(
                 target=self._run,
                 name="telemetry-persistence",
-                daemon=True,  # dies with the process - no blocking shutdown needed
+                daemon=True,  # stop() joins and takes a final snapshot on normal shutdown.
             )
             self._thread.start()
             _active_instances().add(self)
@@ -129,17 +163,24 @@ class TelemetryPersistence:
                     self._retention_days,
                 )
 
-    def stop(self) -> None:
+    def stop(self, *, flush: bool = True) -> None:
         """Signal the background thread to stop and wait for it to exit.
 
         Blocks for up to ``interval_s + 2`` seconds.  Safe to call multiple
         times or before ``start()``.
         """
         self._stop_event.set()
+        had_thread = False
         with self._lifecycle_lock:
             if self._thread is not None:
+                had_thread = True
                 self._thread.join(timeout=self._interval_s + 2)
                 self._thread = None
+        if flush and had_thread:
+            try:
+                self._persist_snapshot()
+            except Exception as exc:
+                logger.warning("TelemetryPersistence final shutdown flush failed: %s", exc)
         with contextlib.suppress(Exception):
             _active_instances().discard(self)
         logger.info("TelemetryPersistence stopped")
@@ -196,6 +237,7 @@ class TelemetryPersistence:
         # Enrich summary with adapter details for alert threshold checks
         adapter_metrics = collector.get_adapter_metrics()
         enriched = dict(summary)
+        enriched.setdefault("route", _DEFAULT_TELEMETRY_ROUTE)
         enriched["adapter_details"] = {
             key: {
                 "total_requests": m.total_requests,
@@ -210,7 +252,15 @@ class TelemetryPersistence:
         }
 
         now = time.time()
-        data_json = json.dumps(enriched, default=str)
+        wrapped = wrap_for_persistence(
+            enriched,
+            privacy_class="operational",
+            source="telemetry.snapshot",
+            erasure_token=f"telemetry.snapshot:{int(now)}",
+        )
+        if isinstance(wrapped.get("payload"), dict):
+            wrapped = {**wrapped["payload"], **wrapped}
+        data_json = json.dumps(wrapped, default=str)
 
         try:
             from vetinari.database import get_connection
@@ -225,79 +275,18 @@ class TelemetryPersistence:
                 logger.debug("Telemetry snapshot persisted at %.3f", now)
         except Exception as exc:
             logger.warning(
-                "Failed to write telemetry snapshot to database - metrics not persisted: %s",
+                "Failed to write telemetry snapshot to database - metrics not persisted for this cycle; "
+                "will retry on the next cycle: %s",
                 exc,
+                exc_info=True,
             )
 
         self._check_alert_thresholds(enriched)
         self._prune_old_snapshots(now)
         self._feed_periodic_metrics(enriched, now=now)
 
-    def _check_alert_thresholds(self, summary: dict[str, Any]) -> None:
-        """Emit WARNING logs and events when error-rate or p95 latency breach thresholds.
-
-        Args:
-            summary: The enriched telemetry summary dict from the current cycle.
-        """
-        # -- Error rate check across all adapters --
-        adapter_details: dict[str, Any] = summary.get("adapter_details", {})
-        total_requests = 0
-        total_failed = 0
-        for _key, detail in adapter_details.items():
-            if isinstance(detail, dict):
-                total_requests += int(detail.get("total_requests", 0))
-                total_failed += int(detail.get("failed_requests", 0))
-
-        if total_requests == 0 and adapter_details:
-            logger.warning(
-                "Telemetry alert: zero requests observed across %d adapters - telemetry or inference may be stalled",
-                len(adapter_details),
-            )
-            self._emit_alert_event(
-                "zero_traffic_blackout",
-                "No requests observed across telemetry adapters",
-                {"adapter_count": len(adapter_details)},
-            )
-        elif total_requests > 0:
-            error_rate = (total_failed / total_requests) * 100.0
-            if error_rate > self._error_rate_threshold:
-                logger.warning(
-                    "Telemetry alert: error rate %.1f%% exceeds threshold %.1f%% "
-                    "(%d failed / %d total requests) - investigate adapter failures",
-                    error_rate,
-                    self._error_rate_threshold,
-                    total_failed,
-                    total_requests,
-                )
-                self._emit_alert_event(
-                    "high_error_rate",
-                    f"Error rate {error_rate:.1f}% exceeds threshold {self._error_rate_threshold:.1f}%",
-                    {"error_rate": error_rate, "threshold": self._error_rate_threshold},
-                )
-
-        # -- p95 latency check using MetricsCollector histogram --
-        try:
-            from vetinari.metrics import get_metrics
-
-            stats = get_metrics().get_histogram_stats("vetinari.model.latency")
-            if stats is not None:
-                p95 = stats.get("p95", 0.0)
-                if p95 > self._p95_latency_threshold_ms:
-                    logger.warning(
-                        "Telemetry alert: p95 model latency %.1fms exceeds threshold %.1fms "
-                        "- model may be overloaded or undersized",
-                        p95,
-                        self._p95_latency_threshold_ms,
-                    )
-                    self._emit_alert_event(
-                        "high_p95_latency",
-                        f"p95 latency {p95:.1f}ms exceeds threshold {self._p95_latency_threshold_ms:.1f}ms",
-                        {"p95_latency_ms": p95, "threshold_ms": self._p95_latency_threshold_ms},
-                    )
-        except Exception as exc:
-            logger.warning("p95 latency alert check skipped: %s - high-latency alerts may be missed", exc)
-
-    def _emit_alert_event(self, alert_type: str, message: str, metadata: dict[str, Any]) -> None:
+    @staticmethod
+    def _emit_alert_event(alert_type: str, message: str, metadata: dict[str, Any]) -> None:
         """Publish a telemetry alert event on the EventBus.
 
         Failures are swallowed - alerting must never crash the persist cycle.
@@ -310,9 +299,13 @@ class TelemetryPersistence:
         try:
             from vetinari.events import TelemetryAlertEvent, get_event_bus
 
+            event_type = require_nonempty(
+                f"telemetry_alert.{require_nonempty(alert_type, field_name='alert_type')}",
+                field_name="event_type",
+            )
             get_event_bus().publish(
                 TelemetryAlertEvent(
-                    event_type="",  # overwritten by __post_init__
+                    event_type=event_type,
                     timestamp=time.time(),
                     alert_type=alert_type,
                     message=message,
@@ -380,34 +373,86 @@ class TelemetryPersistence:
                 exc,
             )
 
-    def _prune_old_snapshots(self, now: float) -> None:
+    def _prune_old_snapshots(
+        self,
+        now: float,
+        *,
+        dry_run: bool = False,
+        owner_ref: str = _RETENTION_OWNER_REF,
+    ) -> dict[str, Any]:
         """Delete snapshots older than ``retention_days`` from the database.
 
         Args:
             now: Current Unix timestamp used to compute the retention cutoff.
+            dry_run: When True, count rows but do not delete them.
+            owner_ref: Audit tag for the retention run; must be non-empty.
+
+        Returns:
+            Receipt summary for the prune attempt.
         """
         cutoff = now - (self._retention_days * 86400)
         self._ensure_schema()
+        if not owner_ref.strip():
+            raise TelemetryRetentionError("owner_ref is required before telemetry retention pruning")
+        conn: Any | None = None
         try:
             from vetinari.database import get_connection
 
             conn = get_connection()
-            cursor = conn.execute(
-                "DELETE FROM telemetry_snapshots WHERE timestamp < ?",
-                (cutoff,),
+            candidates = [
+                {"id": row[0], "timestamp": row[1], "data_proof": _payload_proof(row[2])}
+                for row in conn.execute(
+                    "SELECT id, timestamp, data FROM telemetry_snapshots WHERE timestamp < ? ORDER BY timestamp",
+                    (cutoff,),
+                ).fetchall()
+            ]
+            receipt = _build_retention_receipt(
+                now=now,
+                cutoff=cutoff,
+                retention_days=self._retention_days,
+                owner_ref=owner_ref,
+                dry_run=dry_run,
+                candidates=candidates,
             )
+            conn.execute(
+                """
+                INSERT INTO telemetry_retention_receipts
+                (receipt_id, created_at, cutoff, retention_days, owner_ref, dry_run, pruned_count, payload)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    receipt["receipt_id"],
+                    receipt["created_at"],
+                    receipt["cutoff"],
+                    receipt["retention_days"],
+                    receipt["owner_ref"],
+                    1 if dry_run else 0,
+                    receipt["pruned_count"],
+                    json.dumps(receipt, sort_keys=True),
+                ),
+            )
+            if not dry_run and candidates:
+                conn.executemany(
+                    "DELETE FROM telemetry_snapshots WHERE id = ?",
+                    [(row["id"],) for row in candidates],
+                )
             conn.commit()
-            if cursor.rowcount > 0:
+            if candidates and not dry_run:
                 logger.info(
                     "Pruned %d telemetry snapshots older than %d days",
-                    cursor.rowcount,
+                    len(candidates),
                     self._retention_days,
                 )
+            return receipt
         except Exception as exc:
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
             logger.warning(
-                "Failed to prune old telemetry snapshots - storage may grow unbounded: %s",
+                "Failed to record telemetry retention receipt - prune skipped: %s",
                 exc,
             )
+            raise TelemetryRetentionError("telemetry retention receipt failed; prune skipped") from exc
 
     # ------------------------------------------------------------------
     # Read path (used by dashboard API)
@@ -442,13 +487,18 @@ class TelemetryPersistence:
         results: list[dict[str, Any]] = []
         for row in rows:
             try:
-                results.append(
-                    {
-                        "id": row[0],
-                        "timestamp": row[1],
-                        "data": json.loads(row[2]),
-                    }
-                )
+                data = json.loads(row[2])
+                if not isinstance(data, dict):
+                    raise ValueError("telemetry snapshot data must be a mapping")
+                require_privacy_envelope(data)
+                payload = data.get("payload")
+                if not isinstance(payload, dict):
+                    raise ValueError("telemetry snapshot payload must be a mapping")
+                results.append({
+                    "id": row[0],
+                    "timestamp": row[1],
+                    "data": payload,
+                })
             except Exception as exc:
                 logger.warning(
                     "Skipping malformed telemetry snapshot row id=%s - JSON parse failed: %s",

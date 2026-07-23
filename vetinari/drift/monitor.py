@@ -249,7 +249,8 @@ class DriftMonitor:
             logger.info("Schema check clean (%d objects)", len(sample_objects))
         return errors
 
-    def _build_sample_objects(self) -> dict[str, Any]:
+    @staticmethod
+    def _build_sample_objects() -> dict[str, Any]:
         """Build minimal valid sample objects for schema validation."""
         samples: dict[str, Any] = {}
         try:

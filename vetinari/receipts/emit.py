@@ -26,16 +26,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from vetinari.agents.contracts import OutcomeSignal, Provenance
+from vetinari.agents.contracts import OutcomeSignal, Provenance, ToolEvidence
+from vetinari.privacy.envelope import privacy_receipt
 from vetinari.receipts.record import WorkReceipt, WorkReceiptKind
 from vetinari.receipts.store import WorkReceiptStore
 from vetinari.types import AgentType, EvidenceBasis
+
+logger = logging.getLogger(__name__)
+
 
 if TYPE_CHECKING:
     from vetinari.agents.base_agent import BaseAgent
     from vetinari.agents.contracts import AgentResult, AgentTask
 
-logger = logging.getLogger(__name__)
 
 # AgentType -> WorkReceiptKind mapping.  The factory pipeline produces
 # exactly one receipt kind per agent role.
@@ -82,6 +85,39 @@ def _summary(text: str | None, limit: int = 200) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1] + "…"
+
+
+def _privacy_safe_summary(text: str | None, limit: int = 200) -> str:
+    """Redact sensitive markers before a summary is stored durably."""
+    summary = _summary(text, limit=limit)
+    if not summary:
+        return ""
+    try:
+        from vetinari.security.redaction import redact_text
+
+        return _summary(redact_text(summary), limit=limit)
+    except Exception:
+        logger.warning("Receipt summary redaction unavailable; storing conservative placeholder", exc_info=True)
+        return "[REDACTION_UNAVAILABLE]"
+
+
+def receipt_privacy_receipt(receipt: WorkReceipt) -> dict[str, Any]:
+    """Build the privacy envelope for a durable WorkReceipt row.
+
+    Args:
+        receipt: WorkReceipt whose project, kind, and user-awaiting state define privacy scope.
+
+    Returns:
+        Privacy receipt metadata with operational or subject-data classification and erasure token.
+    """
+    subject_id = receipt.project_id if receipt.awaiting_user else None
+    return privacy_receipt(
+        privacy_class="subject_data" if receipt.awaiting_user else "operational",
+        subject_id=subject_id,
+        source=f"work_receipt:{receipt.kind.value}",
+        erasure_token=f"work_receipt:{receipt.project_id}:{receipt.receipt_id}",
+        redaction_applied=receipt.awaiting_user,
+    )
 
 
 def _coerce_project_id(task: AgentTask | None, fallback: str = _DEFAULT_PROJECT_ID) -> str:
@@ -171,29 +207,8 @@ def record_agent_completion(
 ) -> WorkReceipt | None:
     """Emit a WorkReceipt for a completed agent task.
 
-    The receipt kind is derived from ``agent.agent_type``. Failures of the
-    receipt subsystem (store I/O, bus publish) are logged as WARNING and
-    return ``None`` so the calling pipeline (``complete_task``) is never
-    crashed by an observability fault. Silent failures are also counted
-    via ``vetinari.receipts.emission_failures`` so an operator can
-    observe them in metrics.
-
-    Args:
-        agent: The BaseAgent that finished the task.
-        task: The completed AgentTask.
-        result: The AgentResult returned by execution.
-        score: Quality score from the scorer (already computed in
-            ``complete_task``); ``0.0`` for failures.
-        scoring_available: True when the quality scorer produced
-            ``score``; False when an early-return path bypassed the
-            scorer (e.g. quality scoring crashed). Drives the
-            ``OutcomeSignal.basis`` so consumers can distinguish
-            "scored zero" from "scoring unavailable".
-        store: Optional WorkReceiptStore override; the default uses the
-            current repo root.
-
     Returns:
-        The appended WorkReceipt, or ``None`` if the emission failed.
+        Value produced for the caller.
     """
     try:
         kind = _AGENT_KIND_MAP.get(agent.agent_type)
@@ -205,47 +220,18 @@ def record_agent_completion(
             _record_emission_failure(kind="unknown_agent_type")
             return None
 
-        # awaiting_user / awaiting_reason are set by Foreman/Inspector when
-        # they explicitly mark a project blocked on the user. Worker NEVER
-        # sets these directly; the WorkReceipt invariant is enforced in
-        # WorkReceipt.__post_init__.
-        meta: dict[str, Any] = result.metadata or {}
-        awaiting_user = bool(meta.get("awaiting_user"))
-        awaiting_reason: str | None = meta.get("awaiting_reason")
-        if awaiting_user and agent.agent_type is AgentType.WORKER:
-            # Worker MUST NOT set awaiting flags (shard 02, task 2.2). Drop
-            # the flag rather than failing the receipt.
-            logger.warning(
-                "Worker attempted to set awaiting_user=True; suppressed (only Foreman/Inspector may block on user)",
-            )
-            awaiting_user = False
-            awaiting_reason = None
-
-        linked_claim_ids: tuple[str, ...] = tuple(meta.get("linked_claim_ids", ()))
-
-        outcome = _build_outcome_from_score(
-            success=result.success,
+        meta = _agent_receipt_metadata(agent.agent_type, result.metadata or {})
+        receipt = _build_agent_completion_receipt(
+            agent=agent,
+            task=task,
+            result=result,
+            kind=kind,
             score=score,
             scoring_available=scoring_available,
-            source=f"vetinari.agents.{agent.agent_type.value.lower()}",
-            issues=tuple(result.errors or ()),
+            awaiting_user=meta["awaiting_user"],
+            awaiting_reason=meta["awaiting_reason"],
+            linked_claim_ids=meta["linked_claim_ids"],
         )
-
-        output_str = result.output if isinstance(result.output, str) else str(result.output)
-
-        receipt = WorkReceipt(
-            project_id=_coerce_project_id(task),
-            agent_id=getattr(agent, "name", agent.agent_type.value),
-            agent_type=agent.agent_type,
-            kind=kind,
-            outcome=outcome,
-            inputs_summary=_summary(task.description or task.prompt or ""),
-            outputs_summary=_summary(output_str),
-            awaiting_user=awaiting_user,
-            awaiting_reason=awaiting_reason,
-            linked_claim_ids=linked_claim_ids,
-        )
-
         (store or WorkReceiptStore()).append(receipt)
         return receipt
     except Exception:
@@ -257,6 +243,54 @@ def record_agent_completion(
         )
         _record_emission_failure(kind="agent_completion")
         return None
+
+
+def _agent_receipt_metadata(agent_type: AgentType, meta: dict[str, Any]) -> dict[str, Any]:
+    awaiting_user = bool(meta.get("awaiting_user"))
+    awaiting_reason: str | None = meta.get("awaiting_reason")
+    if awaiting_user and agent_type is AgentType.WORKER:
+        logger.warning("Worker attempted to set awaiting_user=True; suppressed")
+        awaiting_user = False
+        awaiting_reason = None
+    return {
+        "awaiting_user": awaiting_user,
+        "awaiting_reason": awaiting_reason,
+        "linked_claim_ids": tuple(meta.get("linked_claim_ids", ())),
+    }
+
+
+def _build_agent_completion_receipt(
+    *,
+    agent: BaseAgent,
+    task: AgentTask,
+    result: AgentResult,
+    kind: WorkReceiptKind,
+    score: float,
+    scoring_available: bool,
+    awaiting_user: bool,
+    awaiting_reason: str | None,
+    linked_claim_ids: tuple[str, ...],
+) -> WorkReceipt:
+    outcome = _build_outcome_from_score(
+        success=result.success,
+        score=score,
+        scoring_available=scoring_available,
+        source=f"vetinari.agents.{agent.agent_type.value.lower()}",
+        issues=tuple(result.errors or ()),
+    )
+    output_str = result.output if isinstance(result.output, str) else str(result.output)
+    return WorkReceipt(
+        project_id=_coerce_project_id(task),
+        agent_id=getattr(agent, "name", agent.agent_type.value),
+        agent_type=agent.agent_type,
+        kind=kind,
+        outcome=outcome,
+        inputs_summary=_privacy_safe_summary(task.description or task.prompt or ""),
+        outputs_summary=_privacy_safe_summary(output_str),
+        awaiting_user=awaiting_user,
+        awaiting_reason=awaiting_reason,
+        linked_claim_ids=linked_claim_ids,
+    )
 
 
 def record_training_step(
@@ -275,27 +309,8 @@ def record_training_step(
 ) -> WorkReceipt | None:
     """Emit a TRAINING_STEP receipt for one training-run completion.
 
-    Fallback runs (``is_fallback=True``) are NEVER recorded as completed
-    training receipts (anti-pattern: Fallback as success).
-
-    Args:
-        project_id: Project this training run belongs to.
-        run_id: Unique identifier of the training run.
-        base_model: Model the run started from.
-        algorithm: Which algorithm actually ran (``"sft"``, ``"dpo"``,
-            ``"simpo"``, etc.). Required for post-SESSION-02 naming truth.
-        epochs: Total epochs requested for the run.
-        training_examples: Number of training examples in the dataset.
-        success: Whether the training run completed successfully.
-        eval_score: Final evaluation score; ``0.0`` when not available.
-        error: Error message if the run failed; ``""`` otherwise.
-        is_fallback: If True, the run was a fallback / skipped path and
-            no receipt is emitted.
-        store: Optional WorkReceiptStore override.
-
     Returns:
-        The appended WorkReceipt, or ``None`` if the run was a fallback
-        or emission failed.
+        Value produced for the caller.
     """
     if is_fallback:
         logger.info(
@@ -307,32 +322,16 @@ def record_training_step(
         return None
 
     try:
-        outcome = OutcomeSignal(
-            passed=success,
-            score=float(eval_score) if success else 0.0,
-            basis=EvidenceBasis.TOOL_EVIDENCE if success else EvidenceBasis.UNSUPPORTED,
-            issues=(error,) if error else (),
-            provenance=Provenance(
-                source="vetinari.training.pipeline",
-                timestamp_utc=datetime.now(timezone.utc).isoformat(),
-                tool_name="qlora_trainer",
-            ),
-        )
-
-        inputs = f"base_model={base_model} | algo={algorithm} | epochs={epochs} | examples={training_examples}"
-        outputs = f"run_id={run_id} | success={success}" + (f" | eval_score={eval_score:.3f}" if success else "")
-
-        receipt = WorkReceipt(
+        receipt = _build_training_step_receipt(
             project_id=project_id,
-            agent_id=f"training-runner:{run_id}",
-            # Training pipeline is an auxiliary runner, not a factory-pipeline
-            # agent — labeled with AgentType.TRAINING per ADR-0103 so the
-            # receipt's actor field is honest.
-            agent_type=AgentType.TRAINING,
-            kind=WorkReceiptKind.TRAINING_STEP,
-            outcome=outcome,
-            inputs_summary=_summary(inputs),
-            outputs_summary=_summary(outputs),
+            run_id=run_id,
+            base_model=base_model,
+            algorithm=algorithm,
+            epochs=epochs,
+            training_examples=training_examples,
+            success=success,
+            eval_score=eval_score,
+            error=error,
         )
 
         (store or WorkReceiptStore()).append(receipt)
@@ -345,6 +344,56 @@ def record_training_step(
         )
         _record_emission_failure(kind="training_step")
         return None
+
+
+def _build_training_step_receipt(
+    *,
+    project_id: str,
+    run_id: str,
+    base_model: str,
+    algorithm: str,
+    epochs: int,
+    training_examples: int,
+    success: bool,
+    eval_score: float,
+    error: str,
+) -> WorkReceipt:
+    tool_evidence = ()
+    if success:
+        tool_evidence = (
+            ToolEvidence(
+                tool_name="qlora_trainer",
+                command=(
+                    f"training_step run_id={run_id} algorithm={algorithm} epochs={epochs} examples={training_examples}"
+                ),
+                exit_code=0,
+                stdout_snippet=f"eval_score={float(eval_score):.3f}",
+                passed=True,
+            ),
+        )
+    outcome = OutcomeSignal(
+        passed=success,
+        score=float(eval_score) if success else 0.0,
+        basis=EvidenceBasis.TOOL_EVIDENCE if success else EvidenceBasis.UNSUPPORTED,
+        tool_evidence=tool_evidence,
+        issues=(error,) if error else (),
+        provenance=Provenance(
+            source="vetinari.training.pipeline",
+            timestamp_utc=datetime.now(timezone.utc).isoformat(),
+            tool_name="qlora_trainer",
+        ),
+    )
+    inputs = f"base_model={base_model} | algo={algorithm} | epochs={epochs} | examples={training_examples}"
+    outputs = f"run_id={run_id} | success={success}" + (f" | eval_score={eval_score:.3f}" if success else "")
+    return WorkReceipt(
+        project_id=project_id,
+        agent_id=f"training-runner:{run_id}",
+        agent_type=AgentType.TRAINING,
+        kind=WorkReceiptKind.TRAINING_STEP,
+        outcome=outcome,
+        inputs_summary=_privacy_safe_summary(inputs),
+        outputs_summary=_privacy_safe_summary(outputs),
+    )
 
 
 def record_release_step(
@@ -381,10 +430,22 @@ def record_release_step(
         The appended WorkReceipt, or ``None`` if emission failed.
     """
     try:
+        tool_evidence = ()
+        if success:
+            tool_evidence = (
+                ToolEvidence(
+                    tool_name="release_doctor",
+                    command=f"release_step version={version} step={step_name}",
+                    exit_code=0,
+                    stdout_snippet=f"proof_path={proof_path}" if proof_path is not None else "release step passed",
+                    passed=True,
+                ),
+            )
         outcome = OutcomeSignal(
             passed=success,
             score=1.0 if success else 0.0,
             basis=EvidenceBasis.TOOL_EVIDENCE if success else EvidenceBasis.UNSUPPORTED,
+            tool_evidence=tool_evidence,
             issues=(error,) if error else (),
             provenance=Provenance(
                 source="scripts.release_doctor",
@@ -405,8 +466,8 @@ def record_release_step(
             agent_type=AgentType.RELEASE,
             kind=WorkReceiptKind.RELEASE_STEP,
             outcome=outcome,
-            inputs_summary=_summary(f"release pipeline step: {step_name}"),
-            outputs_summary=_summary(outputs),
+            inputs_summary=_privacy_safe_summary(f"release pipeline step: {step_name}"),
+            outputs_summary=_privacy_safe_summary(outputs),
             linked_claim_ids=tuple(linked_claim_ids),
         )
 
@@ -423,8 +484,92 @@ def record_release_step(
         return None
 
 
+def record_workbench_event(
+    *,
+    project_id: str,
+    event_name: str,
+    success: bool,
+    actor_id: str = "workbench",
+    inputs_summary: str = "",
+    outputs_summary: str = "",
+    evidence_ref: str = "",
+    error: str = "",
+    linked_claim_ids: Iterable[str] = (),
+    store: WorkReceiptStore | None = None,
+) -> WorkReceipt | None:
+    """Emit a WORKBENCH receipt for subsystem-scoped work.
+
+    Args:
+        project_id: Project this Workbench operation belongs to.
+        event_name: Concrete Workbench operation name.
+        success: Whether the operation completed successfully.
+        actor_id: Concrete Workbench actor or service name.
+        inputs_summary: Human-readable input summary.
+        outputs_summary: Human-readable output summary.
+        evidence_ref: Optional artifact or spine reference backing success.
+        error: Failure reason when ``success`` is false.
+        linked_claim_ids: Claim ids cited by this workbench operation.
+        store: Optional WorkReceiptStore override.
+
+    Returns:
+        The appended WorkReceipt, or ``None`` if emission failed.
+    """
+    try:
+        issues = (error,) if error else ()
+        if not success and not issues:
+            issues = ("workbench operation did not succeed",)
+        tool_evidence = ()
+        if success:
+            tool_evidence = (
+                ToolEvidence(
+                    tool_name=event_name,
+                    command=f"workbench_event event={event_name} actor={actor_id}",
+                    exit_code=0,
+                    stdout_snippet=evidence_ref or outputs_summary or "workbench event passed",
+                    passed=True,
+                ),
+            )
+        outcome = OutcomeSignal(
+            passed=success,
+            score=1.0 if success else 0.0,
+            basis=EvidenceBasis.TOOL_EVIDENCE if success else EvidenceBasis.UNSUPPORTED,
+            tool_evidence=tool_evidence,
+            issues=issues,
+            provenance=Provenance(
+                source=f"vetinari.workbench.{event_name}",
+                timestamp_utc=datetime.now(timezone.utc).isoformat(),
+                tool_name=event_name,
+            ),
+        )
+        receipt = WorkReceipt(
+            project_id=project_id,
+            agent_id=f"workbench:{actor_id}",
+            agent_type=AgentType.WORKBENCH,
+            kind=WorkReceiptKind.WORKBENCH_EVENT,
+            outcome=outcome,
+            inputs_summary=_privacy_safe_summary(inputs_summary or event_name),
+            outputs_summary=_privacy_safe_summary(
+                outputs_summary or f"event={event_name} success={success} evidence={evidence_ref}"
+            ),
+            linked_claim_ids=tuple(linked_claim_ids),
+        )
+        (store or WorkReceiptStore()).append(receipt)
+        return receipt
+    except Exception:
+        logger.warning(
+            "Failed to emit WORKBENCH receipt for project=%s event=%s — continuing",
+            project_id,
+            event_name,
+            exc_info=True,
+        )
+        _record_emission_failure(kind="workbench_event")
+        return None
+
+
 __all__ = [
+    "receipt_privacy_receipt",
     "record_agent_completion",
     "record_release_step",
     "record_training_step",
+    "record_workbench_event",
 ]

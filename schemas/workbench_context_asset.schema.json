@@ -1,0 +1,234 @@
+{
+  "$id": "https://vetinari.local/schemas/workbench_context_asset.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AM Workbench ContextAsset pack",
+  "description": "Inspectable context asset packs for prompt context freshness, coverage, usefulness, provenance, contradiction, token budget, and invalidation checks.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "context_asset_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "enum": [
+        "accelerator",
+        "wiki_page",
+        "context_bundle",
+        "code_map",
+        "retrieval_collection",
+        "domain_context",
+        "evidence_asset",
+        "memory_context"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "revision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "observed_at_utc": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_coverage": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "coverage_ratio": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "observed_at_utc": {
+            "type": "string",
+            "minLength": 1
+          },
+          "max_age_seconds": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "source_id",
+          "source_kind",
+          "coverage_ratio",
+          "observed_at_utc",
+          "max_age_seconds"
+        ]
+      }
+    },
+    "freshness": {
+      "enum": [
+        "fresh",
+        "aging",
+        "stale",
+        "unknown"
+      ]
+    },
+    "contradiction_ledger": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "contradiction_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "severity": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_refs": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "required": [
+          "contradiction_id",
+          "summary",
+          "severity",
+          "evidence_refs"
+        ]
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "required": [
+        "source"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "intended_agent_profiles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "token_budget": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "usefulness_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "invalidation_triggers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "trigger_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "triggered_at_utc": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "trigger_id",
+          "description",
+          "source_id",
+          "active"
+        ]
+      }
+    },
+    "upstream_evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "content_summary": {
+      "type": "string"
+    },
+    "prompt_safety_status": {
+      "enum": [
+        "safe",
+        "untrusted_quoted",
+        "unsafe_blocked"
+      ]
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "context_asset_id",
+    "kind",
+    "title",
+    "revision",
+    "observed_at_utc",
+    "source_coverage",
+    "freshness",
+    "contradiction_ledger",
+    "provenance",
+    "intended_agent_profiles",
+    "token_budget",
+    "usefulness_score",
+    "invalidation_triggers",
+    "prompt_safety_status"
+  ]
+}

@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from vetinari.boundary_guards import assert_dependency_success, require_nonempty
 from vetinari.database import get_connection
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,7 @@ class InstructionEvolver:
         agent_type: str = "all",
         source: str = "manual",
         allow_constitutional: bool = False,
+        verification_receipt: dict[str, Any] | None = None,
     ) -> str:
         """Add a new instruction rule and persist it to the database.
 
@@ -145,6 +147,8 @@ class InstructionEvolver:
             source: How this rule was created (manual, evolved, transferred).
             allow_constitutional: Set True only when the caller explicitly
                 intends to add an immutable constitutional rule.
+            verification_receipt: Independent verification metadata required
+                before persisting evolved behavioral rules.
 
         Returns:
             The generated rule_id.
@@ -153,12 +157,28 @@ class InstructionEvolver:
             PermissionError: If ``tier`` is CONSTITUTIONAL and
                 ``allow_constitutional`` is False.
         """
+        content = require_nonempty(content, field_name="rule_body")
         if tier == InstructionTier.CONSTITUTIONAL and not allow_constitutional:
             raise PermissionError(
                 f"Adding a CONSTITUTIONAL rule requires allow_constitutional=True. "
                 f"Call add_rule(..., allow_constitutional=True) only when the rule "
                 f"truly must be immutable and cannot be evolved. Attempted content: "
                 f"{content[:80]!r}"
+            )
+        if tier == InstructionTier.CONSTITUTIONAL:
+            receipt = verification_receipt if isinstance(verification_receipt, dict) else {}
+            dependency_id = str(receipt.get("dependency_id") or "constitutional_rule_dependency")
+            failed_ids = receipt.get("failed_dependency_ids")
+            if failed_ids is not None:
+                assert_dependency_success(dependency_id, failed_ids)
+        if (
+            tier == InstructionTier.BEHAVIORAL
+            and source == "evolved"
+            and not _is_independent_verification_receipt(verification_receipt, agent_type=agent_type)
+        ):
+            raise PermissionError(
+                "Adding an evolved BEHAVIORAL rule requires an independent verification receipt "
+                "from a verifier that is not the evolving agent."
             )
         rule_id = f"rule_{uuid.uuid4().hex[:8]}"
         content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -208,7 +228,9 @@ class InstructionEvolver:
         """
         # Exclude quarantined rules — they failed the integrity check and must not
         # influence agent behaviour until the violation is resolved.
-        query = "SELECT * FROM instruction_rules WHERE (agent_type = ? OR agent_type = 'all') AND status != 'quarantined'"
+        query = (
+            "SELECT * FROM instruction_rules WHERE (agent_type = ? OR agent_type = 'all') AND status != 'quarantined'"
+        )
         params: list[Any] = [agent_type]
         if tier:
             query += " AND tier = ?"
@@ -261,6 +283,7 @@ class InstructionEvolver:
                         tier=InstructionTier.BEHAVIORAL,
                         agent_type=agent_type,
                         source="evolved",
+                        verification_receipt=_verification_receipt_from_trace(trace, agent_type=agent_type),
                     )
                     return rule_id
         except Exception:
@@ -293,7 +316,8 @@ class InstructionEvolver:
             )
             conn.commit()
 
-    def _get_rule_by_id(self, rule_id: str) -> InstructionRule | None:
+    @staticmethod
+    def _get_rule_by_id(rule_id: str) -> InstructionRule | None:
         """Look up a single rule directly by its primary key.
 
         Args:
@@ -356,7 +380,13 @@ class InstructionEvolver:
             List of rule_ids that were quarantined in this call.  An empty list
             means all constitutional rules passed the integrity check.
         """
-        rules = self.get_rules(agent_type="all", tier=InstructionTier.CONSTITUTIONAL)
+        conn = get_connection()
+        cursor = conn.execute(
+            "SELECT * FROM instruction_rules WHERE tier = ? AND status != 'quarantined'",
+            (InstructionTier.CONSTITUTIONAL.value,),
+        )
+        columns = [desc[0] for desc in cursor.description]
+        rules = [InstructionRule(**dict(zip(columns, row))) for row in cursor.fetchall()]
         quarantined: list[str] = []
         for rule in rules:
             expected_hash = rule.content_hash
@@ -421,6 +451,55 @@ class InstructionEvolver:
 
 # Module-level singleton — written by get_instruction_evolver(), read by callers.
 # Protected by _evolver_lock (double-checked locking).
+def _is_independent_verification_receipt(
+    receipt: dict[str, Any] | None,
+    *,
+    agent_type: str,
+) -> bool:
+    """Return True only for receipts from an independent verifier with a pass verdict."""
+    if not isinstance(receipt, dict):
+        return False
+    verdict = str(receipt.get("verdict", "")).strip().lower()
+    verifier = str(receipt.get("verifier", "")).strip()
+    subject_agent = str(receipt.get("subject_agent", "")).strip()
+    evidence_ref = str(receipt.get("evidence_ref", "")).strip()
+    if verdict not in {"pass", "passed", "approved"}:
+        return False
+    if not verifier or verifier == agent_type:
+        return False
+    if subject_agent and subject_agent != agent_type:
+        return False
+    return bool(evidence_ref)
+
+
+def _verification_receipt_from_trace(
+    trace: dict[str, Any] | None,
+    *,
+    agent_type: str,
+) -> dict[str, Any] | None:
+    """Extract independent verification metadata from a trace payload."""
+    if not isinstance(trace, dict):
+        return None
+    raw = trace.get("verification_receipt") or trace.get("independent_verification")
+    if isinstance(raw, dict):
+        receipt = dict(raw)
+    else:
+        receipt = {}
+        verifier = trace.get("verifier") or trace.get("inspector_agent")
+        verdict = trace.get("verification_verdict") or trace.get("inspector_verdict")
+        evidence_ref = trace.get("verification_evidence_ref") or trace.get("evidence_ref")
+        if isinstance(verdict, dict):
+            verdict = verdict.get("verdict") or verdict.get("status")
+        if verifier:
+            receipt["verifier"] = verifier
+        if verdict:
+            receipt["verdict"] = verdict
+        if evidence_ref:
+            receipt["evidence_ref"] = evidence_ref
+    receipt.setdefault("subject_agent", agent_type)
+    return receipt
+
+
 _evolver: InstructionEvolver | None = None
 _evolver_lock = threading.Lock()
 

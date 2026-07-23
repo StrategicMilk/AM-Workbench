@@ -78,7 +78,9 @@
             style={barStyle(usage, res.color)}
           ></div>
         </div>
-        <span class="resource-value">{isKnown ? `${usage.toFixed(0)}%` : '\u2014'}</span>
+        <span class="resource-value" class:resource-value--unknown={!isKnown}>
+          {isKnown ? `${usage.toFixed(0)}%` : '\u2014'}
+        </span>
       </div>
     {/each}
   </div>
@@ -152,6 +154,10 @@
     color: var(--text-primary);
     font-variant-numeric: tabular-nums;
     flex-shrink: 0;
+  }
+
+  .resource-value--unknown {
+    color: var(--text-muted);
   }
 
   @keyframes pulse-bar {

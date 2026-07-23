@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://am-workbench.local/schemas/workbench_surface_maturity.schema.json",
+  "title": "AM Workbench Surface Maturity Inventory",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "surfaces"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "workbench-surface-maturity.v1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "surfaces": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "current_maturity",
+          "target_maturity",
+          "claim_status",
+          "default_policy",
+          "owner_pack",
+          "live_path",
+          "read_path",
+          "write_path",
+          "wiring_proof_expected",
+          "damaged_state_recovery",
+          "remediation_status",
+          "signals"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "current_maturity": {
+            "type": "string",
+            "minLength": 1
+          },
+          "target_maturity": {
+            "type": "string",
+            "minLength": 1
+          },
+          "claim_status": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default_policy": {
+            "type": "string",
+            "minLength": 1
+          },
+          "owner_pack": {
+            "type": "string",
+            "minLength": 1
+          },
+          "live_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "read_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "write_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "wiring_proof_expected": {
+            "type": "string",
+            "minLength": 1
+          },
+          "damaged_state_recovery": {
+            "type": "string",
+            "minLength": 1
+          },
+          "remediation_status": {
+            "type": "string",
+            "minLength": 1
+          },
+          "signals": {
+            "type": "object",
+            "required": [
+              "safety",
+              "provenance",
+              "governance"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "safety": {
+                "type": "object",
+                "required": [
+                  "status",
+                  "evidence"
+                ],
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "present",
+                      "gap-owned",
+                      "not-applicable",
+                      "retired-preserved"
+                    ]
+                  },
+                  "owner_pack": {
+                    "type": "string"
+                  },
+                  "evidence": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "evidence_ref": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "evidence_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 1
+                  },
+                  "artifact": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "artifact_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "artifact_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 1
+                  }
+                },
+                "additionalProperties": false
+              },
+              "provenance": {
+                "type": "object",
+                "required": [
+                  "status",
+                  "evidence"
+                ],
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "present",
+                      "gap-owned",
+                      "not-applicable",
+                      "retired-preserved"
+                    ]
+                  },
+                  "owner_pack": {
+                    "type": "string"
+                  },
+                  "evidence": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "evidence_ref": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "evidence_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 1
+                  },
+                  "artifact": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "artifact_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "artifact_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 1
+                  }
+                },
+                "additionalProperties": false
+              },
+              "governance": {
+                "type": "object",
+                "required": [
+                  "status",
+                  "evidence"
+                ],
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "present",
+                      "gap-owned",
+                      "not-applicable",
+                      "retired-preserved"
+                    ]
+                  },
+                  "owner_pack": {
+                    "type": "string"
+                  },
+                  "evidence": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "evidence_ref": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "evidence_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 1
+                  },
+                  "artifact": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "artifact_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "artifact_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 1
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

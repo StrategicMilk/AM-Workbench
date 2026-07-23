@@ -1,0 +1,17 @@
+id: creative_writing
+primary_contract: vetinari.workbench.modes.creative_writing.CreativeWritingModeState
+template_id: creative_writing
+required_artifacts:
+  - story_bible
+  - style_bible
+  - world_bible
+  - continuity_ledger
+  - scene_beats
+  - voice_conformance_report
+  - draft_branches
+  - export_manifest
+promotion_gate: require_creative_writing_ready
+conversion_targets:
+  - prompt
+  - template
+  - evidence_notebook

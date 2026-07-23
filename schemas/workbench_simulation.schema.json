@@ -1,0 +1,528 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_simulation.schema.json",
+  "title": "Vetinari Workbench Synthetic Simulation Scenario",
+  "description": "Schema for synthetic simulation records used to grow eval, red-team, training, automation, agent-workflow, voice, and video coverage without confusing generated evidence with production truth.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "project_id",
+    "title",
+    "synthetic_label",
+    "trust_classification",
+    "source_constraints",
+    "eval_weight",
+    "adversarial_tags",
+    "workflow_steps",
+    "conversation_hooks",
+    "reusable_regression_refs",
+    "created_at_utc",
+    "allow_eval_authority",
+    "allow_training_authority",
+    "notes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^sim-[a-f0-9]{16}$"
+    },
+    "project_id": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "title": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "synthetic_label": {
+      "enum": [
+        "synthetic",
+        "real",
+        "hybrid"
+      ]
+    },
+    "trust_classification": {
+      "enum": [
+        "unclassified",
+        "sandbox_only",
+        "eval_candidate",
+        "training_candidate",
+        "production_truth"
+      ]
+    },
+    "source_constraints": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/sourceConstraint"
+      }
+    },
+    "eval_weight": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "adversarial_tags": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "workflow_steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/workflowStep"
+      }
+    },
+    "conversation_hooks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/conversationHook"
+      }
+    },
+    "reusable_regression_refs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "created_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "allow_eval_authority": {
+      "type": "boolean"
+    },
+    "allow_training_authority": {
+      "type": "boolean"
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "allow_eval_authority": {
+            "const": true
+          }
+        },
+        "required": [
+          "allow_eval_authority"
+        ]
+      },
+      "then": {
+        "properties": {
+          "trust_classification": {
+            "enum": [
+              "eval_candidate",
+              "production_truth"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "allow_training_authority": {
+            "const": true
+          }
+        },
+        "required": [
+          "allow_training_authority"
+        ]
+      },
+      "then": {
+        "properties": {
+          "trust_classification": {
+            "enum": [
+              "training_candidate",
+              "production_truth"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "synthetic_label": {
+            "const": "synthetic"
+          },
+          "trust_classification": {
+            "const": "production_truth"
+          }
+        },
+        "required": [
+          "synthetic_label",
+          "trust_classification"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sourceConstraint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "constraint_id",
+        "source_ref",
+        "summary",
+        "weight"
+      ],
+      "properties": {
+        "constraint_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "source_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "summary": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "weight": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "workflowStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "step_id",
+        "actor",
+        "action",
+        "expected_signal"
+      ],
+      "properties": {
+        "step_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "actor": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "action": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "expected_signal": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "conversationHook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hook_id",
+        "modality",
+        "transcript_prompt",
+        "media_assertion"
+      ],
+      "properties": {
+        "hook_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "modality": {
+          "enum": [
+            "voice_conversation",
+            "video_conversation"
+          ]
+        },
+        "transcript_prompt": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "media_assertion": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "metricVector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "quality_score",
+        "cost_usd",
+        "latency_ms",
+        "safety_incidents",
+        "retrieval_score",
+        "human_review_minutes",
+        "compatibility_score"
+      ],
+      "properties": {
+        "quality_score": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cost_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "safety_incidents": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retrieval_score": {
+          "type": "number",
+          "minimum": 0
+        },
+        "human_review_minutes": {
+          "type": "number",
+          "minimum": 0
+        },
+        "compatibility_score": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "metricDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "quality_score",
+        "cost_usd",
+        "latency_ms",
+        "safety_incidents",
+        "retrieval_score",
+        "human_review_minutes",
+        "compatibility_score"
+      ],
+      "properties": {
+        "quality_score": {
+          "type": "number"
+        },
+        "cost_usd": {
+          "type": "number"
+        },
+        "latency_ms": {
+          "type": "number"
+        },
+        "safety_incidents": {
+          "type": "integer"
+        },
+        "retrieval_score": {
+          "type": "number"
+        },
+        "human_review_minutes": {
+          "type": "number"
+        },
+        "compatibility_score": {
+          "type": "number"
+        }
+      }
+    },
+    "counterfactualChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "change_id",
+        "surface",
+        "baseline_ref",
+        "candidate_ref",
+        "description",
+        "impact",
+        "rollback_ref"
+      ],
+      "properties": {
+        "change_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "surface": {
+          "enum": [
+            "prompt",
+            "model",
+            "route",
+            "policy",
+            "tool",
+            "dataset",
+            "recipe",
+            "automation",
+            "runtime"
+          ]
+        },
+        "baseline_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "candidate_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "impact": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "rollback_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "counterfactualEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_refs",
+        "provenance_ref",
+        "authority_ref",
+        "safety_review_ref",
+        "confidence"
+      ],
+      "properties": {
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "provenance_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "authority_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "safety_review_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "counterfactualCaseResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "baseline_metrics",
+        "candidate_metrics",
+        "delta",
+        "blockers",
+        "passed"
+      ],
+      "properties": {
+        "case_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "baseline_metrics": {
+          "$ref": "#/$defs/metricVector"
+        },
+        "candidate_metrics": {
+          "$ref": "#/$defs/metricVector"
+        },
+        "delta": {
+          "$ref": "#/$defs/metricDelta"
+        },
+        "blockers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "counterfactualSimulationReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_type",
+        "simulation_id",
+        "change",
+        "evidence",
+        "case_results",
+        "aggregate_delta",
+        "approved_for_promotion",
+        "blockers",
+        "rollback_refs",
+        "created_at_utc"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "1.0.0"
+        },
+        "record_type": {
+          "const": "counterfactual_simulation_report"
+        },
+        "simulation_id": {
+          "type": "string",
+          "pattern": "^sim-run-[a-f0-9]{16}$"
+        },
+        "change": {
+          "$ref": "#/$defs/counterfactualChange"
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/counterfactualEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "case_results": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/counterfactualCaseResult"
+          }
+        },
+        "aggregate_delta": {
+          "$ref": "#/$defs/metricDelta"
+        },
+        "approved_for_promotion": {
+          "type": "boolean"
+        },
+        "blockers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "rollback_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "created_at_utc": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

@@ -19,10 +19,14 @@ This is step 0 of the pipeline: **Sanitization** → Intake → Planning → Exe
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 
+from vetinari.security.redaction import redact_text
+
 logger = logging.getLogger(__name__)
+
 
 # -- Injection prefix patterns -------------------------------------------------
 # Ordered by specificity: more specific patterns first so they match before
@@ -76,6 +80,13 @@ def sanitize_task_description(text: str, *, is_code: bool = False) -> str:
     Returns:
         Sanitized string wrapped in ``<<<UNTRUSTED_USER_CONTENT_BEGIN>>>`` /
         ``<<<UNTRUSTED_USER_CONTENT_END>>>`` delimiters.
+
+    Note:
+        FSA-0346 delimiter collision: if input content already contains the
+        delimiter byte sequences, the sanitizer strips those inner markers
+        before wrapping. This preserves one trusted outer ADR-0097 boundary
+        while accepting that upstream preview truncation is the remaining
+        collision-risk limiter.
     """
     if not text:
         return text
@@ -86,14 +97,17 @@ def sanitize_task_description(text: str, *, is_code: bool = False) -> str:
     for pattern in patterns_to_apply:
         if pattern.search(cleaned):
             logger.warning(
-                "Prompt injection attempt detected and stripped — pattern=%r text_prefix=%r",
+                "Prompt injection attempt detected and stripped — pattern=%r text_sha256=%s text_chars=%d",
                 pattern.pattern,
-                text[:80],
+                hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest(),
+                len(text),
             )
             # Replace the matched phrase with a neutral placeholder that preserves
             # sentence structure so downstream parsing is not confused.
             cleaned = pattern.sub("[REDACTED]", cleaned)
 
+    cleaned = cleaned.replace(_UNTRUSTED_OPEN, "").replace(_UNTRUSTED_CLOSE, "")
+    cleaned = redact_text(cleaned)
     return f"{_UNTRUSTED_OPEN}\n{cleaned}\n{_UNTRUSTED_CLOSE}"
 
 

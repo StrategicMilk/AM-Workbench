@@ -1,0 +1,920 @@
+schema_version: "1.0"
+rubric_id: "capability-completeness-rubric"
+stale_after: "2026-08-25"
+owner: "audit-suite-pack-0af-capability-completeness-rubric"
+purpose: >
+  Define what complete means for each major AM Workbench capability before
+  Wave 10 audit lanes score natural extensions, integration coverage, feature
+  pairs, implicit promises, and API surface completeness.
+consumers:
+  - "audit-suite-pack-0ag-natural-extension-catalog"
+  - "audit-suite-pack-0ah-integration-matrix"
+  - "audit-suite-pack-0ai-feature-pair-catalog"
+  - "audit-suite-pack-0aj-implicit-promise-ledger"
+  - "audit-suite-pack-0ak-api-surface-rubric"
+fail_closed_policy:
+  missing_config: "Consumers must fail instead of assuming a capability is complete."
+  unreadable_config: "Consumers must fail with the unreadable path and remediation action."
+  corrupt_config: "Consumers must fail and report the YAML parser error."
+  unknown_capability: "Consumers must fail when a referenced capability id is absent from this rubric."
+  missing_contract_field: "Consumers must fail and name the capability plus missing field."
+  stale_contract: "Consumers must fail when stale_after has passed without a refreshed rubric."
+complete_state_contract:
+  required_fields:
+    - "id"
+    - "name"
+    - "category"
+    - "done_statement"
+    - "required_surfaces"
+    - "required_integrations"
+    - "required_evidence_kinds"
+    - "error_paths"
+    - "empty_states"
+    - "recovery_flows"
+    - "completeness_gates"
+  required_surface_fields:
+    - "surface"
+    - "required"
+    - "contract"
+    - "evidence"
+  required_integration_fields:
+    - "target"
+    - "contract"
+    - "evidence"
+  required_path_fields:
+    - "id"
+    - "trigger"
+    - "expected_behavior"
+    - "evidence"
+  required_recovery_fields:
+    - "id"
+    - "failure_mode"
+    - "recovery_contract"
+    - "evidence"
+surface_kinds:
+  - "runtime"
+  - "api"
+  - "cli"
+  - "ui"
+  - "docs"
+  - "tests"
+  - "config"
+  - "telemetry"
+evidence_kinds:
+  - "source_path"
+  - "targeted_test"
+  - "bad_fixture"
+  - "good_fixture"
+  - "docs_path"
+  - "runtime_receipt"
+  - "api_contract"
+  - "ui_state"
+  - "telemetry_signal"
+  - "recovery_probe"
+capabilities:
+  - id: "agent_factory"
+    name: "Agent Factory Pipeline"
+    category: "core-runtime"
+    done_statement: >
+      Foreman, Worker, and Inspector roles can plan, execute, inspect, retry,
+      and persist work without losing authorization, provenance, or quality gates.
+    required_surfaces:
+      - surface: "runtime"
+        required: true
+        contract: "Foreman -> Worker -> Inspector handoff paths execute with typed task, receipt, and inspection records."
+        evidence:
+          - "source_path"
+          - "targeted_test"
+      - surface: "api"
+        required: true
+        contract: "Programmatic task submission and status retrieval expose stable success and failure shapes."
+        evidence:
+          - "api_contract"
+          - "bad_fixture"
+      - surface: "telemetry"
+        required: true
+        contract: "Planning, dispatch, inspection, retry, and failure outcomes emit bounded, redacted signals."
+        evidence:
+          - "telemetry_signal"
+          - "targeted_test"
+      - surface: "docs"
+        required: true
+        contract: "Internal docs identify the role contract, handoff data, limits, and recovery expectations."
+        evidence:
+          - "docs_path"
+    required_integrations:
+      - target: "policy_verdicts"
+        contract: "Agent actions carry policy verdict references through handoff and inspection."
+        evidence:
+          - "runtime_receipt"
+          - "targeted_test"
+      - target: "metadata_spine"
+        contract: "Task lifecycle receipts are discoverable from the workbench metadata spine."
+        evidence:
+          - "source_path"
+          - "targeted_test"
+    required_evidence_kinds:
+      - "source_path"
+      - "targeted_test"
+      - "bad_fixture"
+      - "runtime_receipt"
+    error_paths:
+      - id: "missing_policy_verdict"
+        trigger: "An agent action has no readable policy verdict."
+        expected_behavior: "Execution refuses to advance and records a recoverable authorization failure."
+        evidence:
+          - "bad_fixture"
+          - "targeted_test"
+      - id: "failed_inspection"
+        trigger: "Inspector rejects worker output."
+        expected_behavior: "The task remains open with inspection findings and no success receipt."
+        evidence:
+          - "runtime_receipt"
+          - "targeted_test"
+    empty_states:
+      - id: "no_tasks"
+        trigger: "No queued or historical tasks exist."
+        expected_behavior: "Surfaces show an explicit empty queue with the next valid task creation action."
+        evidence:
+          - "ui_state"
+          - "docs_path"
+    recovery_flows:
+      - id: "interrupted_worker"
+        failure_mode: "Worker process stops after receipt creation and before inspection."
+        recovery_contract: "Restart finds the open task, preserves the receipt, and resumes or marks retryable."
+        evidence:
+          - "recovery_probe"
+          - "targeted_test"
+    completeness_gates:
+      - "At least one bad fixture proves missing authorization cannot false-green."
+      - "Inspection rejection leaves the task unresolved until repair evidence exists."
+
+  - id: "local_runtime_backends"
+    name: "Local Runtime Backends"
+    category: "runtime-substrate"
+    done_statement: >
+      All first-class backends expose equivalent lifecycle, capability
+      negotiation, cost, lease, and error semantics where their technology allows.
+    required_surfaces:
+      - surface: "runtime"
+        required: true
+        contract: "Backend adapters implement startup, health, capability negotiation, invocation, and shutdown contracts."
+        evidence:
+          - "source_path"
+          - "targeted_test"
+      - surface: "cli"
+        required: true
+        contract: "Operator commands can probe, dry-run, and diagnose backend availability."
+        evidence:
+          - "good_fixture"
+          - "bad_fixture"
+      - surface: "config"
+        required: true
+        contract: "Backend roster, pins, resource classes, and defaults are declared and validated."
+        evidence:
+          - "source_path"
+          - "targeted_test"
+      - surface: "docs"
+        required: true
+        contract: "Setup, unsupported features, resource expectations, and recovery steps are documented per backend."
+        evidence:
+          - "docs_path"
+    required_integrations:
+      - target: "resource_cockpit"
+        contract: "Backend leases and resource budgets are visible before and during work."
+        evidence:
+          - "runtime_receipt"
+          - "telemetry_signal"
+      - target: "model_routing"
+        contract: "Routing decisions only select backends with declared compatible capabilities."
+        evidence:
+          - "targeted_test"
+          - "bad_fixture"
+    required_evidence_kinds:
+      - "source_path"
+      - "targeted_test"
+      - "bad_fixture"
+      - "good_fixture"
+    error_paths:
+      - id: "backend_unavailable"
+        trigger: "A selected backend is missing, unhealthy, or unsupported on the host."
+        expected_behavior: "Selection fails closed with actionable diagnostics and no silent fallback."
+        evidence:
+          - "bad_fixture"
+          - "runtime_receipt"
+      - id: "capability_mismatch"
+        trigger: "A request needs a capability the backend does not declare."
+        expected_behavior: "Routing refuses the request and names the missing capability."
+        evidence:
+          - "bad_fixture"
+          - "targeted_test"
+    empty_states:
+      - id: "no_backends_configured"
+        trigger: "No local backend is installed or enabled."
+        expected_behavior: "Surfaces identify setup steps and do not imply local inference is ready."
+        evidence:
+          - "ui_state"
+          - "docs_path"
+    recovery_flows:
+      - id: "stale_backend_lock"
+        failure_mode: "A previous backend launch leaves a stale lock or partial health record."
+        recovery_contract: "Probe detects stale state, clears only safe artifacts, and reruns health checks."
+        evidence:
+          - "recovery_probe"
+          - "targeted_test"
+    completeness_gates:
+      - "Every first-class backend has an explicit supported, partial, or intentionally unsupported contract."
+      - "No backend can be selected from missing or stale capability metadata."
+
+  - id: "model_lab"
+    name: "Model Lab"
+    category: "experimentation"
+    done_statement: >
+      Users can compare, configure, benchmark, and promote models with
+      reproducible inputs, resource accounting, and rollback paths.
+    required_surfaces:
+      - surface: "ui"
+        required: true
+        contract: "Model comparison, configuration, and promotion states are reachable and state-complete."
+        evidence:
+          - "ui_state"
+          - "targeted_test"
+      - surface: "api"
+        required: true
+        contract: "Model metadata, benchmark results, and promotion decisions have stable schemas."
+        evidence:
+          - "api_contract"
+          - "bad_fixture"
+      - surface: "telemetry"
+        required: true
+        contract: "Benchmark cost, latency, model identity, and outcome are emitted without leaking prompts."
+        evidence:
+          - "telemetry_signal"
+          - "targeted_test"
+      - surface: "docs"
+        required: true
+        contract: "Docs explain comparison limits, cost drivers, promotion criteria, and rollback."
+        evidence:
+          - "docs_path"
+    required_integrations:
+      - target: "benchmarking"
+        contract: "Every promotion-capable model has comparable benchmark evidence."
+        evidence:
+          - "runtime_receipt"
+          - "targeted_test"
+      - target: "release_certification"
+        contract: "Promotion decisions can feed release and rollback evidence."
+        evidence:
+          - "runtime_receipt"
+          - "docs_path"
+    required_evidence_kinds:
+      - "ui_state"
+      - "api_contract"
+      - "targeted_test"
+      - "runtime_receipt"
+    error_paths:
+      - id: "missing_benchmark"
+        trigger: "A user attempts promotion without required benchmark evidence."
+        expected_behavior: "Promotion is blocked with the missing benchmark criteria."
+        evidence:
+          - "bad_fixture"
+          - "targeted_test"
+      - id: "over_budget_run"
+        trigger: "A benchmark exceeds declared budget or resource limits."
+        expected_behavior: "The run stops or is refused with cost diagnostics."
+        evidence:
+          - "telemetry_signal"
+          - "bad_fixture"
+    empty_states:
+      - id: "no_models_registered"
+        trigger: "No models are installed, connected, or indexed."
+        expected_behavior: "The lab shows setup guidance and disables comparison actions."
+        evidence:
+          - "ui_state"
+          - "docs_path"
+    recovery_flows:
+      - id: "promotion_rollback"
+        failure_mode: "A promoted model fails post-promotion smoke checks."
+        recovery_contract: "Rollback restores the previous model choice and records the failed evidence."
+        evidence:
+          - "recovery_probe"
+          - "runtime_receipt"
+    completeness_gates:
+      - "Promotion cannot proceed from UI, API, or CLI without comparable benchmark evidence."
+      - "Rollback evidence names the prior model and the failed smoke condition."
+
+  - id: "prompt_engineering"
+    name: "Prompt Engineering"
+    category: "authoring"
+    done_statement: >
+      Prompt templates, variables, eval hooks, safety boundaries, and revision
+      history can be authored, tested, compared, and recovered.
+    required_surfaces:
+      - surface: "ui"
+        required: true
+        contract: "Prompt authoring exposes edit, preview, validation, diff, and history states."
+        evidence:
+          - "ui_state"
+          - "targeted_test"
+      - surface: "runtime"
+        required: true
+        contract: "Prompt assembly validates variables, policies, memory injections, and model constraints."
+        evidence:
+          - "source_path"
+          - "bad_fixture"
+      - surface: "tests"
+        required: true
+        contract: "Bad variable, unsafe content, stale memory, and expected-good prompt fixtures are covered."
+        evidence:
+          - "bad_fixture"
+          - "good_fixture"
+      - surface: "docs"
+        required: true
+        contract: "Docs explain template syntax, safety limits, review, and rollback."
+        evidence:
+          - "docs_path"
+    required_integrations:
+      - target: "memory_recall"
+        contract: "Prompt assembly records which memory/context fragments were used or omitted."
+        evidence:
+          - "runtime_receipt"
+          - "targeted_test"
+      - target: "evaluation"
+        contract: "Prompt revisions can be evaluated before promotion."
+        evidence:
+          - "targeted_test"
+          - "runtime_receipt"
+    required_evidence_kinds:
+      - "bad_fixture"
+      - "good_fixture"
+      - "runtime_receipt"
+      - "ui_state"
+    error_paths:
+      - id: "unbound_variable"
+        trigger: "A template references an undeclared or missing variable."
+        expected_behavior: "Assembly fails with the variable name and no model call."
+        evidence:
+          - "bad_fixture"
+          - "targeted_test"
+      - id: "unsafe_context_injection"
+        trigger: "Retrieved context violates prompt safety or provenance rules."
+        expected_behavior: "The unsafe fragment is rejected and the prompt is not promoted as clean."
+        evidence:
+          - "bad_fixture"
+          - "runtime_receipt"
+    empty_states:
+      - id: "no_prompt_revisions"
+        trigger: "A project has no saved prompt revisions."
+        expected_behavior: "Authoring surfaces offer a new prompt action without implying history exists."
+        evidence:
+          - "ui_state"
+    recovery_flows:
+      - id: "revert_prompt_revision"
+        failure_mode: "A prompt revision regresses eval or safety checks."
+        recovery_contract: "A previous passing revision can be restored with provenance."
+        evidence:
+          - "recovery_probe"
+          - "runtime_receipt"
+    completeness_gates:
+      - "No prompt reaches model execution with unresolved variables."
+      - "Promotion requires both expected-good eval proof and safety-boundary proof."
+
+  - id: "evaluation_benchmarking"
+    name: "Evaluation And Benchmarking"
+    category: "quality"
+    done_statement: >
+      Benchmarks and eval suites measure intended behavior with reproducible
+      datasets, failure visibility, drift detection, and anti-false-green checks.
+    required_surfaces:
+      - surface: "runtime"
+        required: true
+        contract: "Eval runners bind dataset, model, prompt, scoring method, and environment identity."
+        evidence:
+          - "runtime_receipt"
+          - "targeted_test"
+      - surface: "cli"
+        required: true
+        contract: "Operators can run check, dry-run, bad fixture, and expected-good eval commands."
+        evidence:
+          - "bad_fixture"
+          - "good_fixture"
+      - surface: "telemetry"
+        required: true
+        contract: "Scores, confidence, cost, duration, and failure classes are emitted with bounded identifiers."
+        evidence:
+          - "telemetry_signal"
+      - surface: "docs"
+        required: true
+        contract: "Docs explain what each score measures, what it omits, and how drift is interpreted."
+        evidence:
+          - "docs_path"
+    required_integrations:
+      - target: "model_lab"
+        contract: "Model comparisons cite eval runs with matching dataset and scoring versions."
+        evidence:
+          - "runtime_receipt"
+      - target: "prompt_engineering"
+        contract: "Prompt promotion can require passing eval evidence."
+        evidence:
+          - "targeted_test"
+    required_evidence_kinds:
+      - "runtime_receipt"
+      - "bad_fixture"
+      - "good_fixture"
+      - "telemetry_signal"
+    error_paths:
+      - id: "stale_dataset"
+        trigger: "An eval references an expired or superseded dataset version."
+        expected_behavior: "The run fails closed or is marked invalid for promotion."
+        evidence:
+          - "bad_fixture"
+          - "targeted_test"
+      - id: "missing_score_interpreter"
+        trigger: "A score lacks measurement definition or pass/fail threshold."
+        expected_behavior: "The eval cannot produce a passing verdict."
+        evidence:
+          - "bad_fixture"
+    empty_states:
+      - id: "no_eval_runs"
+        trigger: "No eval runs exist for a model, prompt, or capability."
+        expected_behavior: "Surfaces show no-evidence status and block evidence-dependent promotion."
+        evidence:
+          - "ui_state"
+          - "api_contract"
+    recovery_flows:
+      - id: "interrupted_eval_run"
+        failure_mode: "Eval stops before all cases are scored."
+        recovery_contract: "Partial results are not counted as pass; rerun or resume records case coverage."
+        evidence:
+          - "recovery_probe"
+          - "runtime_receipt"
+    completeness_gates:
+      - "A bad fixture must prove a meaningless score cannot pass."
+      - "Every passing eval verdict cites dataset, scoring, model, prompt, and environment versions."
+
+  - id: "dataset_curation"
+    name: "Dataset Curation"
+    category: "data"
+    done_statement: >
+      Dataset intake, validation, transformation, lineage, privacy filtering,
+      split management, and export are reproducible and auditable.
+    required_surfaces:
+      - surface: "runtime"
+        required: true
+        contract: "Dataset pipelines validate schema, lineage, dedupe, splits, and sensitive-data handling."
+        evidence:
+          - "source_path"
+          - "targeted_test"
+      - surface: "cli"
+        required: true
+        contract: "Dry-run and check commands report accepted, rejected, redacted, and transformed records."
+        evidence:
+          - "bad_fixture"
+          - "good_fixture"
+      - surface: "config"
+        required: true
+        contract: "Dataset policies declare schema, retention, split, and export rules."
+        evidence:
+          - "source_path"
+          - "targeted_test"
+      - surface: "docs"
+        required: true
+        contract: "Docs explain intake requirements, privacy boundaries, lineage, and export limits."
+        evidence:
+          - "docs_path"
+    required_integrations:
+      - target: "evaluation_benchmarking"
+        contract: "Eval datasets cite immutable dataset versions and split names."
+        evidence:
+          - "runtime_receipt"
+      - target: "training_pipeline"
+        contract: "Training jobs consume only validated, policy-approved dataset versions."
+        evidence:
+          - "bad_fixture"
+          - "targeted_test"
+    required_evidence_kinds:
+      - "source_path"
+      - "bad_fixture"
+      - "good_fixture"
+      - "runtime_receipt"
+    error_paths:
+      - id: "schema_mismatch"
+        trigger: "Incoming records omit required fields or use incompatible types."
+        expected_behavior: "The batch is rejected or quarantined with row-level diagnostics."
+        evidence:
+          - "bad_fixture"
+          - "targeted_test"
+      - id: "sensitive_data_detected"
+        trigger: "Records contain secrets, personal data, or disallowed training content."
+        expected_behavior: "Data is redacted or rejected according to declared policy."
+        evidence:
+          - "bad_fixture"
+          - "runtime_receipt"
+    empty_states:
+      - id: "no_dataset_records"
+        trigger: "A dataset has metadata but no accepted records."
+        expected_behavior: "Export and training actions are blocked with intake guidance."
+        evidence:
+          - "ui_state"
+          - "api_contract"
+    recovery_flows:
+      - id: "partial_import"
+        failure_mode: "Import stops after writing a subset of transformed records."
+        recovery_contract: "Resume is idempotent or rollback removes partial output before retry."
+        evidence:
+          - "recovery_probe"
+          - "targeted_test"
+    completeness_gates:
+      - "No dataset version is eligible for eval or training without validation and privacy evidence."
+      - "Partial imports cannot appear as complete accepted datasets."
+
+  - id: "training_pipeline"
+    name: "Training Pipeline"
+    category: "ml"
+    done_statement: >
+      Training jobs consume governed datasets, capture eval holdouts and forgetting baselines,
+      produce versioned adapters or model artifacts, and block promotion without validation evidence.
+    required_surfaces:
+      - surface: "runtime"
+        required: true
+        contract: "Training execution uses validated dataset versions, eval holdouts, baseline capture, checkpoints, and failure recording."
+        evidence:
+          - "source_path"
+          - "targeted_test"
+      - surface: "config"
+        required: true
+        contract: "Training policy declares dataset, provenance, evaluation, and promotion requirements."
+        evidence:
+          - "source_path"
+          - "targeted_test"
+      - surface: "telemetry"
+        required: true
+        contract: "Training runs emit artifact, dataset, eval, baseline, and failure provenance."
+        evidence:
+          - "runtime_receipt"
+      - surface: "docs"
+        required: true
+        contract: "Operator docs explain dataset consent, provenance validation, eval holdouts, and promotion gates."
+        evidence:
+          - "docs_path"
+    required_integrations:
+      - target: "dataset_curation"
+        contract: "Training jobs consume only validated, policy-approved dataset versions."
+        evidence:
+          - "bad_fixture"
+          - "targeted_test"
+      - target: "evaluation_benchmarking"
+        contract: "Training promotion requires eval holdout and benchmark evidence before deployment."
+        evidence:
+          - "runtime_receipt"
+          - "targeted_test"
+      - target: "local_runtime_backends"
+        contract: "Trained artifacts declare backend compatibility and deployment constraints."
+        evidence:
+          - "source_path"
+          - "targeted_test"
+    required_evidence_kinds:
+      - "source_path"
+      - "targeted_test"
+      - "bad_fixture"
+      - "runtime_receipt"
+    error_paths:
+      - id: "ungoverned_dataset"
+        trigger: "A training request references a dataset without consent, provenance, privacy, or split evidence."
+        expected_behavior: "Training is rejected before model or adapter artifacts are produced."
+        evidence:
+          - "bad_fixture"
+          - "targeted_test"
+      - id: "missing_eval_holdout"
+        trigger: "A training request cannot prepare an eval holdout or forgetting baseline."
+        expected_behavior: "Training fails closed and records an operator-visible reason."
+        evidence:
+          - "bad_fixture"
+          - "targeted_test"
+    empty_states:
+      - id: "no_training_data"
+        trigger: "No eligible training examples are available."
+        expected_behavior: "The run stops with insufficient-data status and cannot promote artifacts."
+        evidence:
+          - "targeted_test"
+          - "runtime_receipt"
+    recovery_flows:
+      - id: "interrupted_training_run"
+        failure_mode: "Training stops after dataset preparation or partial checkpoint output."
+        recovery_contract: "Resume or rollback preserves dataset revision and checkpoint provenance without promoting partial artifacts."
+        evidence:
+          - "recovery_probe"
+          - "runtime_receipt"
+    completeness_gates:
+      - "No model or adapter artifact is eligible for promotion without dataset, eval, and baseline provenance."
+      - "Training failure paths record explicit reasons and do not leave promoted partial artifacts."
+
+  - id: "memory_rag"
+    name: "Memory And Retrieval"
+    category: "knowledge"
+    done_statement: >
+      Memory and retrieval surfaces store, index, recall, cite, redact, expire,
+      and recover knowledge without stale or unsafe context false-greening.
+    required_surfaces:
+      - surface: "runtime"
+        required: true
+        contract: "Memory writes, indexing, recall packing, citation, expiry, and deletion paths are executable."
+        evidence:
+          - "source_path"
+          - "targeted_test"
+      - surface: "api"
+        required: true
+        contract: "Search, recall, write, delete, and export contracts reject invalid or unauthorized inputs."
+        evidence:
+          - "api_contract"
+          - "bad_fixture"
+      - surface: "telemetry"
+        required: true
+        contract: "Recall quality, source count, omission reasons, and redaction outcomes are emitted safely."
+        evidence:
+          - "telemetry_signal"
+      - surface: "docs"
+        required: true
+        contract: "Docs explain memory sources, retention, deletion, citation, and stale-context handling."
+        evidence:
+          - "docs_path"
+    required_integrations:
+      - target: "prompt_engineering"
+        contract: "Prompt assembly receives cited, policy-filtered context with omission reasons."
+        evidence:
+          - "runtime_receipt"
+          - "targeted_test"
+      - target: "privacy_governance"
+        contract: "Retention, deletion, redaction, and training reuse boundaries are enforced."
+        evidence:
+          - "bad_fixture"
+          - "targeted_test"
+    required_evidence_kinds:
+      - "source_path"
+      - "targeted_test"
+      - "bad_fixture"
+      - "telemetry_signal"
+    error_paths:
+      - id: "stale_recall"
+        trigger: "Recall returns superseded or expired context."
+        expected_behavior: "The context is omitted or flagged stale and cannot be cited as current truth."
+        evidence:
+          - "bad_fixture"
+          - "runtime_receipt"
+      - id: "unauthorized_memory_read"
+        trigger: "A request crosses project, user, or policy boundaries."
+        expected_behavior: "Read is rejected without revealing record contents."
+        evidence:
+          - "bad_fixture"
+          - "api_contract"
+    empty_states:
+      - id: "no_recall_results"
+        trigger: "Search or recall finds no eligible context."
+        expected_behavior: "The caller receives an explicit no-context result, not fabricated citations."
+        evidence:
+          - "targeted_test"
+          - "api_contract"
+    recovery_flows:
+      - id: "corrupt_index"
+        failure_mode: "Index metadata is missing, corrupt, or out of sync with records."
+        recovery_contract: "The system refuses recall from corrupt state and offers rebuild proof."
+        evidence:
+          - "recovery_probe"
+          - "bad_fixture"
+    completeness_gates:
+      - "No prompt can treat missing recall evidence as verified context."
+      - "Deletion and retention tests prove sensitive records cannot reappear through retrieval."
+
+  - id: "workflow_orchestration"
+    name: "Workflow Orchestration"
+    category: "coordination"
+    done_statement: >
+      Program, wave, pack, shard, and evidence workflows execute from current
+      packets with scoped ownership, dependency checks, retries, and durable verdicts.
+    required_surfaces:
+      - surface: "runtime"
+        required: true
+        contract: "Program execution starts from packets, respects owned scope, and records per-shard evidence."
+        evidence:
+          - "runtime_receipt"
+          - "targeted_test"
+      - surface: "cli"
+        required: true
+        contract: "Preparation, run, quality-gate, and repair commands expose deterministic exit codes."
+        evidence:
+          - "bad_fixture"
+          - "good_fixture"
+      - surface: "docs"
+        required: true
+        contract: "Workflow docs explain packet inputs, evidence schema, recovery, and escalation."
+        evidence:
+          - "docs_path"
+      - surface: "tests"
+        required: true
+        contract: "Tests cover stale verdicts, missing evidence, out-of-scope edits, and dependency gaps."
+        evidence:
+          - "bad_fixture"
+          - "targeted_test"
+    required_integrations:
+      - target: "agent_routing"
+        contract: "Plans validate declared agents, models, effort, and shard links before execution."
+        evidence:
+          - "targeted_test"
+      - target: "program_state"
+        contract: "State updates mirror fresh verdict head SHA and completion time after evidence passes."
+        evidence:
+          - "runtime_receipt"
+          - "bad_fixture"
+    required_evidence_kinds:
+      - "runtime_receipt"
+      - "bad_fixture"
+      - "good_fixture"
+      - "targeted_test"
+    error_paths:
+      - id: "out_of_scope_edit"
+        trigger: "A pack changes a path outside its owned scope."
+        expected_behavior: "Execution is partial or blocked and no completion state is advanced."
+        evidence:
+          - "bad_fixture"
+          - "targeted_test"
+      - id: "stale_verdict"
+        trigger: "A verdict head SHA is not an ancestor of the current state update."
+        expected_behavior: "The quality gate refuses advancement until fresh evidence is written."
+        evidence:
+          - "bad_fixture"
+          - "runtime_receipt"
+    empty_states:
+      - id: "no_ready_packs"
+        trigger: "A wave has no dependency-satisfied pack."
+        expected_behavior: "Executor reports no runnable packs with the blocking dependency list."
+        evidence:
+          - "runtime_receipt"
+          - "docs_path"
+    recovery_flows:
+      - id: "missing_packet"
+        failure_mode: "A dispatch request lacks a work-packet path."
+        recovery_contract: "Executor returns partial and asks for program_work_packet generation instead of rediscovering scope."
+        evidence:
+          - "recovery_probe"
+          - "docs_path"
+    completeness_gates:
+      - "Completion state is never updated before canonical verdict and shard acceptance evidence exist."
+      - "Out-of-scope diffs block completion even if tests pass."
+
+  - id: "release_certification"
+    name: "Release Certification"
+    category: "shipping"
+    done_statement: >
+      Release candidates prove version alignment, artifact contents,
+      publication boundaries, smoke tests, rollback, and support evidence before shipment.
+    required_surfaces:
+      - surface: "cli"
+        required: true
+        contract: "Release checks can be run in check mode with clear blocking/nonblocking verdicts."
+        evidence:
+          - "good_fixture"
+          - "bad_fixture"
+      - surface: "runtime"
+        required: true
+        contract: "Package, smoke, install, rollback, and boundary checks produce durable evidence."
+        evidence:
+          - "runtime_receipt"
+          - "targeted_test"
+      - surface: "docs"
+        required: true
+        contract: "Runbooks document release, rollback, public export, and support bundle procedures."
+        evidence:
+          - "docs_path"
+      - surface: "telemetry"
+        required: true
+        contract: "Release checks record versions, artifact hashes, command exits, and failure classes."
+        evidence:
+          - "telemetry_signal"
+    required_integrations:
+      - target: "public_export"
+        contract: "Private checkout content cannot be pushed to the public repo without boundary proof."
+        evidence:
+          - "bad_fixture"
+          - "runtime_receipt"
+      - target: "supportability"
+        contract: "Release evidence links known limitations, diagnostics, and rollback guidance."
+        evidence:
+          - "docs_path"
+          - "runtime_receipt"
+    required_evidence_kinds:
+      - "runtime_receipt"
+      - "bad_fixture"
+      - "good_fixture"
+      - "docs_path"
+    error_paths:
+      - id: "boundary_violation"
+        trigger: "Release artifact or public export includes private/internal-only material."
+        expected_behavior: "Release blocks and names the offending path."
+        evidence:
+          - "bad_fixture"
+          - "targeted_test"
+      - id: "smoke_failure"
+        trigger: "Install or smoke command fails for the candidate artifact."
+        expected_behavior: "The candidate is rejected and rollback/support guidance is cited."
+        evidence:
+          - "runtime_receipt"
+          - "bad_fixture"
+    empty_states:
+      - id: "no_candidate_artifact"
+        trigger: "Release checks run without a build artifact."
+        expected_behavior: "Checks fail closed with build instructions and no release-ready verdict."
+        evidence:
+          - "bad_fixture"
+          - "docs_path"
+    recovery_flows:
+      - id: "rollback_release"
+        failure_mode: "A shipped or staged artifact fails post-release verification."
+        recovery_contract: "Rollback path restores prior artifact/channel and records operator evidence."
+        evidence:
+          - "recovery_probe"
+          - "runtime_receipt"
+    completeness_gates:
+      - "No release-ready verdict exists without artifact hash, smoke proof, and boundary proof."
+      - "Rollback must be executable or explicitly blocked before publication."
+
+  - id: "supportability"
+    name: "Supportability And Recovery"
+    category: "operations"
+    done_statement: >
+      Users and operators can diagnose, recover, and explain failures through
+      in-product guidance, support bundles, runbooks, and known-limitation records.
+    required_surfaces:
+      - surface: "ui"
+        required: true
+        contract: "Failure, degraded, empty, retrying, and recovered states are visible and actionable."
+        evidence:
+          - "ui_state"
+          - "targeted_test"
+      - surface: "api"
+        required: true
+        contract: "Diagnostics and support bundle APIs redact sensitive data and include correlation ids."
+        evidence:
+          - "api_contract"
+          - "bad_fixture"
+      - surface: "docs"
+        required: true
+        contract: "Runbooks map symptoms to diagnostics, recovery actions, and escalation criteria."
+        evidence:
+          - "docs_path"
+      - surface: "telemetry"
+        required: true
+        contract: "Health and support signals identify subsystem, severity, retryability, and user impact."
+        evidence:
+          - "telemetry_signal"
+    required_integrations:
+      - target: "workflow_orchestration"
+        contract: "Program and pack failures produce supportable evidence instead of only transcript summaries."
+        evidence:
+          - "runtime_receipt"
+      - target: "release_certification"
+        contract: "Known limitations and rollback guidance are attached to release evidence."
+        evidence:
+          - "docs_path"
+          - "runtime_receipt"
+    required_evidence_kinds:
+      - "ui_state"
+      - "api_contract"
+      - "docs_path"
+      - "telemetry_signal"
+    error_paths:
+      - id: "unreadable_support_bundle"
+        trigger: "A support bundle cannot be generated or parsed."
+        expected_behavior: "The caller receives a failure reason and alternate diagnostics path."
+        evidence:
+          - "bad_fixture"
+          - "targeted_test"
+      - id: "sensitive_support_data"
+        trigger: "Diagnostics contain secrets, prompts, or private records."
+        expected_behavior: "Sensitive fields are redacted or export is blocked."
+        evidence:
+          - "bad_fixture"
+          - "api_contract"
+    empty_states:
+      - id: "no_incidents"
+        trigger: "No failures, warnings, or degraded signals are present."
+        expected_behavior: "Surfaces show healthy/no-incident state without hiding diagnostic entrypoints."
+        evidence:
+          - "ui_state"
+    recovery_flows:
+      - id: "guided_retry"
+        failure_mode: "A retryable operation fails due to transient dependency state."
+        recovery_contract: "The support surface explains retry scope, expected duration, and success/failure evidence."
+        evidence:
+          - "recovery_probe"
+          - "docs_path"
+    completeness_gates:
+      - "Every severe failure class has at least one diagnostic signal and recovery or escalation path."
+      - "Support bundles cannot export sensitive payloads when redaction state is unknown."
+minimum_complete_capability:
+  required_surface_count: 4
+  required_integration_count: 2
+  required_evidence_kind_count: 4
+  required_error_path_count: 2
+  required_empty_state_count: 1
+  required_recovery_flow_count: 1
+  required_gate_count: 2

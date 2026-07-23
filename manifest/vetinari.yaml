@@ -1,69 +1,54 @@
-# vetinari.yaml (MVP manifest)
-project_name: Vetinari
-description: Local-LM orchestration for task workflows using llama-cpp-python
+# AM Workbench runtime manifest
+project_name: Vetinari AM Workbench
+description: Desktop orchestration workbench backed by the Rust AM kernel.
 created_at: 2026-03-01T12:00:00Z
+manifest_version: 2
 
-high_level_goal: "Create a Python CLI tool with a REST API that can be run locally"
+high_level_goal: "Run local orchestration workflows through the Tauri desktop host and Rust kernel API."
 
-auto_discover: true
-discovery_source: "Local filesystem scan for .gguf files in VETINARI_MODELS_DIR"
-discover_interval_minutes: 1440
+runtime:
+  desktop_host: src-tauri
+  kernel_crate: crates/amw-kernel
+  kernel_binary: amw-kernel-server
+  default_bind:
+    host: 127.0.0.1
+    port: 8080
+  state_dir_env: AMW_KERNEL_STATE_DIR
+  readiness_endpoint: /ready
+  retired_entrypoints:
+    - "python -m vetinari serve"
 
-models:
-  - id: qwen25-05b
-    name: qwen2.5-0.5b-instruct
-    capabilities: ["code_gen", "docs", "chat"]
-    context_len: 2048
-    memory_gb: 1
-    version: "2.5"
-  - id: llama1b
-    name: llama-3.2-1b-instruct
-    capabilities: ["code_gen", "docs", "chat"]
-    context_len: 4096
-    memory_gb: 2
-    version: "3.2"
-  - id: qwen3coder
-    name: qwen3-coder-next
-    capabilities: ["code_gen"]
-    context_len: 6400
-    memory_gb: 16
-    version: "next"
+model_backends:
+  local_native:
+    optional: true
+    discovery_env: VETINARI_NATIVE_MODELS_DIR
+    adapters:
+      - vllm
+      - nim
+  gguf_legacy:
+    optional: true
+    discovery_env: VETINARI_MODELS_DIR
+    note: "GGUF discovery is retained for compatibility; it is not the primary runtime API host."
 
 tasks:
-  - id: t1
-    description: "Plan project scaffold (CLI skeleton with basic API)"
-    inputs: ["high_level_goal"]
-    outputs: ["CLI_skeleton", "API_routes"]
-    dependencies: []
-    # Use an auto-discovered model or any id from the models list above.
-    # assigned_model_id must match an id in the models list or a discovered model.
-    assigned_model_id: qwen25-05b
-    # Prompts are loaded from prompts_dir (see below). Inline prompt blobs
-    # are not supported by the runtime — use the prompts/ directory instead.
-    prompts_ref:
-      init: "t1_init.txt"
-      run: "t1_run.txt"
-      post: "t1_post.txt"
-  - id: t2
-    description: "Implement core CLI and REST API scaffold"
-    inputs: ["CLI_skeleton", "API_routes"]
-    outputs: ["compiled_tool", "docs"]
-    dependencies: ["t1"]
-    assigned_model_id: qwen25-05b
-    prompts_ref:
-      init: "t2_init.txt"
-      run: "t2_run.txt"
-      post: "t2_post.txt"
+  - id: run-kernel
+    description: "Start the Rust kernel API for desktop and workflow clients."
+    command_ref: "amw-kernel-server --host ${AMW_KERNEL_HOST:-127.0.0.1} --port ${AMW_KERNEL_PORT:-8080}"
+    outputs: ["kernel-readiness", "state-receipts"]
+  - id: launch-desktop
+    description: "Launch the Tauri desktop host against the local kernel."
+    command_ref: "cargo tauri dev"
+    dependencies: ["run-kernel"]
+    outputs: ["desktop-session"]
 
-artifacts_dir: "outputs"
-prompts_dir: "prompts"
+artifacts_dir: outputs
+prompts_dir: prompts
 logging:
   level: INFO
-  log_dir: "logs"
+  log_dir: logs
 upgrade_policy:
-  auto_upgrade: true
+  auto_upgrade: false
   require_approval: true
-  benchmarks_source: ["local_latency", "online_benchmarks"]
   post_upgrade_validation: true
 output_strategy:
   multi_language_support: true

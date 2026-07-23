@@ -1,0 +1,331 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/aks_bundle_compat.schema.json",
+  "title": "Workbench AKS-Compatible Portable Knowledge Bundle",
+  "description": "Portable AKS-shaped export view for Workbench knowledge. Workbench remains the authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "bundle_id",
+    "project_id",
+    "schema_version",
+    "exported_at_utc",
+    "authority",
+    "source_world_view",
+    "entities",
+    "relationships",
+    "sources",
+    "run_records",
+    "claims",
+    "decisions",
+    "eval_results",
+    "memories",
+    "workflow_lessons"
+  ],
+  "properties": {
+    "bundle_id": { "type": "string", "minLength": 1 },
+    "project_id": { "type": "string", "minLength": 1 },
+    "schema_version": { "type": "string", "minLength": 1 },
+    "exported_at_utc": { "type": "string", "minLength": 1 },
+    "authority": { "$ref": "#/$defs/authority" },
+    "source_world_view": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "entities": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entity" }
+    },
+    "relationships": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/relationship" }
+    },
+    "sources": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/source" }
+    },
+    "run_records": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/run_record" }
+    },
+    "claims": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/claim" }
+    },
+    "decisions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/decision" }
+    },
+    "eval_results": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/eval_result" }
+    },
+    "memories": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/memory" }
+    },
+    "workflow_lessons": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/workflow_lesson" }
+    }
+  },
+  "$defs": {
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "must_preserve_source_traceability",
+        "must_preserve_verified_flag",
+        "must_preserve_scope",
+        "must_preserve_run_records",
+        "must_preserve_flow_steps",
+        "must_preserve_document_audit"
+      ],
+      "properties": {
+        "must_preserve_source_traceability": { "type": "boolean" },
+        "must_preserve_verified_flag": { "type": "boolean" },
+        "must_preserve_scope": { "type": "boolean" },
+        "must_preserve_run_records": { "type": "boolean" },
+        "must_preserve_flow_steps": { "type": "boolean" },
+        "must_preserve_document_audit": { "type": "boolean" }
+      }
+    },
+    "provenance_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref_type", "ref_id", "evidence"],
+      "properties": {
+        "ref_type": {
+          "enum": [
+            "semantic_entity",
+            "semantic_relation",
+            "context_asset_pack",
+            "source_card",
+            "tool_card",
+            "run_record",
+            "evidence_asset",
+            "memory_lineage",
+            "eval_result",
+            "decision",
+            "workflow_lesson"
+          ]
+        },
+        "ref_id": { "type": "string", "minLength": 1 },
+        "evidence": { "type": "string", "minLength": 1 }
+      }
+    },
+    "provenance_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/provenance_ref" }
+    },
+    "verified_flag": {
+      "enum": ["verified", "unverified", "unknown"]
+    },
+    "scope": {
+      "enum": ["project", "workspace", "user", "public", null]
+    },
+    "string_map": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entity_id",
+        "kind",
+        "label",
+        "aliases",
+        "properties",
+        "verified_flag",
+        "scope",
+        "provenance_refs"
+      ],
+      "properties": {
+        "entity_id": { "type": "string", "minLength": 1 },
+        "kind": {
+          "enum": [
+            "source",
+            "document",
+            "code",
+            "trace",
+            "dataset",
+            "tool_output",
+            "prompt",
+            "model",
+            "policy",
+            "deployment",
+            "metric",
+            "domain_term",
+            "claim",
+            "decision",
+            "memory",
+            "workflow_lesson",
+            "eval_result",
+            "run_record"
+          ]
+        },
+        "label": { "type": "string", "minLength": 1 },
+        "aliases": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "properties": { "$ref": "#/$defs/string_map" },
+        "verified_flag": { "$ref": "#/$defs/verified_flag" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "provenance_refs": { "$ref": "#/$defs/provenance_refs" }
+      }
+    },
+    "relationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relationship_id",
+        "kind",
+        "source_entity_id",
+        "target_entity_id",
+        "confidence",
+        "properties",
+        "provenance_refs"
+      ],
+      "properties": {
+        "relationship_id": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "source_entity_id": { "type": "string", "minLength": 1 },
+        "target_entity_id": { "type": "string", "minLength": 1 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "properties": { "$ref": "#/$defs/string_map" },
+        "provenance_refs": { "$ref": "#/$defs/provenance_refs" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "kind",
+        "name",
+        "freshness",
+        "prompt_safety_status",
+        "document_audit",
+        "metadata",
+        "provenance_refs"
+      ],
+      "properties": {
+        "source_id": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "freshness": { "type": "string", "minLength": 1 },
+        "prompt_safety_status": { "type": "string", "minLength": 1 },
+        "document_audit": { "$ref": "#/$defs/string_map" },
+        "metadata": { "$ref": "#/$defs/string_map" },
+        "provenance_refs": { "$ref": "#/$defs/provenance_refs" }
+      }
+    },
+    "run_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "summary", "status", "metadata", "provenance_refs"],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "metadata": { "$ref": "#/$defs/string_map" },
+        "provenance_refs": { "$ref": "#/$defs/provenance_refs" }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_id",
+        "claim_kind",
+        "statement",
+        "attestation",
+        "verified_flag",
+        "metadata",
+        "provenance_refs"
+      ],
+      "properties": {
+        "claim_id": { "type": "string", "minLength": 1 },
+        "claim_kind": { "type": "string", "minLength": 1 },
+        "statement": { "type": "string", "minLength": 1 },
+        "attestation": { "enum": ["claim", "observation", "refused"] },
+        "verified_flag": { "$ref": "#/$defs/verified_flag" },
+        "metadata": { "$ref": "#/$defs/string_map" },
+        "provenance_refs": { "$ref": "#/$defs/provenance_refs" }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision_id", "summary", "flow_steps", "metadata", "provenance_refs"],
+      "properties": {
+        "decision_id": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "flow_steps": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "metadata": { "$ref": "#/$defs/string_map" },
+        "provenance_refs": { "$ref": "#/$defs/provenance_refs" }
+      }
+    },
+    "eval_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eval_id", "summary", "passed", "score", "evidence_refs", "metadata", "provenance_refs"],
+      "properties": {
+        "eval_id": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "passed": { "type": "boolean" },
+        "score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "metadata": { "$ref": "#/$defs/string_map" },
+        "provenance_refs": { "$ref": "#/$defs/provenance_refs" }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "memory_id",
+        "summary",
+        "scope",
+        "validation_state",
+        "evidence_refs",
+        "metadata",
+        "provenance_refs"
+      ],
+      "properties": {
+        "memory_id": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "scope": { "$ref": "#/$defs/scope" },
+        "validation_state": { "const": "verified" },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "metadata": { "$ref": "#/$defs/string_map" },
+        "provenance_refs": { "$ref": "#/$defs/provenance_refs" }
+      }
+    },
+    "workflow_lesson": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lesson_id", "summary", "metadata", "provenance_refs"],
+      "properties": {
+        "lesson_id": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "metadata": { "$ref": "#/$defs/string_map" },
+        "provenance_refs": { "$ref": "#/$defs/provenance_refs" }
+      }
+    }
+  }
+}

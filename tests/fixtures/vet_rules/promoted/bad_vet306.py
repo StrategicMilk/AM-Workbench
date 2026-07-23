@@ -1,1 +1,0 @@
-DEFAULT_MODELS_DIR = "models"

@@ -91,6 +91,25 @@ Documentation Generation produces structured, accurate documentation from code a
    - Architecture docs link to ADRs for decision rationale
    - Changelogs link to relevant documentation updates
 
+## Fail-Closed Evidence Contract
+
+Documentation generation may describe completed implementation work, but it must
+refuse terminal success when the implementation proof is stale, missing,
+contradictory, or unreadable. A closure-ledger-only proof is insufficient:
+terminal documentation output requires source/test/config/release evidence that
+directly supports the documented claim.
+
+When running as a post-execution operations mode, documentation generation must
+not modify already-reviewed code; in practical terms, do not modify
+already-reviewed code. If the requested documentation would need code changes
+to become accurate, return a blocker that names the missing
+source/test/config/release evidence instead of inventing or softening the claim.
+
+Required fail-closed signals:
+
+- Treat stale, missing, contradictory, or unreadable implementation evidence as a blocker.
+- In operations mode, do not modify already-reviewed code.
+
 ## Output Format
 
 The skill produces documentation content:
@@ -101,15 +120,21 @@ The skill produces documentation content:
   "output": "Generated API documentation for 8 endpoints in vetinari/web/",
   "files_changed": [
     "docs/api-reference.md (updated - 8 endpoints documented)",
-    "vetinari/web/projects_api.py (updated - 5 docstrings improved)",
     "CHANGELOG.md (updated - added v0.5.0 entries)"
   ],
   "metadata": {
     "endpoints_documented": 8,
     "docstrings_written": 12,
     "examples_included": 6,
-    "word_count": 2400
-  }
+    "word_count": 2400,
+    "evidence_contract": "fail-closed"
+  },
+  "provenance": [
+    {
+      "evidence_type": "source/test/config/release",
+      "reference": "tests/api/test_projects_api.py::test_project_endpoint_contract"
+    }
+  ]
 }
 ```
 

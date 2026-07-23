@@ -1,0 +1,33 @@
+{
+  "workload": "idle_cost",
+  "_consumer": "config.resource_baseline_samples consumed by scripts/check_vetinari_rules.py resource-baseline validation",
+  "recorded_at": "2026-05-08T00:00:00Z",
+  "machine_profile": "windows-local-dev-ci-safe",
+  "samples": [
+    {
+      "duration_ms": 40,
+      "max_rss_mb": 244,
+      "cpu_percent": 9
+    },
+    {
+      "duration_ms": 50,
+      "max_rss_mb": 248,
+      "cpu_percent": 11
+    },
+    {
+      "duration_ms": 55,
+      "max_rss_mb": 251,
+      "cpu_percent": 12
+    },
+    {
+      "duration_ms": 75,
+      "max_rss_mb": 253,
+      "cpu_percent": 14
+    },
+    {
+      "duration_ms": 95,
+      "max_rss_mb": 256,
+      "cpu_percent": 15
+    }
+  ]
+}

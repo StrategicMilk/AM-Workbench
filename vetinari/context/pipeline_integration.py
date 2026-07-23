@@ -109,7 +109,7 @@ class PipelineContextManager:
             check.usage_ratio * 100,
             stage,
         )
-        target_tokens = self._budget.remaining()
+        target_tokens = self._budget.compaction_target_tokens()
         messages, _compaction_result = self._compactor.compact(
             messages,
             target_tokens=target_tokens,

@@ -92,6 +92,7 @@ def _add_correlation_context(
     Returns:
         Enriched event dict with correlation context.
     """
+    _ = (logger_obj, method_name)
     trace_id = _trace_id_var.get()
     span_id = _span_id_var.get()
     request_id = _request_id_var.get()
@@ -124,6 +125,7 @@ def _add_service_context(
     Returns:
         Enriched event dict with service context.
     """
+    _ = (logger_obj, method_name)
     event_dict.setdefault("service", "vetinari")
     event_dict.setdefault("version", os.environ.get("VETINARI_VERSION", "unknown"))
     return event_dict

@@ -6,6 +6,8 @@
   import * as api from '$lib/api.js';
   import * as fmt from '$lib/utils/format.js';
   import { showToast } from '$lib/stores/toast.svelte.js';
+  import HelpPopover from '$lib/components/help/HelpPopover.svelte';
+  import HelpTooltip from '$lib/components/help/HelpTooltip.svelte';
 
   // -- State -------------------------------------------------------------------
 
@@ -129,31 +131,36 @@
 <div class="agents-view">
   <div class="view-header">
     <h2>
-      <i class="fas fa-network-wired"></i>
+      <i class="fas fa-network-wired" aria-hidden="true"></i>
       Agents
       {#if decisionCount > 0}
         <span class="alert-badge" aria-label="{decisionCount} pending decisions">{decisionCount}</span>
       {/if}
     </h2>
+    <HelpPopover
+      title="Agents"
+      body="AM Workbench uses a three-agent pipeline: Foreman plans and decomposes tasks into a structured execution plan, Worker implements each task, and Inspector validates and reviews the output before results are accepted. The pipeline runs sequentially per task; multiple tasks can be in-flight concurrently across different pipeline stages. Active agents shown here reflect currently running pipeline stages. Pending Decisions require your approval before the Inspector allows the result to advance."
+      severity="info"
+    />
     <button
       class="btn btn-secondary btn-sm"
       onclick={loadAll}
       disabled={loading}
       aria-label="Refresh agent data"
     >
-      <i class="fas fa-sync-alt" class:fa-spin={loading}></i>
+      <i class="fas fa-sync-alt" class:fa-spin={loading} aria-hidden="true"></i>
       Refresh
     </button>
   </div>
 
   {#if loading}
     <div class="loading-state" role="status" aria-live="polite">
-      <i class="fas fa-spinner fa-spin"></i>
+      <i class="fas fa-spinner fa-spin" aria-hidden="true"></i>
       Loading agent data...
     </div>
   {:else if fetchError}
     <div class="fetch-error" role="alert">
-      <i class="fas fa-exclamation-triangle"></i>
+      <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
       <span>{fetchError}</span>
       <button class="btn btn-secondary btn-sm" onclick={loadAll}>Retry</button>
     </div>
@@ -161,7 +168,7 @@
     <!-- Pipeline visualization -->
     <section class="card pipeline-card" aria-label="Three-agent pipeline">
       <h3 class="section-title">
-        <i class="fas fa-sitemap"></i>
+        <i class="fas fa-sitemap" aria-hidden="true"></i>
         Factory Pipeline
       </h3>
       <div class="pipeline" role="list" aria-label="Agent pipeline stages">
@@ -169,7 +176,7 @@
           {@const pStatus = pipelineAgentStatus(agent.role)}
           <div class="pipeline-stage" role="listitem" aria-label="{agent.label} agent: {pStatus}">
             <div class="pipeline-node status-ring-{pipelineStatusColor(pStatus)}">
-              <i class="{agent.icon}"></i>
+              <i class="{agent.icon}" aria-hidden="true"></i>
             </div>
             <div class="pipeline-info">
               <span class="pipeline-label">{agent.label}</span>
@@ -181,7 +188,7 @@
           </div>
           {#if i < PIPELINE.length - 1}
             <div class="pipeline-arrow" aria-hidden="true">
-              <i class="fas fa-arrow-right"></i>
+              <i class="fas fa-arrow-right" aria-hidden="true"></i>
             </div>
           {/if}
         {/each}
@@ -207,14 +214,14 @@
       <!-- Active agents column -->
       <section class="card agents-card" aria-label="Active agent instances">
         <h3 class="section-title">
-          <i class="fas fa-robot"></i>
+          <i class="fas fa-robot" aria-hidden="true"></i>
           Active Agents
           <span class="badge">{activeAgents.length}</span>
         </h3>
 
         {#if activeAgents.length === 0}
           <div class="empty-state">
-            <i class="fas fa-robot"></i>
+            <i class="fas fa-robot" aria-hidden="true"></i>
             <p>No active agents.</p>
           </div>
         {:else}
@@ -229,7 +236,7 @@
                   aria-label="Toggle agent {aid}"
                 >
                   <span class="agent-role-icon">
-                    <i class="{PIPELINE.find((p) => p.role === (agent.role ?? agent.type))?.icon ?? 'fas fa-robot'}"></i>
+                    <i class="{PIPELINE.find((p) => p.role === (agent.role ?? agent.type))?.icon ?? 'fas fa-robot'}" aria-hidden="true"></i>
                   </span>
                   <span class="agent-id">{agent.role ?? agent.type ?? 'agent'} — {aid}</span>
                   <span class="status-badge status-{taskStatusColor(agent.state)}">
@@ -259,14 +266,14 @@
       <!-- Agent tasks column -->
       <section class="card tasks-card" aria-label="Agent task queue">
         <h3 class="section-title">
-          <i class="fas fa-list-ol"></i>
+          <i class="fas fa-list-ol" aria-hidden="true"></i>
           Task Queue
           <span class="badge">{agentTasks.length}</span>
         </h3>
 
         {#if agentTasks.length === 0}
           <div class="empty-state">
-            <i class="fas fa-inbox"></i>
+            <i class="fas fa-inbox" aria-hidden="true"></i>
             <p>No tasks in queue.</p>
           </div>
         {:else}
@@ -282,12 +289,12 @@
                 <div class="task-meta">
                   {#if task.agent}
                     <span class="task-meta-item">
-                      <i class="fas fa-robot"></i> {task.agent}
+                      <i class="fas fa-robot" aria-hidden="true"></i> {task.agent}
                     </span>
                   {/if}
                   {#if task.created_at}
                     <span class="task-meta-item">
-                      <i class="fas fa-clock"></i> {fmt.relativeTime(task.created_at)}
+                      <i class="fas fa-clock" aria-hidden="true"></i> {fmt.relativeTime(task.created_at)}
                     </span>
                   {/if}
                 </div>
@@ -300,14 +307,14 @@
       <!-- Shared memory column -->
       <section class="card memory-card" aria-label="Shared agent memory">
         <h3 class="section-title">
-          <i class="fas fa-database"></i>
+          <i class="fas fa-database" aria-hidden="true"></i>
           Shared Memory
           <span class="badge">{agentMemory.length}</span>
         </h3>
 
         {#if agentMemory.length === 0}
           <div class="empty-state">
-            <i class="fas fa-database"></i>
+            <i class="fas fa-database" aria-hidden="true"></i>
             <p>No shared memory entries.</p>
           </div>
         {:else}
@@ -331,7 +338,7 @@
     {#if pendingDecisions.length > 0}
       <section class="card decisions-card" aria-label="Pending decisions requiring approval">
         <h3 class="section-title decisions-title">
-          <i class="fas fa-exclamation-triangle"></i>
+          <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
           Pending Decisions
           <span class="badge badge-warning">{pendingDecisions.length}</span>
         </h3>
@@ -362,7 +369,7 @@
                     disabled={actionPending}
                     aria-label="Approve decision: {decision.prompt ?? did}"
                   >
-                    <i class="fas fa-check"></i> Approve
+                    <i class="fas fa-check" aria-hidden="true"></i> Approve
                   </button>
                   <button
                     class="btn btn-danger btn-sm"
@@ -370,7 +377,7 @@
                     disabled={actionPending}
                     aria-label="Reject decision: {decision.prompt ?? did}"
                   >
-                    <i class="fas fa-times"></i> Reject
+                    <i class="fas fa-times" aria-hidden="true"></i> Reject
                   </button>
                 </div>
               </div>
@@ -611,6 +618,10 @@
   .badge-warning { background: var(--warning-muted); color: var(--warning); }
 
   /* Agent list */
+  button {
+    min-height: 44px;
+  }
+
   .agent-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 
   .agent-item {

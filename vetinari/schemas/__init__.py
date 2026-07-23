@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from vetinari.schemas.agent_outputs import (  # noqa: VET123 - barrel export preserves public import compatibility
+from vetinari.schemas.agent_outputs import (
     get_schema_for_mode,
     validate_output,
 )

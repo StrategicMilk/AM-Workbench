@@ -341,7 +341,7 @@ SKILL_REGISTRY: dict[str, SkillSpec] = {
                 },
                 "thinking_mode": {
                     "type": "string",
-                    "enum": ["low", "medium", "high", "xhigh"],
+                    "enum": ["none", "low", "medium", "high", "xhigh", "max"],
                 },
             },
         },

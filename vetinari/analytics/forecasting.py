@@ -30,359 +30,30 @@ Usage
 from __future__ import annotations
 
 import logging
-import math
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 
+from vetinari.analytics import forecasting_methods as _forecasting_methods
+from vetinari.analytics.forecasting_methods import (
+    _METHODS,
+    ForecastRequest,
+    ForecastResult,
+)
 from vetinari.exceptions import ConfigurationError
-from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Request / Result
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class ForecastRequest:
-    """Parameters for a forecast call."""
-
-    metric: str
-    horizon: int = 5  # number of future steps to predict
-    method: str = "linear_trend"  # sma | exp_smoothing | linear_trend | seasonal
-    alpha: float = 0.3  # smoothing factor for ES
-    period: int = 7  # season length for seasonal decomposition
-
-    def __repr__(self) -> str:
-        return f"ForecastRequest(metric={self.metric!r}, horizon={self.horizon!r}, method={self.method!r})"
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize this forecast request to a plain dictionary for JSON export.
-
-        Returns:
-            Dictionary containing the metric name, horizon, method, and tuning parameters.
-        """
-        return cast(dict[str, Any], dataclass_to_dict(self))
-
-
-@dataclass
-class ForecastResult:
-    """Output of a forecast operation."""
-
-    metric: str
-    forecast_method_used: str
-    horizon: int
-    predictions: list[float]  # noqa: VET220 — fixed-length horizon output, not a growing buffer
-    confidence_lo: list[float]  # noqa: VET220 — fixed-length horizon output, not a growing buffer
-    confidence_hi: list[float]  # noqa: VET220 — fixed-length horizon output, not a growing buffer
-    trend_slope: float = 0.0  # rate of change per step (linear_trend only)
-    rmse: float = 0.0  # in-sample root mean squared error
-    samples_used: int = 0
-
-    def __repr__(self) -> str:
-        return (
-            f"ForecastResult(metric={self.metric!r}, forecast_method_used={self.forecast_method_used!r}, "
-            f"horizon={self.horizon!r})"
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize this forecast result to a plain dictionary for JSON export.
-
-        Returns:
-            Dictionary containing predictions, confidence bounds, trend slope, and RMSE.
-        """
-        return cast(dict[str, Any], dataclass_to_dict(self))
-
-
-# ---------------------------------------------------------------------------
-# Math helpers
-# ---------------------------------------------------------------------------
-
-
-def _ols(y: list[float]) -> tuple[float, float]:
-    """Return (slope, intercept) of the OLS line through enumerate(y)."""
-    n = len(y)
-    sx = n * (n - 1) / 2  # sum of 0..n-1
-    sx2 = n * (n - 1) * (2 * n - 1) / 6
-    sy = sum(y)
-    sxy = sum(i * v for i, v in enumerate(y))
-    denom = n * sx2 - sx * sx
-    if denom == 0:
-        return 0.0, sum(y) / n if y else 0.0
-    slope = (n * sxy - sx * sy) / denom
-    intercept = (sy - slope * sx) / n
-    return slope, intercept
-
-
-def _rmse(actual: list[float], predicted: list[float]) -> float:
-    if not actual:
-        return 0.0
-    n = min(len(actual), len(predicted))
-    return math.sqrt(sum((actual[i] - predicted[i]) ** 2 for i in range(n)) / n)
-
-
-def _stddev(vals: list[float]) -> float:
-    """Delegate to canonical stddev with sample correction."""
-    from vetinari.utils.math_helpers import stddev
-
-    return stddev(vals, sample=True)
-
-
-def _conf_bounds(preds: list[float], std: float, z: float = 1.28) -> tuple[list[float], list[float]]:
-    lo = [p - z * std for p in preds]
-    hi = [p + z * std for p in preds]
-    return lo, hi
-
-
-# ---------------------------------------------------------------------------
-# Forecasting methods (pure functions)
-# ---------------------------------------------------------------------------
-
-
-def _forecast_sma(history: list[float], horizon: int, window: int = 10) -> ForecastResult:
-    w = history[-window:] if len(history) >= window else history
-    pred = sum(w) / len(w) if w else 0.0
-    preds = [pred] * horizon
-    std = _stddev(history)
-    lo, hi = _conf_bounds(preds, std)
-    fitted = [pred] * len(history)
-    return ForecastResult(
-        metric="",
-        forecast_method_used="sma",
-        horizon=horizon,
-        predictions=preds,
-        confidence_lo=lo,
-        confidence_hi=hi,
-        rmse=_rmse(history, fitted),
-        samples_used=len(history),
-    )
-
-
-def _forecast_exp_smoothing(history: list[float], horizon: int, alpha: float = 0.3) -> ForecastResult:
-    if not history:
-        return ForecastResult(
-            metric="",
-            forecast_method_used="exp_smoothing",
-            horizon=horizon,
-            predictions=[0.0] * horizon,
-            confidence_lo=[0.0] * horizon,
-            confidence_hi=[0.0] * horizon,
-        )
-    level = history[0]
-    fitted: list[float] = []
-    for v in history:
-        fitted.append(level)
-        level = alpha * v + (1 - alpha) * level
-    # The last `level` is the h-step ahead forecast (flat)
-    preds = [level] * horizon
-    std = _stddev(history)
-    lo, hi = _conf_bounds(preds, std)
-    return ForecastResult(
-        metric="",
-        forecast_method_used="exp_smoothing",
-        horizon=horizon,
-        predictions=preds,
-        confidence_lo=lo,
-        confidence_hi=hi,
-        rmse=_rmse(history, fitted),
-        samples_used=len(history),
-    )
-
-
-def _forecast_linear_trend(history: list[float], horizon: int) -> ForecastResult:
-    if len(history) < 2:
-        return ForecastResult(
-            metric="",
-            forecast_method_used="linear_trend",
-            horizon=horizon,
-            predictions=[history[-1] if history else 0.0] * horizon,
-            confidence_lo=[0.0] * horizon,
-            confidence_hi=[0.0] * horizon,
-        )
-    slope, intercept = _ols(history)
-    n = len(history)
-    preds = [intercept + slope * (n + i) for i in range(horizon)]
-    fitted = [intercept + slope * i for i in range(n)]
-    std = _stddev([a - f for a, f in zip(history, fitted)])
-    lo, hi = _conf_bounds(preds, std)
-    return ForecastResult(
-        metric="",
-        forecast_method_used="linear_trend",
-        horizon=horizon,
-        predictions=preds,
-        confidence_lo=lo,
-        confidence_hi=hi,
-        trend_slope=slope,
-        rmse=_rmse(history, fitted),
-        samples_used=n,
-    )
-
-
-def _forecast_seasonal(history: list[float], horizon: int, period: int = 7) -> ForecastResult:
-    """Additive decomposition: trend (OLS) + seasonal indices."""
-    n = len(history)
-    if n < period * 2:
-        # Fallback to linear trend when insufficient history
-        result = _forecast_linear_trend(history, horizon)
-        result.forecast_method_used = "seasonal"
-        return result
-
-    # Detrend
-    slope, intercept = _ols(history)
-    detrended = [history[i] - (intercept + slope * i) for i in range(n)]
-
-    # Seasonal indices (average residual per phase)
-    indices = [0.0] * period
-    counts = [0] * period
-    for i, v in enumerate(detrended):
-        p = i % period
-        indices[p] += v
-        counts[p] += 1
-    indices = [indices[i] / counts[i] if counts[i] else 0.0 for i in range(period)]
-
-    # Forecast: trend + seasonal index
-    preds = [intercept + slope * (n + h) + indices[(n + h) % period] for h in range(horizon)]
-    fitted = [intercept + slope * i + indices[i % period] for i in range(n)]
-    std = _stddev([a - f for a, f in zip(history, fitted)])
-    lo, hi = _conf_bounds(preds, std)
-    return ForecastResult(
-        metric="",
-        forecast_method_used="seasonal",
-        horizon=horizon,
-        predictions=preds,
-        confidence_lo=lo,
-        confidence_hi=hi,
-        trend_slope=slope,
-        rmse=_rmse(history, fitted),
-        samples_used=n,
-    )
-
-
-def _forecast_holt_winters(history: list[float], horizon: int, alpha: float = 0.3, beta: float = 0.1) -> ForecastResult:
-    """Holt-Winters double exponential smoothing (level + trend).
-
-    Captures both the current level and the trend direction, ideal for
-    quality metrics with gradual drift.
-
-    Args:
-        history: Historical values.
-        horizon: Number of future steps to predict.
-        alpha: Level smoothing factor (0 < alpha < 1).
-        beta: Trend smoothing factor (0 < beta < 1).
-
-    Returns:
-        ForecastResult with predictions and confidence bounds.
-    """
-    if len(history) < 2:
-        return _forecast_linear_trend(history, horizon)
-
-    # Initialize level and trend
-    level = history[0]
-    trend = history[1] - history[0]
-    fitted: list[float] = []
-
-    for value in history:
-        fitted.append(level + trend)
-        new_level = alpha * value + (1 - alpha) * (level + trend)
-        new_trend = beta * (new_level - level) + (1 - beta) * trend
-        level = new_level
-        trend = new_trend
-
-    # Forecast: level + trend * steps_ahead
-    preds = [level + trend * (h + 1) for h in range(horizon)]
-
-    # Residuals for confidence intervals
-    residuals = [history[i] - fitted[i] for i in range(len(history))]
-    std = _stddev(residuals) if len(residuals) >= 2 else _stddev(history)
-
-    # 80% confidence (z=1.28) and 95% confidence (z=1.96)
-    lo_80 = [p - 1.28 * std * math.sqrt(h + 1) for h, p in enumerate(preds)]
-    hi_80 = [p + 1.28 * std * math.sqrt(h + 1) for h, p in enumerate(preds)]
-    return ForecastResult(
-        metric="",
-        forecast_method_used="holt_winters",
-        horizon=horizon,
-        predictions=preds,
-        confidence_lo=lo_80,
-        confidence_hi=hi_80,
-        trend_slope=trend,
-        rmse=_rmse(history, fitted),
-        samples_used=len(history),
-    )
-
-
-def _forecast_auto(history: list[float], horizon: int, period: int = 7) -> ForecastResult:
-    """Auto-select best forecast method using walk-forward cross-validation.
-
-    Evaluates Holt-Winters, linear trend, and seasonal methods on recent data.
-    Selects the method with lowest MAPE (Mean Absolute Percentage Error).
-    Defaults to Holt-Winters when insufficient data for comparison (<14 points).
-
-    Args:
-        history: Historical values.
-        horizon: Number of future steps to predict.
-        period: Season length for seasonal decomposition.
-
-    Returns:
-        ForecastResult from the best-performing method.
-    """
-    if len(history) < 14:
-        result = _forecast_holt_winters(history, horizon)
-        result.forecast_method_used = "auto(holt_winters)"
-        return result
-
-    # Walk-forward cross-validation: use last 7 points as validation
-    val_size = min(7, len(history) // 3)
-    train = history[:-val_size]
-    actual = history[-val_size:]
-
-    methods: dict[str, Callable[[list[float], int], ForecastResult]] = {
-        "holt_winters": lambda h, hz: _forecast_holt_winters(h, hz),
-        "linear_trend": lambda h, hz: _forecast_linear_trend(h, hz),
-    }
-    if len(history) >= period * 2:
-        methods["seasonal"] = lambda h, hz: _forecast_seasonal(h, hz, period)
-
-    best_method = "holt_winters"
-    best_mape = float("inf")
-
-    for name, fn in methods.items():
-        result = fn(train, val_size)
-        # Compute MAPE
-        mape = 0.0
-        valid_count = 0
-        for a, p in zip(actual, result.predictions):
-            if abs(a) > 1e-10:
-                mape += abs((a - p) / a)
-                valid_count += 1
-        if valid_count > 0:
-            mape /= valid_count
-        else:
-            mape = float("inf")
-
-        if mape < best_mape:
-            best_mape = mape
-            best_method = name
-
-    # Re-run best method on full history
-    result = methods[best_method](history, horizon)
-    result.forecast_method_used = f"auto({best_method})"
-    return result
-
-
-_METHODS = {
-    "sma": lambda h, req: _forecast_sma(h, req.horizon),
-    "exp_smoothing": lambda h, req: _forecast_exp_smoothing(h, req.horizon, req.alpha),
-    "linear_trend": lambda h, req: _forecast_linear_trend(h, req.horizon),
-    "seasonal": lambda h, req: _forecast_seasonal(h, req.horizon, req.period),
-    "holt_winters": lambda h, req: _forecast_holt_winters(h, req.horizon),
-    "auto": lambda h, req: _forecast_auto(h, req.horizon, req.period),
-}
+_forecast_auto = _forecasting_methods._forecast_auto
+_forecast_exp_smoothing = _forecasting_methods._forecast_exp_smoothing
+_forecast_holt_winters = _forecasting_methods._forecast_holt_winters
+_forecast_linear_trend = _forecasting_methods._forecast_linear_trend
+_forecast_seasonal = _forecasting_methods._forecast_seasonal
+_forecast_sma = _forecasting_methods._forecast_sma
+_ols = _forecasting_methods._ols
+_rmse = _forecasting_methods._rmse
+_stddev = _forecasting_methods._stddev
 
 
 # ---------------------------------------------------------------------------
@@ -590,7 +261,7 @@ class Forecaster:
             method: The method.
 
         Returns:
-            The computed value.
+            int | None value produced by steps_until_threshold().
         """
         req = ForecastRequest(metric=metric, horizon=horizon, method=method)
         result = self.forecast(req)
@@ -646,7 +317,9 @@ class Forecaster:
                         confidence_interval=ci_width,
                         forecast_method_used=result.forecast_method_used,
                     )
-                    get_event_bus().publish(event)
+                    event_bus = get_event_bus()
+                    event_bus.publish(event)
+                    event_bus.drain_handlers(timeout=1.0)
                 except Exception:  # Broad: event emission is best-effort; never blocks forecasting
                     logger.exception("Failed to emit RetrainingRecommended event")
                 return True

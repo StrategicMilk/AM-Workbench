@@ -20,10 +20,48 @@ from vetinari.exceptions import ConfigurationError
 
 logger = logging.getLogger(__name__)
 
+
 # Minimum latency increase (ms) that triggers a regression flag, regardless of
 # pass-rate changes.  Chosen to catch significant real-world slowdowns without
 # false-positives from normal jitter.
 _LATENCY_REGRESSION_THRESHOLD_MS: float = 500.0
+
+# Sentinel values that read as "field present" syntactically but carry no
+# correctness signal. score_result_dict must reject these so a `{"health_score":
+# None}` dict cannot false-green the CI pipeline.
+_INVALID_FIELD_VALUES: frozenset[Any] = frozenset({None, 0, "", "unknown", "none", "n/a", "null"})
+
+
+def score_result_dict(result: dict[str, Any], required_fields: list[str]) -> float:
+    """Score a result dict by value validity, not key presence.
+
+    Replaces the pre-fix pattern ``1.0 if key in result else 0.0`` which scored a
+    field as fully passing whenever the key existed, even when the value was
+    ``None``, ``False``, ``0``, ``""``, or a sentinel like ``"unknown"``. The
+    fixed scoring counts a field as valid only when its value is non-empty and
+    non-sentinel.
+
+    Args:
+        result: Result dict produced upstream (e.g. a CI health report row).
+        required_fields: Field names that must be present *and* carry a valid
+            value to count toward the score.
+
+    Returns:
+        Fraction of required fields whose values are valid. ``1.0`` when every
+        field is valid, ``0.0`` when none are. Returns ``0.0`` for an empty
+        ``required_fields`` list (no fields, no evidence — fail-closed).
+    """
+    if not required_fields:
+        return 0.0
+    valid = 0
+    for field_name in required_fields:
+        value = result.get(field_name)
+        if value in _INVALID_FIELD_VALUES:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        valid += 1
+    return valid / len(required_fields)
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +83,7 @@ class AdapterProtocol(Protocol):
         Returns:
             Generated text string.
         """
-        ...  # noqa: VET032  # pragma: no cover
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +120,7 @@ class EvalCase:
         )
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class CaseResult:
     """Result for a single EvalCase.
 
@@ -294,8 +332,7 @@ class CIEvaluator:
         return {
             "pass_rate_delta": round(pass_rate_delta, 4),
             "latency_delta_ms": round(latency_delta, 2),
-            "regression_detected": pass_rate_delta <= -0.05
-            or latency_delta >= _LATENCY_REGRESSION_THRESHOLD_MS,
+            "regression_detected": pass_rate_delta <= -0.05 or latency_delta >= _LATENCY_REGRESSION_THRESHOLD_MS,
             "improvement_detected": pass_rate_delta >= 0.05,
             "regressed_cases": regressions,
             "baseline_pass_rate": baseline.pass_rate,
@@ -362,7 +399,7 @@ class CIEvaluator:
                 latency_ms=round(latency_ms, 2),
                 quality_score=0.0,
                 output_snippet="",
-                failure_reason=f"SKIPPED: adapter error -- {exc}",
+                failure_reason=f"adapter_error: {exc}",
             )
 
         latency_ms = (time.monotonic() - t0) * 1_000

@@ -1,0 +1,18 @@
+schema_version: "1.0"
+profiles:
+  - id: readonly-local
+    surfaces: [shell, terminal, mcp_tool, connector, automation]
+    safe_prefixes: [git status, git diff, git log, rg, Get-ChildItem, Get-Content, python -m pytest, pytest]
+    approval_prefixes: [git add, git commit, python, powershell]
+    blocked_patterns: [Set-Clipboard, EncodedCommand, FromBase64String, DownloadString, mshta, rundll32, regsvr32]
+    allowed_cwd_roots: ["."]
+    require_tool_pin: true
+    allow_without_human_approval: false
+  - id: package-manager-metadata
+    surfaces: [package_manager, shell, terminal]
+    safe_prefixes: [npm view, npm outdated, pip index versions, uv pip list]
+    approval_prefixes: [npm audit, pip check]
+    blocked_patterns: [npm install, npm update, pip install, pip uninstall, uv add, poetry add]
+    allowed_cwd_roots: ["."]
+    require_tool_pin: true
+    allow_without_human_approval: false

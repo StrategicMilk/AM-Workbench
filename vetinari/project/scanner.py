@@ -21,11 +21,6 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Resolved executable paths cached at module load time.
-_RUFF_EXE: str = shutil.which("ruff") or "ruff"
-_VULTURE_EXE: str = shutil.which("vulture") or "vulture"
-
-# -- Constants ----------------------------------------------------------------
 
 # Tool timeout in seconds — long enough for large projects, short enough to
 # avoid hanging the pipeline indefinitely.
@@ -49,10 +44,7 @@ _CATEGORY_RANK: dict[str, int] = {
 }
 
 
-# -- Data structures ----------------------------------------------------------
-
-
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ScanFinding:
     """A single issue discovered in the target project.
 
@@ -67,8 +59,8 @@ class ScanFinding:
         message: Human-readable description of the problem.
         tool: Which analysis tool reported this finding (ruff, semgrep,
             coverage, vulture, pyright).
-        is_reachable: Whether the affected code can actually be executed
-            (False for dead code flagged by vulture).
+        is_reachable: Whether the affected code is known to be executable.
+            Static dead-code hints are not proof of runtime unreachability.
     """
 
     category: str  # security | bug | performance | maintainability | style
@@ -104,9 +96,6 @@ class ScanResult:
 
     def __repr__(self) -> str:
         return f"ScanResult(findings={len(self.findings)}, has_tests={self.has_tests!r}, tools={self.tools_used!r})"
-
-
-# -- Public API ---------------------------------------------------------------
 
 
 def scan_project(project_path: Path) -> ScanResult:
@@ -197,9 +186,6 @@ def prioritize_findings(findings: list[ScanFinding]) -> list[ScanFinding]:
     )
 
 
-# -- Private helpers ----------------------------------------------------------
-
-
 def _run_ruff(project_path: Path) -> list[ScanFinding] | None:
     """Run ruff in JSON output mode and convert results to ScanFinding objects.
 
@@ -212,9 +198,13 @@ def _run_ruff(project_path: Path) -> list[ScanFinding] | None:
     Returns:
         List of :class:`ScanFinding` objects, or None if ruff is unavailable.
     """
+    ruff_exe = shutil.which("ruff")
+    if not ruff_exe:
+        logger.debug("ruff not found â€” skipping ruff scan")
+        return None
     try:
-        result = subprocess.run(  # noqa: S603 - argv is controlled and shell interpolation is not used
-            [_RUFF_EXE, "check", "--output-format=json", str(project_path)],
+        result = subprocess.run(
+            [ruff_exe, "check", "--output-format=json", str(project_path)],
             capture_output=True,
             text=True,
             timeout=_TOOL_TIMEOUT,
@@ -265,8 +255,8 @@ def _run_ruff(project_path: Path) -> list[ScanFinding] | None:
 def _run_dead_code_check(project_path: Path) -> list[ScanFinding] | None:
     """Run vulture to find unused functions, classes, and variables.
 
-    Dead code findings are marked ``is_reachable=False`` because by definition
-    they are never called. Returns None when vulture is not installed.
+    Vulture findings are potential unused-code hints, not proof that a path is
+    impossible to execute. Returns None when vulture is not installed.
 
     Args:
         project_path: Root of the project to analyze.
@@ -274,9 +264,13 @@ def _run_dead_code_check(project_path: Path) -> list[ScanFinding] | None:
     Returns:
         List of :class:`ScanFinding` objects, or None if vulture is unavailable.
     """
+    vulture_exe = shutil.which("vulture")
+    if not vulture_exe:
+        logger.debug("vulture not found â€” skipping dead code scan")
+        return None
     try:
-        result = subprocess.run(  # noqa: S603 - argv is controlled and shell interpolation is not used
-            [_VULTURE_EXE, str(project_path), "--min-confidence=80"],
+        result = subprocess.run(
+            [vulture_exe, str(project_path), "--min-confidence=80"],
             capture_output=True,
             text=True,
             timeout=_TOOL_TIMEOUT,
@@ -315,7 +309,7 @@ def _run_dead_code_check(project_path: Path) -> list[ScanFinding] | None:
                 line=line_no,
                 message=message,
                 tool="vulture",
-                is_reachable=False,
+                is_reachable=True,
             )
         )
     return findings
@@ -391,7 +385,19 @@ def _classify_ruff_code(code: str) -> tuple[str, str]:
     return "maintainability", "low"
 
 
-# -- Additional scanner tools -------------------------------------------------
+def _scan_signal_finding(*, tool: str, category: str, severity: str, message: str) -> list[ScanFinding]:
+    """Return a fail-closed scanner finding for an unavailable safety signal."""
+    return [
+        ScanFinding(
+            category=category,
+            severity=severity,
+            file_path="<scanner-signal>",
+            line=0,
+            message=message,
+            tool=tool,
+            is_reachable=True,
+        )
+    ]
 
 
 def _run_semgrep(project_path: Path) -> list[ScanFinding] | None:
@@ -402,16 +408,25 @@ def _run_semgrep(project_path: Path) -> list[ScanFinding] | None:
     """
     semgrep_bin = shutil.which("semgrep")
     if not semgrep_bin:
-        logger.debug("semgrep not found — skipping SAST scan")
-        return None
+        logger.warning("semgrep not found - recording unavailable SAST signal")
+        return _scan_signal_finding(
+            tool="semgrep",
+            category="security",
+            severity="high",
+            message="semgrep unavailable: security SAST signal did not run",
+        )
 
     # Validate project_path is a real directory (defense against path injection)
     if not project_path.is_dir():
-        logger.warning("Project path %s is not a directory — skipping semgrep scan", project_path)
-        return None
+        return _scan_signal_finding(
+            tool="semgrep",
+            category="security",
+            severity="high",
+            message=f"semgrep unavailable: project path is not a directory: {project_path}",
+        )
 
     try:
-        result = subprocess.run(  # noqa: S603 — semgrep_bin resolved via shutil.which()
+        result = subprocess.run(
             [semgrep_bin, "scan", "--json", "--quiet", str(project_path)],
             capture_output=True,
             text=True,
@@ -419,8 +434,12 @@ def _run_semgrep(project_path: Path) -> list[ScanFinding] | None:
             encoding="utf-8",
         )
         if result.returncode not in (0, 1):
-            logger.warning("semgrep exited with code %d", result.returncode)
-            return []
+            return _scan_signal_finding(
+                tool="semgrep",
+                category="security",
+                severity="high",
+                message=f"semgrep failed: exit code {result.returncode}",
+            )
 
         raw = json.loads(result.stdout) if result.stdout.strip() else {}
         data = raw if isinstance(raw, dict) else {}
@@ -440,11 +459,29 @@ def _run_semgrep(project_path: Path) -> list[ScanFinding] | None:
             )
         return findings
     except subprocess.TimeoutExpired:
-        logger.warning("semgrep scan timed out — skipping SAST results for this run")
-        return None
+        logger.warning("semgrep scan timed out for %s", project_path)
+        return _scan_signal_finding(
+            tool="semgrep",
+            category="security",
+            severity="high",
+            message="semgrep failed: scan timed out",
+        )
+    except json.JSONDecodeError:
+        logger.warning("semgrep returned invalid JSON for %s", project_path)
+        return _scan_signal_finding(
+            tool="semgrep",
+            category="security",
+            severity="high",
+            message="semgrep failed: invalid JSON output",
+        )
     except OSError as exc:
-        logger.warning("semgrep could not be launched — skipping SAST scan: %s", exc)
-        return None
+        logger.warning("semgrep failed for %s: %s", project_path, type(exc).__name__)
+        return _scan_signal_finding(
+            tool="semgrep",
+            category="security",
+            severity="high",
+            message=f"semgrep failed: {type(exc).__name__}",
+        )
 
 
 def _run_dependency_audit(project_path: Path) -> list[ScanFinding] | None:
@@ -454,15 +491,24 @@ def _run_dependency_audit(project_path: Path) -> list[ScanFinding] | None:
     """
     pip_audit_bin = shutil.which("pip-audit")
     if not pip_audit_bin:
-        logger.debug("pip-audit not found — skipping dependency vulnerability scan")
-        return None
+        logger.warning("pip-audit not found - recording unavailable dependency audit signal")
+        return _scan_signal_finding(
+            tool="pip-audit",
+            category="security",
+            severity="high",
+            message="pip-audit unavailable: dependency vulnerability signal did not run",
+        )
 
     if not project_path.is_dir():
-        logger.warning("Project path %s is not a directory — skipping pip-audit scan", project_path)
-        return None
+        return _scan_signal_finding(
+            tool="pip-audit",
+            category="security",
+            severity="high",
+            message=f"pip-audit unavailable: project path is not a directory: {project_path}",
+        )
 
     try:
-        result = subprocess.run(  # noqa: S603 — pip_audit_bin resolved via shutil.which()
+        result = subprocess.run(
             [pip_audit_bin, "--format=json", "--desc"],
             capture_output=True,
             text=True,
@@ -476,7 +522,12 @@ def _run_dependency_audit(project_path: Path) -> list[ScanFinding] | None:
                 "pip-audit exited with unexpected code %d — treating as scan failure",
                 result.returncode,
             )
-            return None
+            return _scan_signal_finding(
+                tool="pip-audit",
+                category="security",
+                severity="high",
+                message=f"pip-audit failed: exit code {result.returncode}",
+            )
         raw = json.loads(result.stdout) if result.stdout.strip() else {}
         data = raw if isinstance(raw, dict) else {}
         findings: list[ScanFinding] = [
@@ -493,11 +544,21 @@ def _run_dependency_audit(project_path: Path) -> list[ScanFinding] | None:
         ]
         return findings
     except subprocess.TimeoutExpired:
-        logger.warning("pip-audit scan timed out — skipping dependency vulnerability results")
-        return None
+        logger.warning("pip-audit scan timed out for %s", project_path)
+        return _scan_signal_finding(
+            tool="pip-audit",
+            category="security",
+            severity="high",
+            message="pip-audit failed: scan timed out",
+        )
     except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("pip-audit scan failed — skipping dependency vulnerability results: %s", exc)
-        return None
+        logger.warning("pip-audit failed for %s: %s", project_path, type(exc).__name__)
+        return _scan_signal_finding(
+            tool="pip-audit",
+            category="security",
+            severity="high",
+            message=f"pip-audit failed: {type(exc).__name__}",
+        )
 
 
 def _run_type_check(project_path: Path) -> list[ScanFinding] | None:
@@ -507,15 +568,24 @@ def _run_type_check(project_path: Path) -> list[ScanFinding] | None:
     """
     pyright_bin = shutil.which("pyright")
     if not pyright_bin:
-        logger.debug("pyright not found — skipping type check")
-        return None
+        logger.warning("pyright not found - recording unavailable type-check signal")
+        return _scan_signal_finding(
+            tool="pyright",
+            category="bug",
+            severity="medium",
+            message="pyright unavailable: type-check signal did not run",
+        )
 
     if not project_path.is_dir():
-        logger.warning("Project path %s is not a directory — skipping pyright scan", project_path)
-        return None
+        return _scan_signal_finding(
+            tool="pyright",
+            category="bug",
+            severity="medium",
+            message=f"pyright unavailable: project path is not a directory: {project_path}",
+        )
 
     try:
-        result = subprocess.run(  # noqa: S603 — pyright_bin resolved via shutil.which()
+        result = subprocess.run(
             [pyright_bin, "--outputjson", str(project_path)],
             capture_output=True,
             text=True,
@@ -528,7 +598,12 @@ def _run_type_check(project_path: Path) -> list[ScanFinding] | None:
                 "pyright exited with unexpected code %d — treating as type-check failure",
                 result.returncode,
             )
-            return None
+            return _scan_signal_finding(
+                tool="pyright",
+                category="bug",
+                severity="medium",
+                message=f"pyright failed: exit code {result.returncode}",
+            )
         raw = json.loads(result.stdout) if result.stdout.strip() else {}
         data = raw if isinstance(raw, dict) else {}
         findings: list[ScanFinding] = []
@@ -546,8 +621,18 @@ def _run_type_check(project_path: Path) -> list[ScanFinding] | None:
             )
         return findings
     except subprocess.TimeoutExpired:
-        logger.warning("pyright type check timed out — skipping type-check results")
-        return None
+        logger.warning("pyright scan timed out for %s", project_path)
+        return _scan_signal_finding(
+            tool="pyright",
+            category="bug",
+            severity="medium",
+            message="pyright failed: type check timed out",
+        )
     except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("pyright type check failed — skipping type-check results: %s", exc)
-        return None
+        logger.warning("pyright failed for %s: %s", project_path, type(exc).__name__)
+        return _scan_signal_finding(
+            tool="pyright",
+            category="bug",
+            severity="medium",
+            message=f"pyright failed: {type(exc).__name__}",
+        )

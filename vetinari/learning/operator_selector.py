@@ -30,6 +30,7 @@ from vetinari.learning.prompt_mutator import MutationOperator
 
 logger = logging.getLogger(__name__)
 
+
 # Minimum pulls before an arm's posterior is trusted over the prior
 _MIN_PULLS_TRUSTED = 5
 
@@ -118,6 +119,7 @@ class OperatorSelector:
     def __init__(self, state_path: Path | None = None) -> None:
         self._arms: dict[str, OperatorArm] = {}
         self._lock = threading.Lock()
+        self._arm_lock = threading.Lock()
         self._state_path = state_path or self._default_state_path()
         self._load_state()
 
@@ -173,7 +175,7 @@ class OperatorSelector:
             quality_delta: Quality difference (post minus pre).  Positive
                 values are treated as successes; zero or negative as failures.
         """
-        with self._lock:
+        with self._lock, self._arm_lock:
             arm = self._get_or_create_arm(operator.value, agent_type, mode)
             arm.update(quality_delta)
             logger.debug(

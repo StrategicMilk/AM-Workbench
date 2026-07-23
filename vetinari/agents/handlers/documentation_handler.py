@@ -12,6 +12,7 @@ from typing import Any
 
 from vetinari.agents.contracts import AgentResult, AgentTask
 from vetinari.agents.handlers import BaseHandler
+from vetinari.boundary_guards import require_nonempty
 from vetinari.constants import TRUNCATE_CONTENT_ANALYSIS
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,13 @@ class DocumentationHandler(BaseHandler):
             "Use clear, professional Markdown formatting with consistent heading hierarchy."
         )
 
+    def handle(self, *, content: str, output_path: str) -> dict[str, str]:
+        """Validate documentation content before any write path can proceed."""
+        return {
+            "content": require_nonempty(content, field_name="content"),
+            "output_path": require_nonempty(output_path, field_name="output_path"),
+        }
+
     def execute(self, task: AgentTask, context: dict[str, Any]) -> AgentResult:
         """Generate documentation for the given task.
 
@@ -86,6 +94,7 @@ class DocumentationHandler(BaseHandler):
         content = task.context.get("content", task.description)
         doc_type = task.context.get("doc_type", "api_reference")
         audience = task.context.get("audience", "developers")
+        require_nonempty(str(content), field_name="content")
 
         prompt = (
             f"Generate {doc_type} documentation for:\n{content[:TRUNCATE_CONTENT_ANALYSIS]}\n\n"

@@ -18,6 +18,7 @@ from vetinari.types import GoalCategory
 
 logger = logging.getLogger(__name__)
 
+
 CONVERGENCE_THRESHOLD = 0.85  # Jaccard similarity to declare consensus
 MAX_DEBATE_ROUNDS = 5  # Hard cap on deliberation rounds
 
@@ -203,7 +204,8 @@ class DebateProtocol:
         )
         return converged
 
-    def _all_key_points(self, round_positions: list[DebatePosition]) -> set[str]:
+    @staticmethod
+    def _all_key_points(round_positions: list[DebatePosition]) -> set[str]:
         """Flatten all key points from a round into a normalized set.
 
         Args:

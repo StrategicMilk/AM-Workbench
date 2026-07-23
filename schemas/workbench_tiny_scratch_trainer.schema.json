@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_tiny_scratch_trainer.schema.json",
+  "title": "Workbench Tiny Scratch Trainer Artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "dataset_revision_id",
+    "tokenizer",
+    "model_parameters",
+    "metrics",
+    "receipts",
+    "checkpoints",
+    "model_card",
+    "eval_result",
+    "registry_entry"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "run_id": { "$ref": "#/$defs/nonEmptyString" },
+    "dataset_revision_id": { "$ref": "#/$defs/nonEmptyString" },
+    "tokenizer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["token_to_id"],
+      "properties": {
+        "token_to_id": {
+          "type": "object",
+          "minProperties": 4,
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "model_parameters": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["model_family", "seed", "transition_scores"],
+      "properties": {
+        "model_family": { "const": "tiny_char_bigram_causal_lm" },
+        "seed": { "type": "integer" },
+        "transition_scores": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "number", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "metrics": { "$ref": "#/$defs/metrics" },
+    "receipts": {
+      "type": "array",
+      "minItems": 9,
+      "items": { "$ref": "#/$defs/receipt" }
+    },
+    "checkpoints": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/checkpoint" }
+    },
+    "model_card": { "$ref": "#/$defs/modelCard" },
+    "eval_result": { "$ref": "#/$defs/evalResult" },
+    "registry_entry": { "$ref": "#/$defs/registryEntry" }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nonEmptyStringArray": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "token_count",
+        "vocab_size",
+        "epoch_count",
+        "training_loss",
+        "eval_score",
+        "eval_threshold",
+        "confidence",
+        "eval_passed"
+      ],
+      "properties": {
+        "token_count": { "type": "integer", "minimum": 1 },
+        "vocab_size": { "type": "integer", "minimum": 1 },
+        "epoch_count": { "type": "integer", "minimum": 1 },
+        "training_loss": { "type": "number", "minimum": 0 },
+        "eval_score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "eval_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "eval_passed": { "type": "boolean" }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receipt_id", "kind", "evidence_ref"],
+      "properties": {
+        "receipt_id": { "$ref": "#/$defs/nonEmptyString" },
+        "kind": { "$ref": "#/$defs/nonEmptyString" },
+        "evidence_ref": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checkpoint_id",
+        "artifact_ref",
+        "epoch",
+        "metrics",
+        "resume_supported",
+        "rollback_supported"
+      ],
+      "properties": {
+        "checkpoint_id": { "$ref": "#/$defs/nonEmptyString" },
+        "artifact_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "epoch": { "type": "integer", "minimum": 1 },
+        "metrics": { "$ref": "#/$defs/metrics" },
+        "resume_supported": { "type": "boolean" },
+        "rollback_supported": { "type": "boolean" }
+      }
+    },
+    "modelCard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "card_id",
+        "display_name",
+        "intended_use",
+        "limitations",
+        "provenance",
+        "evidence_ids",
+        "policy_ref"
+      ],
+      "properties": {
+        "card_id": { "$ref": "#/$defs/nonEmptyString" },
+        "display_name": { "$ref": "#/$defs/nonEmptyString" },
+        "intended_use": { "$ref": "#/$defs/nonEmptyString" },
+        "limitations": { "$ref": "#/$defs/nonEmptyStringArray" },
+        "provenance": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "type": "string" }
+        },
+        "evidence_ids": { "$ref": "#/$defs/nonEmptyStringArray" },
+        "policy_ref": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "evalResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eval_id",
+        "kind",
+        "run_id",
+        "asset_id",
+        "asset_revision",
+        "scores",
+        "captured_at_utc",
+        "notes"
+      ],
+      "properties": {
+        "eval_id": { "$ref": "#/$defs/nonEmptyString" },
+        "kind": { "const": "offline_suite" },
+        "run_id": { "$ref": "#/$defs/nonEmptyString" },
+        "asset_id": { "$ref": "#/$defs/nonEmptyString" },
+        "asset_revision": { "$ref": "#/$defs/nonEmptyString" },
+        "scores": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["metric_name", "value", "threshold", "passed", "unit"],
+            "properties": {
+              "metric_name": { "$ref": "#/$defs/nonEmptyString" },
+              "value": { "type": "number" },
+              "threshold": { "type": "number" },
+              "passed": { "type": "boolean" },
+              "unit": { "type": "string" }
+            }
+          }
+        },
+        "captured_at_utc": { "$ref": "#/$defs/nonEmptyString" },
+        "notes": { "type": "string" }
+      }
+    },
+    "registryEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registry_id",
+        "model_id",
+        "artifact_ref",
+        "status",
+        "route_eligible",
+        "blockers",
+        "evidence_ids"
+      ],
+      "properties": {
+        "registry_id": { "$ref": "#/$defs/nonEmptyString" },
+        "model_id": { "$ref": "#/$defs/nonEmptyString" },
+        "artifact_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "status": { "enum": ["experimental_registered", "blocked_failed_eval"] },
+        "route_eligible": { "const": false },
+        "blockers": { "$ref": "#/$defs/nonEmptyStringArray" },
+        "evidence_ids": { "$ref": "#/$defs/nonEmptyStringArray" }
+      }
+    }
+  }
+}

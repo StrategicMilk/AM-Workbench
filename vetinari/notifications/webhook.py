@@ -12,18 +12,43 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 import yaml
 
 from vetinari.config_paths import resolve_config_path
 from vetinari.constants import MAX_RETRIES, RETRY_BASE_DELAY
+from vetinari.security.fail_closed import assert_closed_schema, sanitize_untrusted_text
+from vetinari.security.redaction import redact_text, redact_value
 
 logger = logging.getLogger(__name__)
 
+
 _DEFAULT_CONFIG_PATH = resolve_config_path("notifications.yaml")
+
+
+def _redact_url(url: str) -> str:
+    """Return a webhook URL safe for logs and health responses."""
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return "***"
+    return f"{parsed.scheme}://{parsed.netloc}/***"
+
+
+def _redact_payload_value(value: Any) -> Any:
+    """Redact notification content before it leaves the local process."""
+    return redact_value(value)
+
+
+def _redact_payload_text(value: object) -> str:
+    """Return webhook text with secrets, provider URLs, and host paths removed."""
+    return redact_text(str(value))
+
 
 # Valid webhook payload format identifiers
 _VALID_FORMATS: frozenset[str] = frozenset({"discord", "slack", "generic"})
@@ -46,7 +71,7 @@ if TYPE_CHECKING:
     from vetinari.notifications.manager import Notification
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class WebhookConfig:
     """Configuration for a single webhook endpoint.
 
@@ -98,25 +123,31 @@ class WebhookNotifier:
             webhook_defs = data.get("webhooks", [])
             for entry in webhook_defs:
                 if not isinstance(entry, dict) or "url" not in entry:
-                    continue
+                    raise ValueError("webhook entry must be an object with a url")
+                assert_closed_schema(
+                    entry,
+                    allowed_keys={"url", "format", "events", "enabled"},
+                    required_keys={"url"},
+                )
 
-                fmt = entry.get("format", "generic")
+                fmt = sanitize_untrusted_text(entry.get("format", "generic"), max_length=40)
                 if fmt not in _VALID_FORMATS:
                     logger.warning(
                         "Webhook for %s has unknown format %r — skipping. Valid formats: %s",
-                        entry["url"],
+                        _redact_url(entry["url"]),
                         fmt,
                         ", ".join(sorted(_VALID_FORMATS)),
                     )
-                    continue
+                    raise ValueError(f"unknown webhook format: {fmt}")
 
                 raw_events: list[str] | None = entry.get("events")
                 if raw_events is not None:
+                    raw_events = [sanitize_untrusted_text(e, max_length=80) for e in raw_events]
                     unknown = [e for e in raw_events if e not in _VALID_EVENTS]
                     if unknown:
                         logger.warning(
                             "Webhook for %s has unknown event names %r — skipping. Valid events: %s",
-                            entry["url"],
+                            _redact_url(entry["url"]),
                             unknown,
                             ", ".join(sorted(_VALID_EVENTS)),
                         )
@@ -124,7 +155,7 @@ class WebhookNotifier:
 
                 self._webhooks.append(
                     WebhookConfig(
-                        url=entry["url"],
+                        url=sanitize_untrusted_text(entry["url"], max_length=2_000),
                         format=fmt,
                         events=raw_events,
                         enabled=entry.get("enabled", True),
@@ -133,13 +164,15 @@ class WebhookNotifier:
                 self._health[entry["url"]] = {"successes": 0, "failures": 0}
 
             logger.info("Loaded %d webhook configurations", len(self._webhooks))
-        except Exception:
+        except Exception as exc:
             logger.warning(
                 "Failed to load webhook config from %s — no webhooks will be active",
                 self._config_path,
             )
 
-    def deliver(self, notifications: list[Notification]) -> None:
+            raise ValueError(f"invalid webhook config: {self._config_path}") from exc
+
+    def deliver(self, notifications: list[Notification]) -> bool:
         """Deliver notifications to all configured webhooks.
 
         Each webhook receives only events matching its event filter.
@@ -147,7 +180,12 @@ class WebhookNotifier:
 
         Args:
             notifications: List of Notification objects to deliver.
+
+        Returns:
+            True when every attempted matching webhook delivery succeeds,
+            False when any matching webhook delivery fails after retries.
         """
+        failed = False
         for webhook in self._webhooks:
             if not webhook.enabled:
                 continue
@@ -158,10 +196,12 @@ class WebhookNotifier:
                 continue
 
             payload = self._format_payload(filtered, webhook.format)
-            self._send_with_retry(webhook.url, payload)
+            if not self._send_with_retry(webhook.url, payload):
+                failed = True
+        return not failed
 
+    @staticmethod
     def _filter_by_events(
-        self,
         notifications: list[Notification],
         webhook: WebhookConfig,
     ) -> list[Notification]:
@@ -191,21 +231,23 @@ class WebhookNotifier:
             return self._format_slack(notifications)
         return self._format_generic(notifications)
 
-    def _format_discord(self, notifications: list[Notification]) -> dict[str, Any]:
+    @staticmethod
+    def _format_discord(notifications: list[Notification]) -> dict[str, Any]:
         """Format as Discord rich embed."""
         embeds = []
         for n in notifications[:10]:  # Discord limit: 10 embeds per message
             color_map = {"critical": 0xFF0000, "high": 0xFF8C00, "medium": 0x3498DB, "low": 0x95A5A6}
             embeds.append({
-                "title": n.title,
-                "description": n.body,
+                "title": _redact_payload_text(n.title),
+                "description": _redact_payload_text(n.body),
                 "color": color_map.get(n.priority.value, 0x95A5A6),
                 "footer": {"text": f"Vetinari | {n.action_type}"},
                 "timestamp": n.created_at,
             })
         return {"embeds": embeds}
 
-    def _format_slack(self, notifications: list[Notification]) -> dict[str, Any]:
+    @staticmethod
+    def _format_slack(notifications: list[Notification]) -> dict[str, Any]:
         """Format as Slack block kit message."""
         blocks = []
         for n in notifications:
@@ -220,23 +262,24 @@ class WebhookNotifier:
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"{emoji} *{n.title}*\n{n.body}",
+                    "text": f"{emoji} *{_redact_payload_text(n.title)}*\n{_redact_payload_text(n.body)}",
                 },
             })
         return {"blocks": blocks}
 
-    def _format_generic(self, notifications: list[Notification]) -> dict[str, Any]:
+    @staticmethod
+    def _format_generic(notifications: list[Notification]) -> dict[str, Any]:
         """Format as generic JSON POST body."""
         return {
             "source": "vetinari",
             "notifications": [
                 {
                     "id": n.notification_id,
-                    "title": n.title,
-                    "body": n.body,
+                    "title": _redact_payload_text(n.title),
+                    "body": _redact_payload_text(n.body),
                     "priority": n.priority.value,
                     "action_type": n.action_type,
-                    "metadata": n.metadata,
+                    "metadata": _redact_payload_value(n.metadata),
                     "created_at": n.created_at,
                 }
                 for n in notifications
@@ -255,7 +298,7 @@ class WebhookNotifier:
         """
         for attempt in range(MAX_RETRIES):
             try:
-                import httpx  # noqa: VET070 — optional dep [notifications]
+                import httpx
 
                 with httpx.Client(timeout=10.0) as client:
                     response = client.post(url, json=payload)
@@ -267,14 +310,14 @@ class WebhookNotifier:
                 return True
 
             except ImportError:
-                logger.warning("httpx not installed — webhook delivery disabled. Install with: pip install httpx")  # noqa: VET301 — user guidance string
+                logger.warning("httpx not installed — webhook delivery disabled. Install with: pip install httpx")
                 return False
 
             except Exception:
                 delay = RETRY_BASE_DELAY * (2**attempt)
                 logger.warning(
                     "Webhook delivery to %s failed (attempt %d/%d) — retrying in %.1fs",
-                    url[:50],
+                    _redact_url(url),
                     attempt + 1,
                     MAX_RETRIES,
                     delay,
@@ -288,7 +331,7 @@ class WebhookNotifier:
 
         logger.warning(
             "Webhook delivery to %s failed after %d retries — notification dropped",
-            url[:50],
+            _redact_url(url),
             MAX_RETRIES,
         )
         return False
@@ -300,7 +343,7 @@ class WebhookNotifier:
             Dict mapping webhook URLs to their delivery health stats.
         """
         with self._lock:
-            return dict(self._health)
+            return {_redact_url(url): dict(stats) for url, stats in self._health.items()}
 
 
 def create_webhook_channel(config_path: Path | None = None) -> WebhookNotifier | None:
@@ -312,7 +355,11 @@ def create_webhook_channel(config_path: Path | None = None) -> WebhookNotifier |
     Returns:
         The WebhookNotifier instance, or None if no webhooks configured.
     """
-    notifier = WebhookNotifier(config_path=config_path)
+    try:
+        notifier = WebhookNotifier(config_path=config_path)
+    except ValueError:
+        logger.warning("Webhook channel disabled because config failed validation", exc_info=True)
+        return None
     if not notifier._webhooks:
         return None
 
@@ -324,3 +371,102 @@ def create_webhook_channel(config_path: Path | None = None) -> WebhookNotifier |
         logger.warning("Failed to register webhook channel with notification manager")
 
     return notifier
+
+
+# ---------------------------------------------------------------------------
+# Event callback registry (FSA-0396)
+# ---------------------------------------------------------------------------
+#
+# A lightweight in-process pub/sub so dashboard backends, log forwarders, and
+# integration tests can subscribe to lifecycle events ("task_completed",
+# "build_failed", ...) without coupling to the WebhookNotifier delivery
+# pipeline.  Trigger counts surface through
+# vetinari.dashboard.log_backends.webhook_trigger_backend_snapshot().
+
+_event_callbacks_lock = threading.RLock()
+_event_callbacks: dict[str, list[Callable[[str, list[Any]], None]]] = defaultdict(list)
+_event_trigger_counts: dict[str, int] = defaultdict(int)
+
+
+def register_webhook_event_callback(event_name: str, callback: Callable[[str, list[Any]], None]) -> None:
+    """Register *callback* to fire whenever *event_name* is triggered.
+
+    The callback receives the event name and the list of notification
+    payloads supplied to ``trigger_webhook_event``.  Multiple callbacks
+    per event name are supported and fire in registration order.
+
+    Args:
+            event_name: Logical event id (e.g. ``"task_completed"``).
+            callback: Function ``(event_name, notifications) -> None``.
+
+    Raises:
+            ValueError: If the event name is not registered.
+            UntrustedInputError: If the event name is unsafe text.
+    """
+    event_name = sanitize_untrusted_text(event_name, max_length=120)
+    if event_name not in _VALID_EVENTS:
+        raise ValueError(f"unknown webhook event: {event_name}")
+    with _event_callbacks_lock:
+        _event_callbacks[event_name].append(callback)
+
+
+def trigger_webhook_event(event_name: str, notifications: list[Any]) -> int:
+    """Invoke every registered callback for *event_name*.
+
+    Callback exceptions are logged at WARNING and do NOT abort the
+    remaining callbacks — one bad subscriber must not silence the others.
+
+    Args:
+        event_name: Event id to fire.
+        notifications: Payload list forwarded to each callback.
+
+    Returns:
+        Number of callbacks invoked (zero when none registered).
+
+    Raises:
+        ValueError: If the event name is not registered.
+        UntrustedInputError: If the event name is unsafe text.
+    """
+    event_name = sanitize_untrusted_text(event_name, max_length=120)
+    if event_name not in _VALID_EVENTS:
+        raise ValueError(f"unknown webhook event: {event_name}")
+    with _event_callbacks_lock:
+        callbacks = list(_event_callbacks.get(event_name, ()))
+        _event_trigger_counts[event_name] += 1
+    invoked = 0
+    for callback in callbacks:
+        try:
+            callback(event_name, notifications)
+            invoked += 1
+        except Exception:
+            logger.warning(
+                "Webhook event callback for %r raised — continuing with remaining subscribers",
+                event_name,
+                exc_info=True,
+            )
+    return invoked
+
+
+def clear_webhook_event_callbacks() -> None:
+    """Reset every registered callback and trigger counter.
+
+    Provided for tests and clean shutdown — production code should not
+    routinely clear the registry.
+    """
+    with _event_callbacks_lock:
+        _event_callbacks.clear()
+        _event_trigger_counts.clear()
+
+
+def webhook_event_trigger_counts() -> dict[str, int]:
+    """Return a snapshot of how many times each event has been triggered.
+
+    Used by ``vetinari.dashboard.log_backends.webhook_trigger_backend_snapshot``
+    to expose per-event totals to operator dashboards.
+
+    Returns:
+        Mapping of event name to trigger count.  An empty dict when no
+        events have fired since the last reset.
+    """
+    with _event_callbacks_lock:
+        return dict(_event_trigger_counts)

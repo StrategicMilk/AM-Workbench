@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "amw-kernel-lifecycle.schema.json",
+  "title": "AM Workbench Kernel Lifecycle",
+  "type": "object",
+  "required": ["state", "allowed_transitions", "fail_closed_signals"],
+  "properties": {
+    "state": {
+      "enum": ["initialized", "ready", "running", "paused", "recovering", "failed_closed", "stopped"]
+    },
+    "allowed_transitions": {
+      "type": "array",
+      "minItems": 8,
+      "items": {
+        "type": "object",
+        "required": ["from", "to"],
+        "additionalProperties": false,
+        "properties": {
+          "from": {"type": "string", "minLength": 1},
+          "to": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "fail_closed_signals": {
+      "type": "array",
+      "items": {"enum": ["missing", "unknown", "unavailable", "corrupt"]}
+    }
+  },
+  "generated_from": "amw-kernel::KernelState"
+}

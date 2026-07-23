@@ -21,6 +21,7 @@ from vetinari.constants import get_user_dir
 
 logger = logging.getLogger(__name__)
 
+
 # Minimum free disk space required before training begins (20 GB in bytes)
 MIN_FREE_DISK_BYTES = 20 * 1024**3
 
@@ -158,7 +159,8 @@ class PreTrainingValidator:
 
     # ── Private helpers ──────────────────────────────────────────────────────
 
-    def _check_training_data(self) -> tuple[bool, str]:
+    @staticmethod
+    def _check_training_data() -> tuple[bool, str]:
         """Verify training data JSONL files exist and contain at least one record.
 
         Returns:
@@ -183,7 +185,8 @@ class PreTrainingValidator:
         )
         return True, ""
 
-    def _check_disk_space(self) -> tuple[bool, str]:
+    @staticmethod
+    def _check_disk_space() -> tuple[bool, str]:
         """Check that at least 20 GB of free disk space is available.
 
         Returns:
@@ -205,7 +208,8 @@ class PreTrainingValidator:
         logger.debug("Disk space check passed: %.1f GB free", free_gb)
         return True, ""
 
-    def _check_gpu_temperature(self) -> tuple[bool, str]:
+    @staticmethod
+    def _check_gpu_temperature() -> tuple[bool, str]:
         """Check GPU temperature via pynvml, if available.
 
         Returns:
@@ -286,17 +290,24 @@ class PostTrainingValidator:
             in human-readable form.
         """
         regressions: list[str] = []
+        missing_metrics: list[str] = []
 
         # Check every benchmark that exists in both score sets
         for metric, old_val in old_scores.items():
             new_val = new_scores.get(metric)
             if new_val is None:
+                missing_metrics.append(metric)
                 continue
             drop = old_val - new_val
             if drop > self.regression_threshold:
                 regressions.append(
                     f"{metric}: {old_val:.4f} → {new_val:.4f} (dropped {drop:.4f})",
                 )
+
+        if missing_metrics:
+            reason = "Candidate metrics missing after training: " + ", ".join(sorted(missing_metrics))
+            logger.warning("Post-training validation failed â€” %s", reason)
+            return False, reason
 
         if regressions:
             reason = "Regression detected on: " + "; ".join(regressions)
@@ -306,6 +317,16 @@ class PostTrainingValidator:
         # Check that the target metric improved
         old_target = old_scores.get(target_metric)
         new_target = new_scores.get(target_metric)
+
+        if old_target is None or new_target is None:
+            missing_side = []
+            if old_target is None:
+                missing_side.append("baseline")
+            if new_target is None:
+                missing_side.append("candidate")
+            reason = f"Target metric '{target_metric}' missing from {' and '.join(missing_side)} scores"
+            logger.warning("Post-training validation failed - %s", reason)
+            return False, reason
 
         if old_target is not None and new_target is not None and new_target <= old_target:
             reason = f"Target metric '{target_metric}' did not improve: {old_target:.4f} → {new_target:.4f}"

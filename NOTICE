@@ -1,16 +1,15 @@
 AM Workbench
-Copyright (c) 2026 AM Workbench contributors
+Copyright (c) 2026 Vetinari contributors
+SPDX-License-Identifier: MIT
 
-AM Workbench, including the Vetinari engine, is licensed under the MIT License.
-See LICENSE for the full license text.
+AM Workbench is licensed under the MIT License. See LICENSE
+for the full license text.
 
-This product depends on third-party software, browser assets, model artifacts,
-datasets, container images, external services, and optional tool execution
-paths that carry their own licenses or terms. The current attribution and
-release-disposition ledger is THIRD-PARTY-LICENSES.md. Public license and
-provenance notes live in docs/security/license-notes.md.
+This source export does not bundle third-party model weights, datasets,
+container images, browser binaries, or external service assets. Runtime and
+development dependencies remain under their own upstream licenses as declared
+by the package manifests included with this export.
 
-This file is not legal signoff by itself. Any dependency, model, dataset,
-generated bundle, or data-flow surface marked unresolved in the public license
-notes must be resolved before a release can claim complete license or privacy
-proof.
+Maintainers validate the dependency SBOM and optional-extra release
+disposition before publication. That maintainer release evidence is not part
+of the public source export.

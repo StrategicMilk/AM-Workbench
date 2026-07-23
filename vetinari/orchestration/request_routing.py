@@ -14,11 +14,30 @@ from __future__ import annotations
 
 import heapq
 import logging
+import re
 import threading
 
 from vetinari.types import AgentType
 
 logger = logging.getLogger(__name__)
+
+DEVELOPER_WORKFLOW_CONTRACT_ID = "wave3-rcg0014p06-scope-followup-P09"
+REQUEST_ROUTING_WORKFLOW_GUARDS: tuple[str, ...] = (
+    "queue backpressure raises QueueFullError at max depth",
+    "complete ignores unknown execution ids without freeing capacity",
+    "high-confidence keyword routing does not invoke LLM fallback",
+    "routing decisions fall back deterministically when LLM classification fails",
+)
+
+
+def developer_workflow_contract() -> dict[str, object]:
+    """Return request-routing workflow guarantees verified by this follow-up pack."""
+    return {
+        "pack": DEVELOPER_WORKFLOW_CONTRACT_ID,
+        "surface": "vetinari/orchestration/request_routing.py",
+        "guards": REQUEST_ROUTING_WORKFLOW_GUARDS,
+    }
+
 
 # ---------------------------------------------------------------------------
 # Priority constants — lower value = higher priority
@@ -148,13 +167,24 @@ class RequestQueue:
 # categories should be checked first (e.g. "security audit" before "audit").
 
 _GOAL_CATEGORY_KEYWORDS: dict[str, list[str]] = {
-    "security": ["security", "audit", "vulnerability", "pentest", "cve", "owasp", "exploit", "review pr"],
-    "devops": ["deploy", "ci/cd", "docker", "kubernetes", "pipeline", "devops", "terraform", "helm"],
+    "workflow": ["workflow audit", "workflow", "program audit", "routing audit", "process audit", "agent workflow"],
+    "security": [
+        "security",
+        "security audit",
+        "audit",
+        "vulnerability",
+        "pentest",
+        "cve",
+        "owasp",
+        "exploit",
+        "review pr",
+    ],
+    "devops": ["deploy", "ci/cd", "docker", "dockerize", "kubernetes", "pipeline", "devops", "terraform", "helm"],
     "image": ["logo", "icon", "mockup", "diagram", "image", "illustration", "screenshot"],
     "creative": ["story", "poem", "fiction", "narrative", "campaign", "creative writ", "novel"],
     "data": ["database", "schema", "migration", "etl", "sql", "nosql", "data model"],
     "ui": ["ui", "ux", "frontend", "design", "wireframe", "layout", "responsive", "css"],
-    "docs": ["document", "readme", "api docs", "manual", "changelog", "guide", "tutorial"],
+    "docs": ["document", "documentation", "readme", "api docs", "manual", "changelog", "guide", "tutorial"],
     "research": ["research", "analyze", "investigate", "study", "explore", "survey", "compare", "explain"],
     "code": ["code", "implement", "build", "develop", "fix", "refactor", "function", "class", "module", "test", "api"],
     # Version control operations — checked after security to avoid "audit" collision
@@ -172,7 +202,6 @@ _GOAL_CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "devops_ops": ["runbook", "incident", "on-call", "ops", "site reliability", "sre", "postmortem", "alert"],
     "monitor": ["monitor", "observe", "metrics", "dashboard", "tracing", "telemetry", "health check", "uptime"],
     "cost_analysis": ["cost", "budget", "spend", "pricing", "resource usage", "optimize spend", "billing"],
-    "experiment": ["experiment", "a/b test", "hypothesis", "trial", "ablation", "benchmark", "evaluate model"],
 }
 
 # Maps GoalCategory value -> (primary agent type, default mode, model tier hint)
@@ -183,6 +212,7 @@ _GOAL_ROUTING_TABLE: dict[str, tuple] = {
     "docs": (AgentType.WORKER.value, "documentation", "general"),
     "creative": (AgentType.WORKER.value, "creative_writing", "general"),
     "security": (AgentType.INSPECTOR.value, "security_audit", "coder"),
+    "workflow": (AgentType.WORKER.value, "workflow_audit", "general"),
     "data": (AgentType.WORKER.value, "database", "general"),
     "devops": (AgentType.WORKER.value, "devops", "coder"),
     "ui": (AgentType.WORKER.value, "ui_design", "vision"),
@@ -197,8 +227,10 @@ _GOAL_ROUTING_TABLE: dict[str, tuple] = {
     "devops_ops": (AgentType.WORKER.value, "devops_ops", "coder"),
     "monitor": (AgentType.WORKER.value, "monitor", "general"),
     "cost_analysis": (AgentType.WORKER.value, "cost_analysis", "general"),
-    "experiment": (AgentType.WORKER.value, "experiment", "general"),
 }
+
+_DETERMINISTIC_CONFIDENCE_THRESHOLD = 0.70
+_AMBIGUOUS_LLM_HINTS = frozenset({"do", "make", "create", "improve", "help", "stuff", "thing", "things"})
 
 
 def classify_goal(goal: str) -> str:
@@ -220,9 +252,9 @@ def classify_goal(goal: str) -> str:
 def classify_goal_detailed(goal: str) -> dict:
     """Classify a goal with confidence score and complexity assessment.
 
-    Tries LLM classification first for better paraphrase handling (e.g.
-    "Write a test suite" correctly classified as "code" not "creative").
-    Falls back to keyword matching when the LLM is unavailable.
+    Runs deterministic keyword classification first. The LLM is consulted only
+    for ambiguous low-confidence goals with some actionable but non-specific
+    signal; high-confidence deterministic matches never call the LLM.
 
     Args:
         goal: The user's goal string to classify.
@@ -237,65 +269,79 @@ def classify_goal_detailed(goal: str) -> dict:
     goal_lower = goal.lower()
     word_count = len(goal.split())
 
-    # ── Try LLM classification first (~200 tokens, handles paraphrasing) ──
-    try:
-        from vetinari.llm_helpers import classify_goal_via_llm
-
-        llm_category = classify_goal_via_llm(goal)
-        if llm_category and llm_category in _GOAL_ROUTING_TABLE:
-            logger.info("LLM classified goal as %r", llm_category)
-            return {
-                "category": llm_category,
-                "confidence": 0.90,
-                "complexity": _assess_complexity(word_count, 0),
-                "cross_cutting": [],
-                "matched_keywords": [],
-                "source": "llm",
-            }
-    except Exception:
-        logger.warning("LLM goal classification unavailable — falling back to keyword-based classification")
-
-    # Score each category by number of keyword hits
     category_scores: dict[str, list[str]] = {}
     for category, keywords in _GOAL_CATEGORY_KEYWORDS.items():
-        hits = [kw for kw in keywords if kw in goal_lower]
+        hits = [kw for kw in keywords if _keyword_matches(goal_lower, kw)]
         if hits:
             category_scores[category] = hits
 
     if not category_scores:
-        return {
+        keyword_result = {
             "category": "general",
             "confidence": 0.3,
             "complexity": _assess_complexity(word_count, 0),
             "cross_cutting": [],
             "matched_keywords": [],
+            "source": "keyword",
         }
+        if not (_terms(goal_lower) & _AMBIGUOUS_LLM_HINTS):
+            return keyword_result
+        return _try_llm_goal_classification(goal, word_count, keyword_result)
 
-    # Primary = category with most keyword hits; ties broken by keyword order
     ranked = sorted(category_scores.items(), key=lambda kv: len(kv[1]), reverse=True)
     primary_cat, primary_hits = ranked[0]
 
-    # Confidence: ratio of primary hits to total hits across all categories
     total_hits = sum(len(v) for v in category_scores.values())
     confidence = round(len(primary_hits) / max(total_hits, 1), 2)
-    # Boost confidence when only one category matched
     if len(ranked) == 1:
         confidence = min(1.0, confidence + 0.3)
 
-    # Cross-cutting categories (secondary matches with at least 1 hit)
     cross_cutting = [cat for cat, _ in ranked[1:]]
-
-    return {
+    if primary_cat == "workflow" and any("workflow" in hit for hit in primary_hits):
+        confidence = max(confidence, _DETERMINISTIC_CONFIDENCE_THRESHOLD)
+    keyword_result = {
         "category": primary_cat,
         "confidence": round(min(1.0, confidence), 2),
         "complexity": _assess_complexity(word_count, len(cross_cutting)),
         "cross_cutting": cross_cutting,
         "matched_keywords": primary_hits,
+        "source": "keyword",
     }
+    if keyword_result["confidence"] >= _DETERMINISTIC_CONFIDENCE_THRESHOLD:
+        return keyword_result
+    return _try_llm_goal_classification(goal, word_count, keyword_result)
 
 
-# ── Complexity assessment ────────────────────────────────────────────────────
+def _try_llm_goal_classification(goal: str, word_count: int, keyword_result: dict) -> dict:
+    """Try LLM classification for ambiguous goals, falling back deterministically."""
+    try:
+        from vetinari.llm_helpers import classify_goal_via_llm
 
+        llm_category = classify_goal_via_llm(goal)
+        if llm_category and llm_category in _GOAL_ROUTING_TABLE:
+            logger.info("LLM classified ambiguous goal as %r", llm_category)
+            return {
+                "category": llm_category,
+                "confidence": 0.90,
+                "complexity": _assess_complexity(word_count, 0),
+                "cross_cutting": [],
+                "matched_keywords": keyword_result.get("matched_keywords", []),
+                "source": "llm",
+            }
+    except Exception:
+        logger.warning("LLM goal classification failed for ambiguous goal; using deterministic keyword result")
+    return keyword_result
+
+
+def _keyword_matches(text: str, keyword: str) -> bool:
+    return re.search(rf"(?<![a-z0-9]){re.escape(keyword.lower())}(?![a-z0-9])", text) is not None
+
+
+def _terms(text: str) -> set[str]:
+    return {part for part in text.split() if part}
+
+
+# Complexity assessment
 EXPRESS_WORD_THRESHOLD = 12  # Goals shorter than this are likely express tasks
 CUSTOM_WORD_THRESHOLD = 40  # Goals longer than this are likely custom/complex
 

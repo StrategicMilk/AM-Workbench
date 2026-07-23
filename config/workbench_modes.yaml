@@ -1,0 +1,1157 @@
+schema_version: 1
+templates:
+- id: evidence_intake
+  name: Evidence Intake
+  version: '1.0'
+  charter: Convert user-supplied artifacts into scoped, provenance-backed workbench evidence.
+  input_model: WorkbenchEvidenceIntakeRequest
+  allowed_tools:
+  - source_card_library
+  - evidence_asset_library
+  - metadata_spine
+  tool_policy:
+    allowed_tool_ids:
+    - source_card_library
+    - evidence_asset_library
+    - metadata_spine
+    required_policy_refs:
+    - source-card-freshness
+    - evidence-asset-proof-status
+    requires_citations: true
+    max_external_calls: 3
+  memory_policy:
+    ephemeral_keys:
+    - pending_source_notes
+    persistent_keys:
+    - accepted_evidence_asset_ids
+    retention_policy: retain only accepted asset ids and source card ids
+    provenance_required: true
+  output_artifact_schema: schemas/workbench_mode_template.schema.json
+  required_artifacts:
+  - source_card_ids
+  - evidence_asset_ids
+  - intake_decision
+  review_rubric:
+  - id: provenance-present
+    description: Each accepted artifact has a source card or explicit user provenance.
+    evidence_required: provenance mapping contains source and decision_ref
+  - id: stale-source-blocked
+    description: Stale or never-observed sources do not promote claims.
+    evidence_required: source freshness verdict attached
+  transitions:
+  - from: selected
+    to: configured
+    required_evidence:
+    - policy_acknowledged
+  - from: configured
+    to: evidence_bound
+    required_evidence:
+    - source_card_ids
+    - evidence_asset_ids
+  - from: evidence_bound
+    to: review_ready
+    required_evidence:
+    - intake_decision
+  export_paths:
+  - outputs/workbench/spine/exports/evidence_intake.json
+  failure_recovery:
+  - trigger: missing_provenance
+    action: keep draft blocked and ask for source attribution
+    user_visible_status: blocked_missing_provenance
+  - trigger: damaged_evidence
+    action: discard untrusted draft and keep original asset untouched
+    user_visible_status: blocked_damaged_evidence
+  provenance:
+    source: roadmap-LW-WORKBENCH-MODE-TEMPLATE-FABRIC-user-workflow-contracts
+    decision_ref: ADR-0125
+  evidence_refs:
+  - tests/test_workbench_mode_templates.py::test_runtime_rejects_missing_provenance_policy_evidence_or_artifacts
+- id: experiment_design
+  name: Experiment Design
+  version: '1.0'
+  charter: Turn a user goal into a bounded experiment with measurable success and rollback proof.
+  input_model: WorkbenchExperimentDesignRequest
+  allowed_tools:
+  - method_library
+  - eval_suite_builder
+  - metadata_spine
+  tool_policy:
+    allowed_tool_ids:
+    - method_library
+    - eval_suite_builder
+    - metadata_spine
+    required_policy_refs:
+    - measured-method-gate
+    - eval-result-proof-status
+    requires_citations: false
+    max_external_calls: 0
+  memory_policy:
+    ephemeral_keys:
+    - experiment_hypothesis
+    persistent_keys:
+    - experiment_ids
+    - eval_suite_ids
+    retention_policy: retain ids and measured outcome summaries only
+    provenance_required: true
+  output_artifact_schema: schemas/workbench_mode_template.schema.json
+  required_artifacts:
+  - spec_frame
+  - plan_graph
+  - eval_suite_ref
+  review_rubric:
+  - id: measurable-hypothesis
+    description: The experiment has a measurable hypothesis and pass/fail eval.
+    evidence_required: eval_suite_ref and acceptance criteria present
+  - id: bounded-plan
+    description: The plan graph is cycle-free and within Foreman limits.
+    evidence_required: PlanGraph.validate passes
+  transitions:
+  - from: selected
+    to: configured
+    required_evidence:
+    - policy_acknowledged
+  - from: configured
+    to: plan_bound
+    required_evidence:
+    - spec_frame
+    - plan_graph
+  - from: plan_bound
+    to: review_ready
+    required_evidence:
+    - eval_suite_ref
+  export_paths:
+  - outputs/workbench/spine/exports/experiment_design.json
+  failure_recovery:
+  - trigger: missing_eval
+    action: keep experiment draft unpromoted until eval proof exists
+    user_visible_status: blocked_missing_eval
+  - trigger: graph_invalid
+    action: return to configuration with the cycle or width error
+    user_visible_status: blocked_invalid_plan_graph
+  provenance:
+    source: roadmap-LW-WORKBENCH-MODE-TEMPLATE-FABRIC-user-workflow-contracts
+    decision_ref: ADR-0125
+  evidence_refs:
+  - tests/test_workbench_mode_templates.py::test_templates_bind_to_spine_spec_frame_and_plan_graph
+- id: release_evidence
+  name: Release Evidence
+  version: '1.0'
+  charter: Assemble a release proof bundle from tests, checks, caveats, and signed operator decisions.
+  input_model: WorkbenchReleaseEvidenceRequest
+  allowed_tools:
+  - evidence_asset_library
+  - release_check_runner
+  - metadata_spine
+  tool_policy:
+    allowed_tool_ids:
+    - evidence_asset_library
+    - release_check_runner
+    - metadata_spine
+    required_policy_refs:
+    - release-proof-matrix
+    - operator-decision-receipt
+    requires_citations: true
+    max_external_calls: 1
+  memory_policy:
+    ephemeral_keys:
+    - release_notes_draft
+    persistent_keys:
+    - release_evidence_asset_ids
+    - operator_decision_receipts
+    retention_policy: retain evidence ids, check commands, and signed decision receipts
+    provenance_required: true
+  output_artifact_schema: schemas/workbench_mode_template.schema.json
+  required_artifacts:
+  - verification_commands
+  - evidence_asset_ids
+  - operator_decision
+  review_rubric:
+  - id: command-proof-present
+    description: Every release claim cites a concrete verification command or evidence asset.
+    evidence_required: verification_commands and evidence_asset_ids present
+  - id: caveats-explicit
+    description: Residual risk and skipped checks are visible before promotion.
+    evidence_required: operator_decision records caveats
+  transitions:
+  - from: selected
+    to: configured
+    required_evidence:
+    - policy_acknowledged
+  - from: configured
+    to: evidence_bound
+    required_evidence:
+    - verification_commands
+    - evidence_asset_ids
+  - from: evidence_bound
+    to: review_ready
+    required_evidence:
+    - operator_decision
+  export_paths:
+  - outputs/workbench/spine/exports/release_evidence.json
+  failure_recovery:
+  - trigger: missing_command_output
+    action: keep release blocked until the command is rerun or explicitly waived
+    user_visible_status: blocked_missing_command_output
+  - trigger: unreadable_evidence_asset
+    action: mark proof bundle untrusted and require fresh evidence
+    user_visible_status: blocked_unreadable_evidence
+  provenance:
+    source: roadmap-LW-WORKBENCH-MODE-TEMPLATE-FABRIC-user-workflow-contracts
+    decision_ref: ADR-0125
+  evidence_refs:
+  - tests/test_workbench_mode_templates.py::test_catalog_contains_user_workflow_contract_fields
+- id: ml_genai_eval_design
+  name: ML/GenAI Eval Design
+  version: '1.0'
+  charter: Design an evaluation suite with task taxonomy, holdout data policy, scoring rubric, and promotion evidence before
+    model or prompt changes are trusted.
+  input_model: WorkbenchMlGenaiEvalDesignRequest
+  allowed_tools:
+  - eval_suite_builder
+  - trace_eval_playground
+  - metadata_spine
+  tool_policy:
+    allowed_tool_ids:
+    - eval_suite_builder
+    - trace_eval_playground
+    - metadata_spine
+    required_policy_refs:
+    - eval-suite-coverage
+    - holdout-contamination-check
+    requires_citations: true
+    max_external_calls: 1
+  memory_policy:
+    ephemeral_keys:
+    - eval_design_notes
+    persistent_keys:
+    - eval_suite_ids
+    - holdout_policy_refs
+    retention_policy: retain eval suite ids, holdout policy refs, and scored outcome summaries only
+    provenance_required: true
+  output_artifact_schema: schemas/workbench_mode_template.schema.json
+  required_artifacts:
+  - task_taxonomy
+  - eval_dataset_spec
+  - scoring_rubric
+  - holdout_policy
+  review_rubric:
+  - id: task-coverage
+    description: The eval suite covers the intended task families and critical failure classes.
+    evidence_required: task_taxonomy mapped to eval cases and failure categories
+  - id: holdout-protected
+    description: Holdout examples are separated from prompt, tuning, and training inputs.
+    evidence_required: holdout_policy and contamination check evidence
+  transitions:
+  - from: selected
+    to: configured
+    required_evidence:
+    - policy_acknowledged
+  - from: configured
+    to: artifact_bound
+    required_evidence:
+    - task_taxonomy
+    - eval_dataset_spec
+  - from: artifact_bound
+    to: review_ready
+    required_evidence:
+    - scoring_rubric
+    - holdout_policy
+  - from: review_ready
+    to: eval_suite_review
+    required_evidence:
+    - reviewer_acceptance
+  export_paths:
+  - outputs/workbench/spine/exports/ml_genai_eval_design.json
+  failure_recovery:
+  - trigger: missing_holdout_policy
+    action: keep eval design blocked until holdout separation and contamination checks are recorded
+    user_visible_status: blocked_missing_eval_or_holdout
+  - trigger: rubric_not_measurable
+    action: return to scoring design with measurable thresholds required
+    user_visible_status: blocked_unmeasurable_rubric
+  provenance:
+    source: roadmap-LW-WORKBENCH-ML-GENAI-PRACTITIONER-MODES
+    decision_ref: wave-16-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_ml_genai_practitioner_modes.py::test_manifest_matches_live_ml_genai_runtime_catalog
+- id: ml_genai_prompt_iteration
+  name: ML/GenAI Prompt Iteration
+  version: '1.0'
+  charter: Iterate prompts against controlled evals, regression notes, and promotion gates instead of relying on anecdotal
+    wins.
+  input_model: WorkbenchMlGenaiPromptIterationRequest
+  allowed_tools:
+  - prompt_sweep_harness
+  - eval_suite_builder
+  - metadata_spine
+  tool_policy:
+    allowed_tool_ids:
+    - prompt_sweep_harness
+    - eval_suite_builder
+    - metadata_spine
+    required_policy_refs:
+    - prompt-variant-provenance
+    - regression-eval-gate
+    requires_citations: true
+    max_external_calls: 1
+  memory_policy:
+    ephemeral_keys:
+    - prompt_draft_notes
+    persistent_keys:
+    - prompt_variant_ids
+    - eval_result_refs
+    retention_policy: retain variant ids, eval refs, and accepted rationale only
+    provenance_required: true
+  output_artifact_schema: schemas/workbench_mode_template.schema.json
+  required_artifacts:
+  - prompt_variant_set
+  - eval_result_matrix
+  - regression_notes
+  - promotion_candidate
+  review_rubric:
+  - id: controlled-comparison
+    description: Prompt variants are compared on the same eval suite and runtime route.
+    evidence_required: eval_result_matrix with baseline and candidate rows
+  - id: regression-visible
+    description: Losses and ambiguous changes are recorded before promotion.
+    evidence_required: regression_notes with failing examples
+  transitions:
+  - from: selected
+    to: configured
+    required_evidence:
+    - policy_acknowledged
+  - from: configured
+    to: sweep_bound
+    required_evidence:
+    - prompt_variant_set
+  - from: sweep_bound
+    to: review_ready
+    required_evidence:
+    - eval_result_matrix
+    - regression_notes
+  - from: review_ready
+    to: prompt_candidate_review
+    required_evidence:
+    - promotion_candidate
+  export_paths:
+  - outputs/workbench/spine/exports/ml_genai_prompt_iteration.json
+  failure_recovery:
+  - trigger: unexplained_candidate_win
+    action: keep candidate unpromoted until regression notes explain the delta
+    user_visible_status: blocked_regression_or_unexplained_win
+  - trigger: eval_route_mismatch
+    action: rerun the sweep on a single declared route before review
+    user_visible_status: blocked_route_mismatch
+  provenance:
+    source: roadmap-LW-WORKBENCH-ML-GENAI-PRACTITIONER-MODES
+    decision_ref: wave-16-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_ml_genai_practitioner_modes.py::test_ml_genai_ready_state_runs_through_shared_runtime_guard
+- id: ml_genai_dataset_curation
+  name: ML/GenAI Dataset Curation
+  version: '1.0'
+  charter: Curate datasets with source provenance, license and consent review, split manifests, and quality reports before
+    downstream training or evaluation.
+  input_model: WorkbenchMlGenaiDatasetCurationRequest
+  allowed_tools:
+  - source_card_library
+  - evidence_asset_library
+  - metadata_spine
+  tool_policy:
+    allowed_tool_ids:
+    - source_card_library
+    - evidence_asset_library
+    - metadata_spine
+    required_policy_refs:
+    - source-card-freshness
+    - data-license-consent-review
+    requires_citations: true
+    max_external_calls: 3
+  memory_policy:
+    ephemeral_keys:
+    - curation_notes
+    persistent_keys:
+    - dataset_version_ids
+    - source_card_ids
+    retention_policy: retain dataset version ids, source refs, and quality summaries only
+    provenance_required: true
+  output_artifact_schema: schemas/workbench_mode_template.schema.json
+  required_artifacts:
+  - data_source_manifest
+  - consent_license_review
+  - split_manifest
+  - quality_report
+  review_rubric:
+  - id: source-provenance
+    description: Every included data slice maps to source cards and allowed use.
+    evidence_required: data_source_manifest plus consent_license_review
+  - id: split-integrity
+    description: Train, eval, validation, and holdout splits are explicit and non-overlapping.
+    evidence_required: split_manifest and duplicate check summary
+  transitions:
+  - from: selected
+    to: configured
+    required_evidence:
+    - policy_acknowledged
+  - from: configured
+    to: source_bound
+    required_evidence:
+    - data_source_manifest
+    - consent_license_review
+  - from: source_bound
+    to: review_ready
+    required_evidence:
+    - split_manifest
+    - quality_report
+  - from: review_ready
+    to: dataset_version_review
+    required_evidence:
+    - curator_acceptance
+  export_paths:
+  - outputs/workbench/spine/exports/ml_genai_dataset_curation.json
+  failure_recovery:
+  - trigger: license_gap
+    action: quarantine the affected slice until use rights are proven or the slice is removed
+    user_visible_status: blocked_license_or_quality_gap
+  - trigger: split_overlap
+    action: rebuild splits and rerun duplicate checks before promotion
+    user_visible_status: blocked_split_overlap
+  provenance:
+    source: roadmap-LW-WORKBENCH-ML-GENAI-PRACTITIONER-MODES
+    decision_ref: wave-16-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_ml_genai_practitioner_modes.py::test_summary_exposes_artifact_rubric_promotion_and_failure_follow_up_routes
+- id: ml_genai_annotation
+  name: ML/GenAI Annotation
+  version: '1.0'
+  charter: Prepare and review annotation work with label schema, annotator guidance, disagreement handling, and adjudication
+    evidence.
+  input_model: WorkbenchMlGenaiAnnotationRequest
+  allowed_tools:
+  - annotation_queue
+  - source_card_library
+  - metadata_spine
+  tool_policy:
+    allowed_tool_ids:
+    - annotation_queue
+    - source_card_library
+    - metadata_spine
+    required_policy_refs:
+    - annotation-schema-version
+    - adjudication-required-for-disagreement
+    requires_citations: true
+    max_external_calls: 2
+  memory_policy:
+    ephemeral_keys:
+    - annotation_batch_notes
+    persistent_keys:
+    - annotation_batch_ids
+    - label_schema_ids
+    retention_policy: retain batch ids, schema ids, and adjudication summaries only
+    provenance_required: true
+  output_artifact_schema: schemas/workbench_mode_template.schema.json
+  required_artifacts:
+  - label_schema
+  - annotator_guidelines
+  - adjudication_queue
+  - disagreement_report
+  review_rubric:
+  - id: label-schema-clear
+    description: Labels have inclusion, exclusion, and edge-case guidance.
+    evidence_required: label_schema plus annotator_guidelines
+  - id: disagreement-routed
+    description: Conflicts are routed to adjudication before training or eval use.
+    evidence_required: adjudication_queue and disagreement_report
+  transitions:
+  - from: selected
+    to: configured
+    required_evidence:
+    - policy_acknowledged
+  - from: configured
+    to: label_bound
+    required_evidence:
+    - label_schema
+    - annotator_guidelines
+  - from: label_bound
+    to: review_ready
+    required_evidence:
+    - adjudication_queue
+    - disagreement_report
+  - from: review_ready
+    to: annotation_batch_review
+    required_evidence:
+    - adjudication_acceptance
+  export_paths:
+  - outputs/workbench/spine/exports/ml_genai_annotation.json
+  failure_recovery:
+  - trigger: schema_ambiguous
+    action: return the batch to schema design before annotators continue
+    user_visible_status: blocked_label_schema_or_disagreement
+  - trigger: unresolved_disagreement
+    action: keep labels out of promoted datasets until adjudication is complete
+    user_visible_status: blocked_unresolved_disagreement
+  provenance:
+    source: roadmap-LW-WORKBENCH-ML-GENAI-PRACTITIONER-MODES
+    decision_ref: wave-16-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_ml_genai_practitioner_modes.py::test_manifest_yaml_lists_required_charter_capabilities
+- id: ml_genai_training_run_setup
+  name: ML/GenAI Training Run Setup
+  version: '1.0'
+  charter: Prepare reproducible training runs with recipe, dataset version refs, resource budget, rollback plan, and approval
+    evidence.
+  input_model: WorkbenchMlGenaiTrainingRunSetupRequest
+  allowed_tools:
+  - training_recipe_builder
+  - source_card_library
+  - metadata_spine
+  tool_policy:
+    allowed_tool_ids:
+    - training_recipe_builder
+    - source_card_library
+    - metadata_spine
+    required_policy_refs:
+    - training-recipe-reproducibility
+    - resource-budget-approval
+    requires_citations: true
+    max_external_calls: 1
+  memory_policy:
+    ephemeral_keys:
+    - training_setup_notes
+    persistent_keys:
+    - training_recipe_ids
+    - dataset_version_ids
+    retention_policy: retain recipe ids, dataset ids, budget refs, and accepted outcome summaries only
+    provenance_required: true
+  output_artifact_schema: schemas/workbench_mode_template.schema.json
+  required_artifacts:
+  - training_recipe
+  - dataset_version_refs
+  - resource_budget
+  - rollback_plan
+  review_rubric:
+  - id: reproducible-recipe
+    description: The run can be recreated from explicit recipe and dataset refs.
+    evidence_required: training_recipe and dataset_version_refs
+  - id: budget-and-rollback
+    description: Resource budget and rollback plan are accepted before launch.
+    evidence_required: resource_budget and rollback_plan
+  transitions:
+  - from: selected
+    to: configured
+    required_evidence:
+    - policy_acknowledged
+  - from: configured
+    to: recipe_bound
+    required_evidence:
+    - training_recipe
+    - dataset_version_refs
+  - from: recipe_bound
+    to: review_ready
+    required_evidence:
+    - resource_budget
+    - rollback_plan
+  - from: review_ready
+    to: training_run_approval
+    required_evidence:
+    - operator_approval
+  export_paths:
+  - outputs/workbench/spine/exports/ml_genai_training_run_setup.json
+  failure_recovery:
+  - trigger: budget_missing
+    action: keep training setup blocked until budget and runtime limits are approved
+    user_visible_status: blocked_budget_or_reproducibility_gap
+  - trigger: recipe_not_reproducible
+    action: return to recipe setup with fixed dataset and parameter refs required
+    user_visible_status: blocked_recipe_reproducibility
+  provenance:
+    source: roadmap-LW-WORKBENCH-ML-GENAI-PRACTITIONER-MODES
+    decision_ref: wave-16-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_ml_genai_practitioner_modes.py::test_ml_genai_ready_state_runs_through_shared_runtime_guard
+- id: ml_genai_model_selection
+  name: ML/GenAI Model Selection
+  version: '1.0'
+  charter: Select candidate models through benchmark results, risk tradeoff records, and declared routing constraints rather
+    than preference alone.
+  input_model: WorkbenchMlGenaiModelSelectionRequest
+  allowed_tools:
+  - model_registry
+  - eval_suite_builder
+  - metadata_spine
+  tool_policy:
+    allowed_tool_ids:
+    - model_registry
+    - eval_suite_builder
+    - metadata_spine
+    required_policy_refs:
+    - model-risk-tradeoff-record
+    - benchmark-reproducibility
+    requires_citations: true
+    max_external_calls: 2
+  memory_policy:
+    ephemeral_keys:
+    - model_selection_notes
+    persistent_keys:
+    - candidate_model_ids
+    - benchmark_result_refs
+    retention_policy: retain candidate ids, benchmark refs, and accepted tradeoff summary only
+    provenance_required: true
+  output_artifact_schema: schemas/workbench_mode_template.schema.json
+  required_artifacts:
+  - candidate_model_matrix
+  - benchmark_results
+  - risk_tradeoff_record
+  - route_constraint_review
+  review_rubric:
+  - id: benchmark-comparable
+    description: Candidates are compared under compatible prompts, routes, and eval data.
+    evidence_required: benchmark_results and candidate_model_matrix
+  - id: risk-explicit
+    description: Cost, latency, safety, privacy, and quality tradeoffs are explicit.
+    evidence_required: risk_tradeoff_record and route_constraint_review
+  transitions:
+  - from: selected
+    to: configured
+    required_evidence:
+    - policy_acknowledged
+  - from: configured
+    to: benchmark_bound
+    required_evidence:
+    - candidate_model_matrix
+    - benchmark_results
+  - from: benchmark_bound
+    to: review_ready
+    required_evidence:
+    - risk_tradeoff_record
+    - route_constraint_review
+  - from: review_ready
+    to: candidate_selection_review
+    required_evidence:
+    - reviewer_acceptance
+  export_paths:
+  - outputs/workbench/spine/exports/ml_genai_model_selection.json
+  failure_recovery:
+  - trigger: benchmark_gap
+    action: rerun missing candidate benchmarks before selection review
+    user_visible_status: blocked_benchmark_or_risk_gap
+  - trigger: route_constraints_missing
+    action: route model choice back through constraint review before promotion
+    user_visible_status: blocked_route_constraints
+  provenance:
+    source: roadmap-LW-WORKBENCH-ML-GENAI-PRACTITIONER-MODES
+    decision_ref: wave-16-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_ml_genai_practitioner_modes.py::test_summary_exposes_artifact_rubric_promotion_and_failure_follow_up_routes
+- id: ml_genai_deployment_promotion_review
+  name: ML/GenAI Deployment Promotion Review
+  version: '1.0'
+  charter: Review deployment candidates with release gates, operator approval, rollback proof, and promotion evidence.
+  input_model: WorkbenchMlGenaiDeploymentPromotionReviewRequest
+  allowed_tools:
+  - deployment_gate
+  - evidence_asset_library
+  - metadata_spine
+  tool_policy:
+    allowed_tool_ids:
+    - deployment_gate
+    - evidence_asset_library
+    - metadata_spine
+    required_policy_refs:
+    - deployment-release-gate
+    - operator-promotion-decision
+    requires_citations: true
+    max_external_calls: 1
+  memory_policy:
+    ephemeral_keys:
+    - promotion_review_notes
+    persistent_keys:
+    - promotion_candidate_ids
+    - deployment_gate_refs
+    retention_policy: retain candidate ids, gate refs, rollback refs, and signed decision receipts only
+    provenance_required: true
+  output_artifact_schema: schemas/workbench_mode_template.schema.json
+  required_artifacts:
+  - promotion_candidate
+  - release_gate_evidence
+  - operator_approval
+  - rollback_plan
+  review_rubric:
+  - id: gate-evidence-present
+    description: Promotion claims are backed by release gate evidence.
+    evidence_required: release_gate_evidence mapped to promotion_candidate
+  - id: rollback-approved
+    description: Operator approval includes rollback plan and caveats.
+    evidence_required: operator_approval and rollback_plan
+  transitions:
+  - from: selected
+    to: configured
+    required_evidence:
+    - policy_acknowledged
+  - from: configured
+    to: candidate_bound
+    required_evidence:
+    - promotion_candidate
+    - release_gate_evidence
+  - from: candidate_bound
+    to: review_ready
+    required_evidence:
+    - operator_approval
+    - rollback_plan
+  - from: review_ready
+    to: deployment_gate_review
+    required_evidence:
+    - promotion_decision
+  export_paths:
+  - outputs/workbench/spine/exports/ml_genai_deployment_promotion_review.json
+  failure_recovery:
+  - trigger: missing_gate_evidence
+    action: block promotion until release gates are rerun or explicitly rejected
+    user_visible_status: blocked_missing_gate_or_rollback
+  - trigger: rollback_missing
+    action: return to deployment planning with rollback proof required
+    user_visible_status: blocked_rollback_plan
+  provenance:
+    source: roadmap-LW-WORKBENCH-ML-GENAI-PRACTITIONER-MODES
+    decision_ref: wave-16-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_ml_genai_practitioner_modes.py::test_ml_genai_ready_state_runs_through_shared_runtime_guard
+- id: ml_genai_incident_autopsy
+  name: ML/GenAI Incident Autopsy
+  version: '1.0'
+  charter: Convert model or prompt incidents into timeline, failing examples, root-cause hypotheses, corrective evals, and
+    follow-up routing.
+  input_model: WorkbenchMlGenaiIncidentAutopsyRequest
+  allowed_tools:
+  - incident_review
+  - trace_eval_playground
+  - metadata_spine
+  tool_policy:
+    allowed_tool_ids:
+    - incident_review
+    - trace_eval_playground
+    - metadata_spine
+    required_policy_refs:
+    - incident-evidence-preservation
+    - corrective-eval-required
+    requires_citations: true
+    max_external_calls: 1
+  memory_policy:
+    ephemeral_keys:
+    - incident_notes
+    persistent_keys:
+    - incident_ids
+    - corrective_eval_ids
+    retention_policy: retain incident ids, corrective eval ids, and accepted root-cause summaries only
+    provenance_required: true
+  output_artifact_schema: schemas/workbench_mode_template.schema.json
+  required_artifacts:
+  - incident_timeline
+  - failing_examples
+  - root_cause_hypothesis
+  - corrective_eval
+  review_rubric:
+  - id: failure-reproducible
+    description: The incident includes examples that reproduce or explain the failure.
+    evidence_required: failing_examples and incident_timeline
+  - id: corrective-eval-bound
+    description: Follow-up includes an eval that would catch recurrence.
+    evidence_required: corrective_eval and root_cause_hypothesis
+  transitions:
+  - from: selected
+    to: configured
+    required_evidence:
+    - policy_acknowledged
+  - from: configured
+    to: incident_bound
+    required_evidence:
+    - incident_timeline
+    - failing_examples
+  - from: incident_bound
+    to: review_ready
+    required_evidence:
+    - root_cause_hypothesis
+    - corrective_eval
+  - from: review_ready
+    to: corrective_eval_review
+    required_evidence:
+    - owner_acceptance
+  export_paths:
+  - outputs/workbench/spine/exports/ml_genai_incident_autopsy.json
+  failure_recovery:
+  - trigger: missing_repro_examples
+    action: keep incident open until traces or examples are attached
+    user_visible_status: blocked_root_cause_or_repro_gap
+  - trigger: corrective_eval_missing
+    action: route to eval design before closing the incident
+    user_visible_status: blocked_corrective_eval
+  provenance:
+    source: roadmap-LW-WORKBENCH-ML-GENAI-PRACTITIONER-MODES
+    decision_ref: wave-16-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_ml_genai_practitioner_modes.py::test_ml_genai_runtime_rejects_degraded_eval_state
+- id: ml_genai_runtime_tuning
+  name: ML/GenAI Runtime Tuning
+  version: '1.0'
+  charter: Tune model runtime behavior with telemetry windows, change sets, saturation reports, rollback triggers, and reviewable
+    risk evidence.
+  input_model: WorkbenchMlGenaiRuntimeTuningRequest
+  allowed_tools:
+  - runtime_telemetry
+  - prompt_sweep_harness
+  - metadata_spine
+  tool_policy:
+    allowed_tool_ids:
+    - runtime_telemetry
+    - prompt_sweep_harness
+    - metadata_spine
+    required_policy_refs:
+    - runtime-telemetry-window
+    - rollback-trigger-required
+    requires_citations: true
+    max_external_calls: 1
+  memory_policy:
+    ephemeral_keys:
+    - runtime_tuning_notes
+    persistent_keys:
+    - tuning_change_ids
+    - telemetry_window_refs
+    retention_policy: retain change ids, telemetry refs, and accepted tuning summaries only
+    provenance_required: true
+  output_artifact_schema: schemas/workbench_mode_template.schema.json
+  required_artifacts:
+  - telemetry_window
+  - tuning_change_set
+  - saturation_report
+  - rollback_trigger
+  review_rubric:
+  - id: telemetry-supported
+    description: Tuning decisions are tied to an explicit telemetry window and baseline.
+    evidence_required: telemetry_window and saturation_report
+  - id: rollback-triggered
+    description: A concrete rollback trigger exists before tuning changes are promoted.
+    evidence_required: rollback_trigger and tuning_change_set
+  transitions:
+  - from: selected
+    to: configured
+    required_evidence:
+    - policy_acknowledged
+  - from: configured
+    to: telemetry_bound
+    required_evidence:
+    - telemetry_window
+    - saturation_report
+  - from: telemetry_bound
+    to: review_ready
+    required_evidence:
+    - tuning_change_set
+    - rollback_trigger
+  - from: review_ready
+    to: tuning_change_review
+    required_evidence:
+    - operator_acceptance
+  export_paths:
+  - outputs/workbench/spine/exports/ml_genai_runtime_tuning.json
+  failure_recovery:
+  - trigger: telemetry_gap
+    action: block runtime tuning until a comparable telemetry window exists
+    user_visible_status: blocked_telemetry_or_rollback_trigger
+  - trigger: rollback_trigger_missing
+    action: return to tuning setup with threshold and owner required
+    user_visible_status: blocked_missing_rollback_trigger
+  provenance:
+    source: roadmap-LW-WORKBENCH-ML-GENAI-PRACTITIONER-MODES
+    decision_ref: wave-16-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_ml_genai_practitioner_modes.py::test_summary_exposes_artifact_rubric_promotion_and_failure_follow_up_routes
+- id: research
+  name: Research
+  version: '1.0'
+  charter: Build sourced briefs with source plans, claim ledgers, contradiction tracking, freshness checks, rerun diffs, citations,
+    and source-weighted confidence.
+  input_model: WorkbenchResearchModeRequest
+  allowed_tools:
+  - source_card_library
+  - evidence_notebook_builder
+  - metadata_spine
+  tool_policy:
+    allowed_tool_ids:
+    - source_card_library
+    - evidence_notebook_builder
+    - metadata_spine
+    required_policy_refs:
+    - source-card-freshness
+    - citation-required-claims
+    requires_citations: true
+    max_external_calls: 5
+  memory_policy:
+    ephemeral_keys:
+    - research_questions
+    - draft_brief_notes
+    persistent_keys:
+    - claim_ledger_ids
+    - source_card_ids
+    retention_policy: retain source cards, claim ledger ids, and rerun diff refs only
+    provenance_required: true
+  output_artifact_schema: schemas/workbench_mode_template.schema.json
+  required_artifacts:
+  - research_brief
+  - source_plan
+  - claim_ledger
+  - contradiction_log
+  - freshness_checks
+  - confidence_summary
+  review_rubric:
+  - id: claim-ledger-sourced
+    description: Every brief claim maps to at least one planned source card.
+    evidence_required: claim_ledger entries list source_card_ids from the source_plan
+  - id: contradictions-visible
+    description: Conflicting source evidence stays visible with resolution status.
+    evidence_required: contradiction_log is present before review_ready
+  transitions:
+  - from: selected
+    to: configured
+    required_evidence:
+    - policy_acknowledged
+  - from: configured
+    to: evidence_bound
+    required_evidence:
+    - source_plan
+    - freshness_checks
+  - from: evidence_bound
+    to: review_ready
+    required_evidence:
+    - claim_ledger
+    - confidence_summary
+  export_paths:
+  - outputs/workbench/spine/exports/research.json
+  failure_recovery:
+  - trigger: stale_source
+    action: keep claim out of the brief until the source card is refreshed
+    user_visible_status: blocked_stale_source
+  - trigger: unresolved_contradiction
+    action: keep contradiction visible and require reviewer disposition
+    user_visible_status: blocked_unresolved_contradiction
+  provenance:
+    source: roadmap-LW-WORKBENCH-RESEARCH-WRITING-CHAT-MODES
+    decision_ref: wave-16-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_research_writing_chat_modes.py::test_catalog_registers_four_first_class_modes
+- id: writing
+  name: Writing
+  version: '1.0'
+  charter: Produce general writing drafts with audience and style templates, redline review, fact-check ledgers, draft branches,
+    and export targets.
+  input_model: WorkbenchWritingModeRequest
+  allowed_tools:
+  - evidence_asset_library
+  - redline_reviewer
+  - metadata_spine
+  tool_policy:
+    allowed_tool_ids:
+    - evidence_asset_library
+    - redline_reviewer
+    - metadata_spine
+    required_policy_refs:
+    - fact-check-before-export
+    - draft-branch-retention
+    requires_citations: true
+    max_external_calls: 2
+  memory_policy:
+    ephemeral_keys:
+    - current_draft_text
+    - redline_notes
+    persistent_keys:
+    - draft_branch_ids
+    - export_manifest_ids
+    retention_policy: retain branch ids, verified fact-check refs, and export manifests only
+    provenance_required: true
+  output_artifact_schema: schemas/workbench_mode_template.schema.json
+  required_artifacts:
+  - audience_style_template
+  - draft_branch
+  - redline_plan
+  - fact_check_ledger
+  - export_manifest
+  review_rubric:
+  - id: style-template-applied
+    description: Draft review cites the selected audience and style template.
+    evidence_required: audience_style_template is present in the export manifest
+  - id: facts-verified
+    description: Factual claims are verified or kept out of export.
+    evidence_required: fact_check_ledger contains only verified export claims
+  transitions:
+  - from: selected
+    to: configured
+    required_evidence:
+    - policy_acknowledged
+  - from: configured
+    to: draft_ready
+    required_evidence:
+    - audience_style_template
+    - draft_branch
+  - from: draft_ready
+    to: review_ready
+    required_evidence:
+    - redline_plan
+    - fact_check_ledger
+  export_paths:
+  - outputs/workbench/spine/exports/writing.json
+  failure_recovery:
+  - trigger: unverified_fact
+    action: hold export and return the exact unsupported claim
+    user_visible_status: blocked_unverified_fact
+  - trigger: missing_redline_review
+    action: keep draft branch in review until a redline item exists
+    user_visible_status: blocked_missing_redline
+  provenance:
+    source: roadmap-LW-WORKBENCH-RESEARCH-WRITING-CHAT-MODES
+    decision_ref: wave-16-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_research_writing_chat_modes.py::test_writing_mode_rejects_unverified_fact_claims
+- id: chat
+  name: Chat
+  version: '1.0'
+  charter: Maintain durable chat workspace state with branch graphs, pinned context, and conversion actions into plans, evals,
+    datasets, prompts, templates, or evidence notebooks.
+  input_model: WorkbenchChatModeRequest
+  allowed_tools:
+  - conversation_store
+  - evidence_notebook_builder
+  - metadata_spine
+  tool_policy:
+    allowed_tool_ids:
+    - conversation_store
+    - evidence_notebook_builder
+    - metadata_spine
+    required_policy_refs:
+    - pinned-context-required
+    - branch-conversion-manifest
+    requires_citations: false
+    max_external_calls: 0
+  memory_policy:
+    ephemeral_keys:
+    - active_message_buffer
+    persistent_keys:
+    - chat_workspace_ids
+    - chat_branch_ids
+    - pinned_context_ids
+    retention_policy: retain durable branch graph, pinned context refs, and conversion manifests
+    provenance_required: true
+  output_artifact_schema: schemas/workbench_mode_template.schema.json
+  required_artifacts:
+  - workspace_state
+  - branch_graph
+  - pinned_context
+  - conversion_manifest
+  review_rubric:
+  - id: branch-graph-valid
+    description: Active branch and parent branches resolve inside the workspace state.
+    evidence_required: branch_graph includes active_branch_id and every parent_branch_id
+  - id: conversion-context-pinned
+    description: Conversion actions cite pinned context instead of transient messages.
+    evidence_required: conversion_manifest required_context_ids are present in pinned_context
+  transitions:
+  - from: selected
+    to: configured
+    required_evidence:
+    - policy_acknowledged
+  - from: configured
+    to: branch_ready
+    required_evidence:
+    - branch_graph
+    - pinned_context
+  - from: branch_ready
+    to: review_ready
+    required_evidence:
+    - conversion_manifest
+  export_paths:
+  - outputs/workbench/spine/exports/chat.json
+  failure_recovery:
+  - trigger: orphan_branch
+    action: disable conversion actions until the parent branch is restored
+    user_visible_status: blocked_orphan_branch
+  - trigger: missing_pinned_context
+    action: keep conversion disabled and ask user to pin required context
+    user_visible_status: blocked_missing_pinned_context
+  provenance:
+    source: roadmap-LW-WORKBENCH-RESEARCH-WRITING-CHAT-MODES
+    decision_ref: wave-16-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_research_writing_chat_modes.py::test_chat_mode_rejects_orphan_branches_and_unpinned_conversions
+- id: creative_writing
+  name: Creative Writing
+  version: '1.0'
+  charter: Support story, style, and world bibles with character and timeline continuity, scene beats, voice conformance,
+    draft branches, and export targets.
+  input_model: WorkbenchCreativeWritingModeRequest
+  allowed_tools:
+  - story_bible_library
+  - continuity_checker
+  - metadata_spine
+  tool_policy:
+    allowed_tool_ids:
+    - story_bible_library
+    - continuity_checker
+    - metadata_spine
+    required_policy_refs:
+    - continuity-before-export
+    - voice-conformance-threshold
+    requires_citations: false
+    max_external_calls: 0
+  memory_policy:
+    ephemeral_keys:
+    - scene_draft_text
+    persistent_keys:
+    - story_bible_refs
+    - continuity_ledger_ids
+    - draft_branch_ids
+    retention_policy: retain bible refs, continuity ledgers, branch ids, and export manifests
+    provenance_required: true
+  output_artifact_schema: schemas/workbench_mode_template.schema.json
+  required_artifacts:
+  - story_bible
+  - style_bible
+  - world_bible
+  - continuity_ledger
+  - scene_beats
+  - voice_conformance_report
+  - draft_branches
+  - export_manifest
+  review_rubric:
+  - id: continuity-resolved
+    description: Scene beats resolve to known characters and timeline events.
+    evidence_required: continuity_ledger covers every scene beat
+  - id: voice-conformance-passed
+    description: Draft branches meet the configured voice threshold before export.
+    evidence_required: voice_conformance_report score is at least 0.8
+  transitions:
+  - from: selected
+    to: configured
+    required_evidence:
+    - policy_acknowledged
+  - from: configured
+    to: draft_ready
+    required_evidence:
+    - story_bible
+    - style_bible
+    - world_bible
+  - from: draft_ready
+    to: review_ready
+    required_evidence:
+    - continuity_ledger
+    - voice_conformance_report
+  export_paths:
+  - outputs/workbench/spine/exports/creative_writing.json
+  failure_recovery:
+  - trigger: continuity_break
+    action: block export and surface the broken character or timeline reference
+    user_visible_status: blocked_continuity_break
+  - trigger: voice_threshold_failed
+    action: keep draft in branch review until voice conformance improves
+    user_visible_status: blocked_voice_conformance
+  provenance:
+    source: roadmap-LW-WORKBENCH-RESEARCH-WRITING-CHAT-MODES
+    decision_ref: wave-16-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_research_writing_chat_modes.py::test_creative_writing_mode_rejects_continuity_breaks_and_weak_voice

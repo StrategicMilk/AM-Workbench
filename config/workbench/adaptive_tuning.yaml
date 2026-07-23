@@ -1,0 +1,30 @@
+schema_version: 1
+state_root: outputs/workbench/adaptive_tuning
+evidence_window_days: 30
+risk_tiers:
+  - low
+  - medium
+  - high
+excluded_sensitive_surfaces:
+  - sensitive_context
+  - profile_fact
+  - factual_truth
+  - training_datum
+  - model_route
+  - project_default
+  - automation
+  - host_setting
+  - network_route
+policy:
+  consent_required: true
+  explicit_consent_granted: false
+  allow_low_risk_auto_apply: false
+  min_confidence: 0.65
+  medium_risk_requires_preview: true
+  medium_risk_requires_approval: true
+  high_risk_requires_tests: true
+  high_risk_requires_rollback: true
+  high_risk_requires_promotion_evidence: true
+  high_risk_measurement_stale_after_days: 14
+  anti_sycophancy_non_overridable: true
+  allow_host_network_mutation: false

@@ -32,6 +32,7 @@
   let error = $state(null);
   let done = $state(false);
   let queued = $state(false);
+  let lastModelKey = $state('');
 
   // Group files by format for display
   let groupedFiles = $derived.by(() => {
@@ -59,6 +60,19 @@
 
   // Fetch file variants when model changes
   $effect(() => {
+    const modelKey = model ? (model.repo_id || model.id || model.name || '') : '';
+    if (modelKey !== lastModelKey) {
+      lastModelKey = modelKey;
+      downloading = false;
+      progress = 0;
+      downloadedBytes = 0;
+      totalBytes = 0;
+      etaSeconds = 0;
+      error = null;
+      done = false;
+      queued = false;
+    }
+
     if (model) {
       const repoId = model.repo_id || model.id;
       if (repoId && !model._filesLoaded) {
@@ -81,7 +95,30 @@
     return 'other';
   }
 
+  function isSafeRepoId(repoId) {
+    return typeof repoId === 'string'
+      && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,191}$/.test(repoId)
+      && !repoId.includes('..')
+      && !repoId.startsWith('/')
+      && !repoId.endsWith('/');
+  }
+
+  function isSafeModelFilename(filename) {
+    return typeof filename === 'string'
+      && filename.length > 0
+      && filename.length <= 240
+      && /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(filename)
+      && !filename.includes('..')
+      && !filename.startsWith('/')
+      && !filename.endsWith('/');
+  }
+
   async function loadFiles(repoId) {
+    if (!isSafeRepoId(repoId)) {
+      filesError = 'Invalid model repository id';
+      files = [];
+      return;
+    }
     loadingFiles = true;
     filesError = null;
     // Infer primary use-case from model metadata
@@ -116,12 +153,22 @@
     etaSeconds = 0;
 
     const repoId = model.repo_id || model.id;
+    if (!isSafeRepoId(repoId)) {
+      error = 'Invalid model repository id';
+      downloading = false;
+      return;
+    }
     // For safetensors, use the first shard's filename — the backend requires a
     // non-empty filename and returns 400 otherwise (POST /api/v1/models/download).
     // For GGUF, use the selected file.
     const filename = isSafetensors
       ? (files.find((f) => f.format === 'safetensors')?.filename ?? '')
       : (selectedFile || '');
+    if (!isSafeModelFilename(filename)) {
+      error = 'Invalid model file name';
+      downloading = false;
+      return;
+    }
 
     try {
       // The backend POST /api/v1/models/download returns { status, repo_id, filename }.
@@ -320,8 +367,13 @@
   }
 
   .picker-select:focus {
-    outline: none;
+    outline: 2px solid transparent;
+    outline-offset: 2px;
     border-color: var(--primary);
+  }
+
+  .picker-select:focus-visible {
+    outline-color: var(--primary);
   }
 
   .variant-info {

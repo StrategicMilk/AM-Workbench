@@ -81,11 +81,11 @@ inference_backend:
   native_models_dir: "./models/native"
   # Supported model formats per backend
   model_format:
+    am_engine: ["gguf"]
     llama_cpp: ["gguf"]
     llama_server: ["gguf"]
     vllm: ["safetensors", "gguf", "awq", "gptq"]  # GPU-only — no CPU offload
     nim: ["safetensors", "gguf", "awq", "gptq"]    # GPU-only — no CPU offload
-    litellm: []  # Cloud models — no local format
 
   # vLLM backend — GPU-only, high-throughput local inference (ADR-0084)
   # Requires: pip install vllm  (or run vLLM as a separate server)
@@ -102,6 +102,13 @@ inference_backend:
     enabled: false
     endpoint: "http://localhost:8001"  # NIM inference endpoint
     gpu_only: true  # Usually GPU-only
+
+  # First-party AM Engine runtime — opt-in until the program default-flip pack.
+  am_engine:
+    enabled: false
+    endpoint: null
+    binary_path: null
+    vision_enabled: false
 
 # ---------------------------------------------------------------------------
 # Model tier hierarchy — used by DynamicModelRouter for tier-aware routing
@@ -340,28 +347,59 @@ policy:
   # Provider preference order (first = highest priority)
   preferred_providers:
     - local
-    - ollama
     - claude
     - gemini
-    - huggingface
-    - replicate
-  # Fallback: if local inference is unavailable, allow cloud escalation
-  allow_cloud_fallback: true
-  cloud_fallback_trigger: "local_unavailable"
+  # Fallback: local inference failures do not automatically egress prompts.
+  # Cloud escalation requires an explicit caller/operator override.
+  allow_cloud_fallback: false
+  cloud_fallback_trigger: "disabled"
+  cloud_egress_mode: "explicit_opt_in_only"
 
 # ---------------------------------------------------------------------------
 # Cloud models (require API keys via environment variables)
 # ---------------------------------------------------------------------------
 cloud_models:
   # Claude (Anthropic) ───────────────────────────────────────────────────────
-  - model_id: "claude-sonnet-4"
+  - model_id: "claude-opus-4-8"
     provider: "claude"
-    display_name: "Claude Sonnet 4"
+    display_name: "Claude Opus 4.8"
     capabilities:
       - reasoning
       - coding
       - analysis
-    context_window: 200000
+    context_window: 1000000
+    latency_hint: "medium"
+    privacy_level: "public"
+    cost_per_1k_tokens: 0.025
+    status: "available"
+    endpoint: "https://api.anthropic.com/v1/messages"
+    requires_env:
+      - ANTHROPIC_API_KEY  # Also accepts CLAUDE_API_KEY as fallback
+
+  - model_id: "claude-opus-4-7"
+    provider: "claude"
+    display_name: "Claude Opus 4.7"
+    capabilities:
+      - reasoning
+      - coding
+      - analysis
+    context_window: 1000000
+    latency_hint: "medium"
+    privacy_level: "public"
+    cost_per_1k_tokens: 0.025
+    status: "available"
+    endpoint: "https://api.anthropic.com/v1/messages"
+    requires_env:
+      - ANTHROPIC_API_KEY  # Also accepts CLAUDE_API_KEY as fallback
+
+  - model_id: "claude-sonnet-4-6"
+    provider: "claude"
+    display_name: "Claude Sonnet 4.6"
+    capabilities:
+      - reasoning
+      - coding
+      - analysis
+    context_window: 1000000
     latency_hint: "medium"
     privacy_level: "public"
     cost_per_1k_tokens: 0.015
@@ -370,50 +408,66 @@ cloud_models:
     requires_env:
       - ANTHROPIC_API_KEY  # Also accepts CLAUDE_API_KEY as fallback
 
-  - model_id: "claude-haiku-4"
+  - model_id: "claude-haiku-4-5-20251001"
     provider: "claude"
-    display_name: "Claude Haiku 4"
+    display_name: "Claude Haiku 4.5"
     capabilities:
       - fast
       - coding
     context_window: 200000
     latency_hint: "fast"
     privacy_level: "public"
-    cost_per_1k_tokens: 0.0008
+    cost_per_1k_tokens: 0.005
     status: "available"
     endpoint: "https://api.anthropic.com/v1/messages"
     requires_env:
       - ANTHROPIC_API_KEY  # Also accepts CLAUDE_API_KEY as fallback
 
   # Gemini (Google) ──────────────────────────────────────────────────────────
-  - model_id: "gemini-2.5-flash"
+  - model_id: "gemini-3.5-flash"
     provider: "gemini"
-    display_name: "Gemini 2.5 Flash"
+    display_name: "Gemini 3.5 Flash"
     capabilities:
       - reasoning
       - vision
       - coding
-    context_window: 1000000
+    context_window: 1048576
     latency_hint: "fast"
     privacy_level: "public"
-    cost_per_1k_tokens: 0.0
+    cost_per_1k_tokens: 0.009
     status: "available"
     endpoint: "https://generativelanguage.googleapis.com/v1beta/models"
     requires_env:
       - GEMINI_API_KEY
 
-  - model_id: "gemini-2.5-pro"
+  - model_id: "gemini-3.1-flash-lite"
     provider: "gemini"
-    display_name: "Gemini 2.5 Pro"
+    display_name: "Gemini 3.1 Flash-Lite"
     capabilities:
       - reasoning
       - vision
       - coding
-    context_window: 2000000
+    context_window: 1048576
+    latency_hint: "fast"
+    privacy_level: "public"
+    cost_per_1k_tokens: 0.0015
+    status: "available"
+    endpoint: "https://generativelanguage.googleapis.com/v1beta/models"
+    requires_env:
+      - GEMINI_API_KEY
+
+  - model_id: "gemini-3.1-pro-preview"
+    provider: "gemini"
+    display_name: "Gemini 3.1 Pro Preview"
+    capabilities:
+      - reasoning
+      - vision
+      - coding
+    context_window: 1048576
     latency_hint: "medium"
     privacy_level: "public"
-    cost_per_1k_tokens: 0.00125
-    status: "available"
+    cost_per_1k_tokens: 0.012
+    status: "preview"
     endpoint: "https://generativelanguage.googleapis.com/v1beta/models"
     requires_env:
       - GEMINI_API_KEY
@@ -451,48 +505,3 @@ cloud_models:
       - OPENAI_API_KEY
 
   # HuggingFace Inference ────────────────────────────────────────────────────
-  - model_id: "hf-inference-meta-llama-3.1-70b"
-    provider: "huggingface"
-    display_name: "Llama 3.1 70B (HF)"
-    capabilities:
-      - reasoning
-      - coding
-    context_window: 32768
-    latency_hint: "medium"
-    privacy_level: "public"
-    cost_per_1k_tokens: 0.0
-    status: "available"
-    endpoint: "https://api-inference.huggingface.co/meta-llama/Llama-3.1-70B-Instruct"
-    requires_env:
-      - HF_HUB_TOKEN
-
-  - model_id: "hf-inference-mistral-7b"
-    provider: "huggingface"
-    display_name: "Mistral 7B (HF)"
-    capabilities:
-      - coding
-      - fast
-    context_window: 32768
-    latency_hint: "fast"
-    privacy_level: "public"
-    cost_per_1k_tokens: 0.0
-    status: "available"
-    endpoint: "https://api-inference.huggingface.co/mistralai/Mistral-7B-Instruct-v0.2"
-    requires_env:
-      - HF_HUB_TOKEN
-
-  # Replicate ────────────────────────────────────────────────────────────────
-  - model_id: "replicate-llama-3.1-70b"
-    provider: "replicate"
-    display_name: "Llama 3.1 70B (Replicate)"
-    capabilities:
-      - reasoning
-      - coding
-    context_window: 32768
-    latency_hint: "medium"
-    privacy_level: "public"
-    cost_per_1k_tokens: 0.001
-    status: "available"
-    endpoint: "https://api.replicate.com/v1/models/meta/llama-3.1-70b-instruct"
-    requires_env:
-      - REPLICATE_API_TOKEN

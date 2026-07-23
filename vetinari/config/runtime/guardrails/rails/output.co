@@ -1,11 +1,7 @@
 # Output Rails — Colang flow definitions for output validation
 #
-# WARNING: The execute check_sensitive_data and execute check_toxic actions
-# below are NOT currently registered in vetinari/safety/nemo_provider.py.
-# These flows will raise a NeMo runtime error if the rails section in
-# config.yml references this file.
-#
-# See rails/input.co for the same issue and the remediation path.
+# The Colang action handlers below are registered by
+# NeMoGuardrailsProvider._register_actions() in vetinari/safety/nemo_provider.py.
 
 define flow check sensitive data leakage
   """Detect API keys, credentials, PII in output."""

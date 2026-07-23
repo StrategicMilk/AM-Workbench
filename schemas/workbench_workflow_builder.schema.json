@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_workflow_builder.schema.json",
+  "title": "Workbench Workflow Builder",
+  "type": "object",
+  "required": ["graph_id", "name", "steps"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "graph_id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9_.-]+$"},
+    "name": {"type": "string", "minLength": 1},
+    "safety_mode": {"enum": ["simulation_only", "approval_required", "read_only_console"]},
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["step_id", "kind", "label"],
+        "properties": {
+          "step_id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9_.-]+$"},
+          "kind": {"enum": ["prompt", "tool", "approval", "channel_delivery", "asset_replay", "wait"]},
+          "label": {"type": "string", "minLength": 1},
+          "config": {"type": "object"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "target"],
+        "properties": {
+          "source": {"type": "string", "minLength": 1},
+          "target": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "metadata": {"type": "object"}
+  },
+  "additionalProperties": false
+}

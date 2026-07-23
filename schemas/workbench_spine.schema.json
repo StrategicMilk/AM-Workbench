@@ -1,0 +1,965 @@
+{
+  "$id": "https://vetinari.local/schemas/workbench_spine.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "definitions": {
+    "AssetCard": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_id": {
+          "type": "string"
+        },
+        "card_id": {
+          "type": "string"
+        },
+        "card_kind": {
+          "enum": [
+            "evidence",
+            "summary",
+            "reference",
+            "derived"
+          ],
+          "type": "string"
+        },
+        "created_at_utc": {
+          "type": "string"
+        },
+        "evidence_links": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "provenance": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "card_id",
+        "asset_id",
+        "card_kind",
+        "summary",
+        "revision",
+        "evidence_links",
+        "provenance",
+        "created_at_utc"
+      ],
+      "type": "object"
+    },
+    "Automation": {
+      "additionalProperties": false,
+      "properties": {
+        "approver_required": {
+          "type": "boolean"
+        },
+        "automation_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "trigger": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "automation_id",
+        "name",
+        "trigger",
+        "steps",
+        "approver_required"
+      ],
+      "type": "object"
+    },
+    "SpineCapabilityPack": {
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "pack_id": {
+          "type": "string"
+        },
+        "signed_by": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pack_id",
+        "name",
+        "version",
+        "signed_by",
+        "capabilities"
+      ],
+      "type": "object"
+    },
+    "SpineDatasetRevision": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_id": {
+          "type": "string"
+        },
+        "captured_at_utc": {
+          "type": "string"
+        },
+        "lineage_pointer": {
+          "type": "string"
+        },
+        "parent_revision_id": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "revision_id",
+        "asset_id",
+        "parent_revision_id",
+        "captured_at_utc",
+        "lineage_pointer"
+      ],
+      "type": "object"
+    },
+    "EvalSuite": {
+      "additionalProperties": false,
+      "properties": {
+        "eval_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "rubric_ref": {
+          "type": "string"
+        },
+        "suite_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "suite_id",
+        "name",
+        "eval_ids",
+        "rubric_ref"
+      ],
+      "type": "object"
+    },
+    "EvidenceAssetCard": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_card_id": {
+          "type": "string"
+        },
+        "created_at_utc": {
+          "type": "string"
+        },
+        "dependencies": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "eval_signals": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "failure_history": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "enum": [
+            "prompt",
+            "model_route",
+            "dataset",
+            "eval_suite",
+            "trace",
+            "adapter",
+            "scraping_recipe",
+            "runtime_profile",
+            "policy",
+            "benchmark_run",
+            "release_evidence_package",
+            "public_export_snapshot"
+          ],
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "project_id": {
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        "proof_status": {
+          "enum": [
+            "unknown",
+            "unverified",
+            "partially_verified",
+            "verified",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "provenance": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "recent_runs": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "taints": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "asset_card_id",
+        "kind",
+        "name",
+        "revision",
+        "created_at_utc",
+        "provenance",
+        "dependencies",
+        "proof_status",
+        "failure_history",
+        "project_id",
+        "taints",
+        "eval_signals",
+        "recent_runs",
+        "metadata"
+      ],
+      "type": "object"
+    },
+    "Experiment": {
+      "additionalProperties": false,
+      "properties": {
+        "experiment_id": {
+          "type": "string"
+        },
+        "hypothesis": {
+          "type": "string"
+        },
+        "outcome": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "run_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "experiment_id",
+        "hypothesis",
+        "run_ids",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "MethodCard": {
+      "additionalProperties": false,
+      "properties": {
+        "compatible_task_profiles": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "expected_cost": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "retrieval_first_classification",
+            "multi_pass_review_aggregation",
+            "mutation_aware_test_generation",
+            "trace_to_eval_generation",
+            "self_consistency_voting",
+            "cross_validated_routing",
+            "scaffold_then_fill_planning",
+            "red_team_prompt_mutation"
+          ],
+          "type": "string"
+        },
+        "known_failure_modes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "measured_deltas": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "method_card_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "project_id": {
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        "promotion_status": {
+          "enum": [
+            "not_promotable",
+            "measured_negative",
+            "measured_mixed",
+            "measured_positive",
+            "promoted"
+          ],
+          "type": "string"
+        },
+        "updated_at_utc": {
+          "type": "string"
+        },
+        "when_not_to_use": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "when_to_use": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "method_card_id",
+        "kind",
+        "name",
+        "description",
+        "when_to_use",
+        "when_not_to_use",
+        "expected_cost",
+        "known_failure_modes",
+        "compatible_task_profiles",
+        "measured_deltas",
+        "evidence_refs",
+        "promotion_status",
+        "project_id",
+        "updated_at_utc"
+      ],
+      "type": "object"
+    },
+    "ModeTemplate": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_tools": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "charter": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "output_schema_ref": {
+          "type": "string"
+        },
+        "template_id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "template_id",
+        "name",
+        "version",
+        "charter",
+        "allowed_tools",
+        "output_schema_ref"
+      ],
+      "type": "object"
+    },
+    "ReproCapsule": {
+      "additionalProperties": false,
+      "properties": {
+        "capsule_id": {
+          "type": "string"
+        },
+        "hash_sha256": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "sealed_at_utc": {
+          "type": "string"
+        },
+        "snapshot_uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "capsule_id",
+        "run_id",
+        "snapshot_uri",
+        "sealed_at_utc",
+        "hash_sha256"
+      ],
+      "type": "object"
+    },
+    "SourceCard": {
+      "additionalProperties": false,
+      "properties": {
+        "bad_use_examples": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cache_policy": {
+          "type": "string"
+        },
+        "can_answer": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cannot_answer": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "caveats": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cite_required": {
+          "type": "boolean"
+        },
+        "created_at_utc": {
+          "type": "string"
+        },
+        "credential_exposure": {
+          "type": "string"
+        },
+        "freshness_policy": {
+          "type": "object"
+        },
+        "good_use_examples": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "enum": [
+            "web_page",
+            "mcp_server",
+            "http_api",
+            "local_tool",
+            "scraper_recipe",
+            "dataset_ref",
+            "search_index"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "observed_at_utc": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "project_id": {
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        "provenance": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "rate_limit_per_minute": {
+          "type": "integer"
+        },
+        "source_card_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_card_id",
+        "kind",
+        "name",
+        "project_id",
+        "created_at_utc",
+        "observed_at_utc",
+        "can_answer",
+        "cannot_answer",
+        "freshness_policy",
+        "cache_policy",
+        "rate_limit_per_minute",
+        "cite_required",
+        "caveats",
+        "credential_exposure",
+        "good_use_examples",
+        "bad_use_examples",
+        "provenance"
+      ],
+      "type": "object"
+    },
+    "ToolCard": {
+      "additionalProperties": false,
+      "properties": {
+        "bad_use_examples": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "claim_promotion_policy": {
+          "type": "object"
+        },
+        "created_at_utc": {
+          "type": "string"
+        },
+        "good_use_examples": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "enum": [
+            "web_scraper",
+            "mcp_invocation",
+            "http_caller",
+            "local_function",
+            "dataset_query",
+            "search_query"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "project_id": {
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        "provenance": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "rate_limit_per_minute": {
+          "type": "integer"
+        },
+        "safety_caveats": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source_card_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tool_card_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_card_id",
+        "kind",
+        "name",
+        "project_id",
+        "created_at_utc",
+        "source_card_ids",
+        "claim_promotion_policy",
+        "safety_caveats",
+        "rate_limit_per_minute",
+        "good_use_examples",
+        "bad_use_examples",
+        "provenance"
+      ],
+      "type": "object"
+    },
+    "WorkbenchProposal": {
+      "additionalProperties": false,
+      "properties": {
+        "affected_assets": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "affected_revisions": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "attached_outcome": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "closed_at_utc": {
+          "type": "string"
+        },
+        "gate": {
+          "type": "object"
+        },
+        "kind": {
+          "enum": [
+            "prompt_version",
+            "model_default",
+            "dataset_revision",
+            "adapter_version",
+            "pipeline_activation",
+            "policy_change"
+          ],
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "opened_at_utc": {
+          "type": "string"
+        },
+        "pre_promotion_evals": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "proposal_id": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "open",
+            "blocked",
+            "accepted",
+            "rejected",
+            "withdrawn"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "proposal_id",
+        "kind",
+        "status",
+        "affected_assets",
+        "affected_revisions",
+        "pre_promotion_evals",
+        "gate",
+        "attached_outcome",
+        "opened_at_utc",
+        "closed_at_utc",
+        "notes"
+      ],
+      "type": "object"
+    },
+    "WorkbenchRun": {
+      "additionalProperties": false,
+      "properties": {
+        "actor_agent_type": {
+          "enum": [
+            "FOREMAN",
+            "WORKER",
+            "INSPECTOR",
+            "TRAINING",
+            "RELEASE",
+            "workbench"
+          ],
+          "type": "string"
+        },
+        "asset_revisions": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "finished_at_utc": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "agent_run",
+            "training_run",
+            "eval_run",
+            "gateway_request",
+            "playground_run"
+          ],
+          "type": "string"
+        },
+        "lease_id": {
+          "type": "string"
+        },
+        "metrics": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "outcome": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "project_id": {
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "shard_kind": {
+          "oneOf": [
+            {
+              "enum": [
+                "standard",
+                "discovery",
+                "spike",
+                "refactor",
+                "migration"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "started_at_utc": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "running",
+            "succeeded",
+            "failed",
+            "blocked",
+            "cancelled"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "kind",
+        "status",
+        "started_at_utc",
+        "finished_at_utc",
+        "actor_agent_type",
+        "asset_revisions",
+        "lease_id",
+        "shard_kind",
+        "metrics",
+        "outcome",
+        "project_id"
+      ],
+      "type": "object"
+    },
+    "WorkbenchTrace": {
+      "additionalProperties": false,
+      "properties": {
+        "captured_at_utc": {
+          "type": "string"
+        },
+        "root_span_id": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "spans": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "trace_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "trace_id",
+        "run_id",
+        "root_span_id",
+        "spans",
+        "captured_at_utc"
+      ],
+      "type": "object"
+    },
+    "Workspace": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at_utc": {
+          "type": "string"
+        },
+        "default_project_id": {
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "name",
+        "created_at_utc",
+        "default_project_id"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Draft 2020-12 schema for the 16 typed binding cards exported by vetinari.workbench.spine.",
+  "title": "AM Workbench spine binding object model",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/definitions/AssetCard" },
+    { "$ref": "#/definitions/Automation" },
+    { "$ref": "#/definitions/SpineCapabilityPack" },
+    { "$ref": "#/definitions/SpineDatasetRevision" },
+    { "$ref": "#/definitions/EvalSuite" },
+    { "$ref": "#/definitions/EvidenceAssetCard" },
+    { "$ref": "#/definitions/Experiment" },
+    { "$ref": "#/definitions/MethodCard" },
+    { "$ref": "#/definitions/ModeTemplate" },
+    { "$ref": "#/definitions/ReproCapsule" },
+    { "$ref": "#/definitions/SourceCard" },
+    { "$ref": "#/definitions/ToolCard" },
+    { "$ref": "#/definitions/WorkbenchProposal" },
+    { "$ref": "#/definitions/WorkbenchRun" },
+    { "$ref": "#/definitions/WorkbenchTrace" },
+    { "$ref": "#/definitions/Workspace" }
+  ]
+}

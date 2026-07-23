@@ -1,10 +1,8 @@
 # Memory System
 
-Vetinari's memory system is a single `UnifiedMemoryStore` backed by SQLite with FTS5
+AM Workbench's memory system is a single `UnifiedMemoryStore` backed by SQLite with FTS5
 full-text search.  It replaces the earlier dual-backend approach with one coherent store
 that covers session context, long-term search, and optional embedding-based semantic recall.
-
-**ADRs**: ADR-0007 (memory architecture origin), ADR-0063 (sqlite-vec vector search).
 
 ## Authority And Trust
 
@@ -132,7 +130,7 @@ A single SQLite database (default: `.vetinari/vetinari.db`, WAL mode) holds all 
 
 | Table | Purpose |
 |-------|---------|
-| `memories` | Primary store — all long-term entries with content hash, quality, importance |
+| `memories` | Primary store - all long-term entries with content hash, previous append hash, chain hash, quality, importance |
 | `memory_fts` | FTS5 virtual table over `memories(id, content, summary, agent)` |
 | `embeddings` | float32 BLOB per memory; foreign-keyed to `memories` |
 | `memory_vec` | sqlite-vec KNN virtual table (optional, created when sqlite-vec loads) |
@@ -141,6 +139,13 @@ A single SQLite database (default: `.vetinari/vetinari.db`, WAL mode) holds all 
 | `episode_vec` | sqlite-vec KNN virtual table for episodes (optional) |
 
 Key indexes: `agent`, `entry_type`, `content_hash`, `timestamp`, `forgotten`.
+Each append stores `previous_content_hash` and `chain_hash` so a verifier can
+detect tampering or missing rows instead of seeing only independent content
+hashes.
+
+These hash-chain fields belong to the runtime `UnifiedMemoryStore` schema. Legacy
+AI-assistant memory CLI scripts are not the authority for this store and should
+not be used as evidence that the runtime hash chain is present or absent.
 
 FTS5 triggers on `memories` keep `memory_fts` up to date automatically on insert,
 update, and delete.
@@ -151,7 +156,7 @@ update, and delete.
 
 | Method | Returns | Notes |
 |--------|---------|-------|
-| `remember(entry)` | `str` (entry ID) | Deduplicates by SHA-256; generates embedding asynchronously |
+| `remember(entry)` | `str` (entry ID) | Deduplicates by SHA-256, appends hash-chain fields, and generates embedding asynchronously |
 | `search(query, agent?, entry_types?, limit, use_semantic)` | `list[MemoryEntry]` | FTS5 by default; embedding search when `use_semantic=True` |
 | `timeline(agent?, start_time?, end_time?, limit)` | `list[MemoryEntry]` | Newest-first |
 | `ask(question, agent?)` | `list[MemoryEntry]` | Top-5 semantic search |
@@ -207,5 +212,45 @@ The embedding API endpoint defaults to `DEFAULT_EMBEDDING_API_URL` from
 
 ## CLI Usage
 
-The legacy memory CLI is not part of the supported public interface. Callers
-should use the Python API above or the application routes that wrap it.
+The memory CLI (`scripts/memory_cli.py`) provides direct access to the store:
+
+```bash
+# Store a new entry
+python scripts/memory_cli.py store --type feedback --title "..." --content "..."
+
+# FTS5 keyword search
+python scripts/memory_cli.py search "query"
+
+# Embedding semantic search
+python scripts/memory_cli.py semantic-search "query"
+
+# Session management
+python scripts/memory_cli.py session start
+python scripts/memory_cli.py session end
+
+# Backfill embeddings for entries that lack them
+python scripts/memory_cli.py embed-all
+
+# Rebuild the FTS5 index
+python scripts/memory_cli.py refresh-index
+
+# Aggregate statistics
+python scripts/memory_cli.py stats
+```
+
+The `--type` flag accepts any `MemoryType` value (e.g. `feedback`, `decision`,
+`discovery`).
+
+## RCG-0069-P02 Privacy Trust Release Gate
+
+Memory content, summaries, provenance, embeddings, and episodes are classified
+by `docs/reference/privacy-manifest.json` as `FLOW-005`. RCG-0069-P02 keeps
+that memory row release-blocking until
+`check_privacy_trust_release_evidence` can read the dependency closure,
+`config/operability_release_contract.yaml`, and this document without
+violations.
+
+The branch proof is `tests/test_rcg_0069_p02.py`. Missing closure rows, missing
+docs markers, missing evidence references, unreadable JSON, or non-terminal
+status all remain fail-closed rather than being treated as documentation-only
+release approval.

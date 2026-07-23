@@ -1,950 +1,957 @@
-# Benchmark knowledge base for model selection and capability routing.
-#
-# Each entry describes what a benchmark SPECIFICALLY measures, what it predicts
-# about real-world task performance, and what it does NOT predict. Score
-# interpretation ranges and saturation thresholds guide how much weight to give
-# a benchmark when selecting models for a given task type.
-#
-# contamination_risk reflects how likely it is that models were trained on
-# benchmark data directly, making scores unreliable indicators of generalization.
-#
-# weight_for_task values are 0.0–1.0 and are relative weights when combining
-# multiple benchmark signals for routing decisions. They are not probabilities.
-
 benchmarks:
+- contamination_risk: high
+  does_not_predict:
+  - multi_language_coding
+  - multi_file_project_editing
+  - bug_fixing_in_existing_code
+  - real_world_software_engineering
+  - code_review
+  - test_writing
+  measures: 'Python function completion from docstrings, evaluated pass@1 (first attempt
+    correctness). Tests the ability to implement a function given its signature and
+    natural-language description. Problems are hand-written, single-file, no imports
+    from external libraries required.
 
-  - name: HumanEval
-    measures: >
-      Python function completion from docstrings, evaluated pass@1 (first attempt
-      correctness). Tests the ability to implement a function given its signature
-      and natural-language description. Problems are hand-written, single-file,
-      no imports from external libraries required.
-    predicts:
-      - python_function_completion
-      - docstring_to_code_translation
-      - basic_algorithmic_implementation
-    does_not_predict:
-      - multi_language_coding
-      - multi_file_project_editing
-      - bug_fixing_in_existing_code
-      - real_world_software_engineering
-      - code_review
-      - test_writing
-    score_interpretation:
-      "0-50": "Unreliable for production Python tasks"
-      "50-70": "Acceptable for simple scripting; struggles with edge cases"
-      "70-85": "Competent Python developer level; suitable for most coding tasks"
-      "85-95": "Strong; handles complex algorithms and tricky edge cases"
-      "95-100": "Near-saturated; differentiation at this level is noise"
-    saturation_threshold: 95
-    weight_for_task:
-      coding: 0.5
-      reasoning: 0.1
-      math: 0.05
-      creative: 0.0
-      documentation: 0.1
-      research: 0.05
-      analysis: 0.1
-      classification: 0.05
-      instruction_following: 0.1
-      general: 0.2
-    contamination_risk: high
-    notes: >
-      Python-only. Pass@1 on 164 problems is a small sample — variance is high.
-      Saturated at ~95 for frontier models. High contamination risk because the
-      problems have been public since 2021. Prefer LiveCodeBench for current
-      differentiation.
+    '
+  name: HumanEval
+  notes: 'Python-only. Pass@1 on 164 problems is a small sample — variance is high.
+    Saturated at ~95 for frontier models. High contamination risk because the problems
+    have been public since 2021. Prefer LiveCodeBench for current differentiation.
 
-  - name: MBPP
-    measures: >
-      Mostly Basic Python Programming — 500 crowd-sourced Python programming
-      problems simpler than HumanEval. Tests basic data structure manipulation,
-      string processing, and elementary algorithms. Evaluated pass@1.
-    predicts:
-      - basic_python_scripting
-      - simple_data_transformation
-      - elementary_algorithm_implementation
-    does_not_predict:
-      - complex_algorithm_design
-      - multi_file_coding
-      - bug_fixing
-      - multi_language_coding
-    score_interpretation:
-      "0-50": "Below basic programming competence"
-      "50-70": "Beginner-level Python; misses many straightforward tasks"
-      "70-85": "Solid basic Python; suitable for automation scripts"
-      "85-95": "Reliable for routine programming tasks"
-      "95-100": "Saturated; all capable models score here"
-    saturation_threshold: 90
-    weight_for_task:
-      coding: 0.25
-      reasoning: 0.05
-      math: 0.0
-      creative: 0.0
-      documentation: 0.05
-      research: 0.0
-      analysis: 0.05
-      classification: 0.05
-      instruction_following: 0.05
-      general: 0.1
-    contamination_risk: high
-    notes: >
-      Easier than HumanEval. Most capable models score 90%+, making it poor
-      for differentiating strong models. More useful as a floor check than
-      a ceiling signal. High contamination risk.
+    '
+  predicts:
+  - python_function_completion
+  - docstring_to_code_translation
+  - basic_algorithmic_implementation
+  saturation_threshold: 95
+  score_interpretation:
+    0-50: Unreliable for production Python tasks
+    50-70: Acceptable for simple scripting; struggles with edge cases
+    70-85: Competent Python developer level; suitable for most coding tasks
+    85-95: Strong; handles complex algorithms and tricky edge cases
+    95-100: Near-saturated; differentiation at this level is noise
+  weight_for_task:
+    analysis: 0.1
+    classification: 0.05
+    coding: 0.5
+    creative: 0.0
+    documentation: 0.1
+    general: 0.2
+    instruction_following: 0.1
+    math: 0.05
+    reasoning: 0.1
+    research: 0.05
+- contamination_risk: high
+  does_not_predict:
+  - complex_algorithm_design
+  - multi_file_coding
+  - bug_fixing
+  - multi_language_coding
+  measures: 'Mostly Basic Python Programming — 500 crowd-sourced Python programming
+    problems simpler than HumanEval. Tests basic data structure manipulation, string
+    processing, and elementary algorithms. Evaluated pass@1.
 
-  - name: LiveCodeBench
-    measures: >
-      Multi-language competitive programming problems sourced from Codeforces,
-      LeetCode, and AtCoder after a rolling cutoff date. Problems are added
-      continuously, making contamination structurally impossible for problems
-      from after a model's training cutoff. Tests algorithmic problem-solving
-      at competitive programming difficulty levels.
-    predicts:
-      - competitive_programming
-      - multi_language_coding
-      - algorithmic_reasoning
-      - novel_problem_solving
-    does_not_predict:
-      - real_world_code_editing
-      - bug_fixing_in_existing_codebases
-      - documentation_writing
-      - system_design
-    score_interpretation:
-      "0-20": "Cannot solve competitive programming problems reliably"
-      "20-35": "Solves easy-tier problems; fails medium and hard"
-      "35-50": "Solves medium-tier problems; strong for real-world coding"
-      "50-65": "Solves hard problems; exceptional algorithmic capability"
-      "65-100": "Elite competitive programming performance"
-    saturation_threshold: 65
-    weight_for_task:
-      coding: 0.8
-      reasoning: 0.3
-      math: 0.2
-      creative: 0.0
-      documentation: 0.0
-      research: 0.1
-      analysis: 0.2
-      classification: 0.05
-      instruction_following: 0.05
-      general: 0.3
-    contamination_risk: low
-    notes: >
-      The most reliable coding benchmark for current model comparison because
-      contamination is structurally prevented for post-cutoff problems. Scores
-      are lower than HumanEval (30–60% is the typical range for strong models).
-      Use this in preference to HumanEval for routing decisions.
+    '
+  name: MBPP
+  notes: 'Easier than HumanEval. Most capable models score 90%+, making it poor for
+    differentiating strong models. More useful as a floor check than a ceiling signal.
+    High contamination risk.
 
-  - name: SWE-bench Verified
-    measures: >
-      Resolution of real GitHub issues from major open-source Python repositories.
-      The "Verified" subset (500 problems) has been manually validated to ensure
-      the issue description, test suite, and solution are all correct. Tests the
-      ability to read existing code, understand bugs, and produce a patch that
-      passes the repository's test suite.
-    predicts:
-      - real_world_bug_fixing
-      - code_reading_and_comprehension
-      - multi_file_code_editing
-      - test_driven_development
-      - repository_navigation
-    does_not_predict:
-      - greenfield_coding
-      - multi_language_tasks
-      - documentation_writing
-      - mathematical_reasoning
-    score_interpretation:
-      "0-10": "Cannot reliably resolve real issues"
-      "10-25": "Resolves simple, well-isolated bugs"
-      "25-40": "Competent at moderate complexity issues; useful with scaffolding"
-      "40-55": "Strong real-world software engineering capability"
-      "55-100": "Exceptional; surpasses many experienced engineers on bug fixing"
-    saturation_threshold: 70
-    weight_for_task:
-      coding: 0.9
-      reasoning: 0.2
-      math: 0.0
-      creative: 0.0
-      documentation: 0.1
-      research: 0.1
-      analysis: 0.2
-      classification: 0.0
-      instruction_following: 0.1
-      general: 0.2
-    contamination_risk: low
-    notes: >
-      The best proxy for real-world software engineering. Top models score
-      roughly 40–55% on Verified as of early 2026. Full SWE-bench (2294 problems)
-      is noisier due to annotation errors; prefer Verified. Scores are sensitive
-      to scaffolding (agent loops, tool use) — raw model scores without agents
-      are significantly lower.
+    '
+  predicts:
+  - basic_python_scripting
+  - simple_data_transformation
+  - elementary_algorithm_implementation
+  saturation_threshold: 90
+  score_interpretation:
+    0-50: Below basic programming competence
+    50-70: Beginner-level Python; misses many straightforward tasks
+    70-85: Solid basic Python; suitable for automation scripts
+    85-95: Reliable for routine programming tasks
+    95-100: Saturated; all capable models score here
+  weight_for_task:
+    analysis: 0.05
+    classification: 0.05
+    coding: 0.25
+    creative: 0.0
+    documentation: 0.05
+    general: 0.1
+    instruction_following: 0.05
+    math: 0.0
+    reasoning: 0.05
+    research: 0.0
+- contamination_risk: low
+  does_not_predict:
+  - real_world_code_editing
+  - bug_fixing_in_existing_codebases
+  - documentation_writing
+  - system_design
+  measures: 'Multi-language competitive programming problems sourced from Codeforces,
+    LeetCode, and AtCoder after a rolling cutoff date. Problems are added continuously,
+    making contamination structurally impossible for problems from after a model''s
+    training cutoff. Tests algorithmic problem-solving at competitive programming
+    difficulty levels.
 
-  - name: GSM8K
-    measures: >
-      Grade-school math word problems requiring arithmetic and basic algebra.
-      8500 problems written by human contractors. Tests multi-step arithmetic
-      reasoning expressed in natural language. Problems require 2–8 reasoning
-      steps but no calculus, proofs, or advanced mathematics.
-    predicts:
-      - arithmetic_word_problems
-      - basic_multi_step_reasoning
-      - natural_language_math_parsing
-    does_not_predict:
-      - advanced_mathematics
-      - calculus_or_proofs
-      - symbolic_algebra
-      - competition_math
-      - formal_verification
-    score_interpretation:
-      "0-60": "Unreliable for multi-step arithmetic"
-      "60-80": "Handles simple word problems; fails complex multi-step"
-      "80-92": "Solid for business math and basic word problems"
-      "92-97": "Near-saturated; all capable models cluster here"
-      "97-100": "Saturated; differences are noise at this scale"
-    saturation_threshold: 95
-    weight_for_task:
-      coding: 0.1
-      reasoning: 0.4
-      math: 0.3
-      creative: 0.0
-      documentation: 0.0
-      research: 0.1
-      analysis: 0.2
-      classification: 0.1
-      instruction_following: 0.05
-      general: 0.2
-    contamination_risk: high
-    notes: >
-      Saturated for frontier models (most score 95%+). Useful only as a floor
-      check — a model failing GSM8K is not suitable for any reasoning task.
-      Prefer MATH or MMLU-Pro for differentiating capable models. High
-      contamination risk.
+    '
+  name: LiveCodeBench
+  notes: 'The most reliable coding benchmark for current model comparison because
+    contamination is structurally prevented for post-cutoff problems. Scores are lower
+    than HumanEval (30–60% is the typical range for strong models). Use this in preference
+    to HumanEval for routing decisions.
 
-  - name: MATH
-    measures: >
-      Competition-level mathematics from AMC, AIME, and similar olympiad sources.
-      12500 problems across 7 subjects including algebra, geometry, number theory,
-      counting, probability, and precalculus. Problems are rated by difficulty
-      level 1–5. Tests formal mathematical reasoning, symbolic manipulation,
-      and proof-like multi-step derivations.
-    predicts:
-      - competition_mathematics
-      - formal_mathematical_reasoning
-      - symbolic_algebra
-      - proof_construction
-      - advanced_arithmetic
-    does_not_predict:
-      - applied_statistics
-      - numerical_computation
-      - code_generation
-      - research_mathematics
-    score_interpretation:
-      "0-30": "Cannot handle competition math"
-      "30-50": "Solves difficulty-1 and difficulty-2 problems reliably"
-      "50-65": "Strong math reasoning; handles most AMC-level problems"
-      "65-80": "Exceptional; approaches AIME-level proficiency"
-      "80-100": "Elite mathematical reasoning"
-    saturation_threshold: 85
-    weight_for_task:
-      coding: 0.05
-      reasoning: 0.5
-      math: 0.9
-      creative: 0.0
-      documentation: 0.0
-      research: 0.2
-      analysis: 0.3
-      classification: 0.05
-      instruction_following: 0.0
-      general: 0.2
-    contamination_risk: medium
-    notes: >
-      Much harder than GSM8K. Scores for strong models range 60–85% as of
-      early 2026. Difficulty-5 problems remain challenging for all models.
-      A model scoring well on MATH reliably also handles GSM8K — the converse
-      is not true. Use MATH for routing math-heavy analysis tasks.
+    '
+  predicts:
+  - competitive_programming
+  - multi_language_coding
+  - algorithmic_reasoning
+  - novel_problem_solving
+  saturation_threshold: 65
+  score_interpretation:
+    0-20: Cannot solve competitive programming problems reliably
+    20-35: Solves easy-tier problems; fails medium and hard
+    35-50: Solves medium-tier problems; strong for real-world coding
+    50-65: Solves hard problems; exceptional algorithmic capability
+    65-100: Elite competitive programming performance
+  weight_for_task:
+    analysis: 0.2
+    classification: 0.05
+    coding: 0.8
+    creative: 0.0
+    documentation: 0.0
+    general: 0.3
+    instruction_following: 0.05
+    math: 0.2
+    reasoning: 0.3
+    research: 0.1
+- contamination_risk: low
+  does_not_predict:
+  - greenfield_coding
+  - multi_language_tasks
+  - documentation_writing
+  - mathematical_reasoning
+  measures: 'Resolution of real GitHub issues from major open-source Python repositories.
+    The "Verified" subset (500 problems) has been manually validated to ensure the
+    issue description, test suite, and solution are all correct. Tests the ability
+    to read existing code, understand bugs, and produce a patch that passes the repository''s
+    test suite.
 
-  - name: MMLU
-    measures: >
-      Massive Multitask Language Understanding — 57 academic subjects including
-      STEM, humanities, law, medicine, and social sciences. 14000+ four-choice
-      multiple-choice questions drawn from practice exams and textbooks. Tests
-      breadth of factual world knowledge.
-    predicts:
-      - factual_knowledge_breadth
-      - academic_subject_coverage
-      - general_question_answering
-    does_not_predict:
-      - reasoning_depth
-      - multi_step_problem_solving
-      - instruction_following
-      - code_generation
-      - factual_accuracy_in_generation
-    score_interpretation:
-      "0-50": "Near random (chance is 25%); not useful"
-      "50-65": "Basic knowledge; fails specialist subjects"
-      "65-75": "Solid general knowledge; competitive with college graduate"
-      "75-85": "Strong breadth; handles most professional knowledge questions"
-      "85-90": "Near-saturated; approaching ceiling for 4-choice format"
-      "90-100": "Saturated; few questions left that distinguish models"
-    saturation_threshold: 88
-    weight_for_task:
-      coding: 0.05
-      reasoning: 0.2
-      math: 0.1
-      creative: 0.05
-      documentation: 0.2
-      research: 0.5
-      analysis: 0.3
-      classification: 0.3
-      instruction_following: 0.1
-      general: 0.4
-    contamination_risk: high
-    notes: >
-      Saturated at 88–90 for frontier models. The 4-choice format allows
-      partial credit from elimination even without full knowledge. Prefer
-      MMLU-Pro or GPQA for differentiating capable models. Subject coverage
-      is uneven — some subjects have only 100 questions.
+    '
+  name: SWE-bench Verified
+  notes: 'The best proxy for real-world software engineering. Top models score roughly
+    40–55% on Verified as of early 2026. Full SWE-bench (2294 problems) is noisier
+    due to annotation errors; prefer Verified. Scores are sensitive to scaffolding
+    (agent loops, tool use) — raw model scores without agents are significantly lower.
 
-  - name: MMLU-Pro
-    measures: >
-      Harder version of MMLU with 10-choice questions instead of 4-choice,
-      12000 questions, and explicit reasoning-required items added from STEM
-      textbooks. Reduces the effectiveness of elimination strategies, requiring
-      deeper knowledge and reasoning to score well.
-    predicts:
-      - deep_domain_knowledge
-      - reasoning_combined_with_knowledge
-      - stem_expertise
-      - academic_question_answering
-    does_not_predict:
-      - code_generation
-      - instruction_following
-      - open_ended_generation_quality
-    score_interpretation:
-      "0-35": "Below threshold for knowledge-intensive tasks"
-      "35-50": "Moderate knowledge; struggles with specialist STEM"
-      "50-65": "Strong general knowledge with reasoning capability"
-      "65-75": "Expert-level breadth; suitable for research assistance"
-      "75-100": "Exceptional; few humans score above 75"
-    saturation_threshold: 78
-    weight_for_task:
-      coding: 0.05
-      reasoning: 0.35
-      math: 0.2
-      creative: 0.05
-      documentation: 0.2
-      research: 0.7
-      analysis: 0.4
-      classification: 0.3
-      instruction_following: 0.1
-      general: 0.4
-    contamination_risk: medium
-    notes: >
-      Better discriminator than MMLU because the 10-choice format and harder
-      questions spread scores across a wider range. Frontier models score
-      60–75%. More reliable than MMLU for routing research and analysis tasks.
+    '
+  predicts:
+  - real_world_bug_fixing
+  - code_reading_and_comprehension
+  - multi_file_code_editing
+  - test_driven_development
+  - repository_navigation
+  saturation_threshold: 70
+  score_interpretation:
+    0-10: Cannot reliably resolve real issues
+    10-25: Resolves simple, well-isolated bugs
+    25-40: Competent at moderate complexity issues; useful with scaffolding
+    40-55: Strong real-world software engineering capability
+    55-100: Exceptional; surpasses many experienced engineers on bug fixing
+  weight_for_task:
+    analysis: 0.2
+    classification: 0.0
+    coding: 0.9
+    creative: 0.0
+    documentation: 0.1
+    general: 0.2
+    instruction_following: 0.1
+    math: 0.0
+    reasoning: 0.2
+    research: 0.1
+- contamination_risk: high
+  does_not_predict:
+  - advanced_mathematics
+  - calculus_or_proofs
+  - symbolic_algebra
+  - competition_math
+  - formal_verification
+  measures: 'Grade-school math word problems requiring arithmetic and basic algebra.
+    8500 problems written by human contractors. Tests multi-step arithmetic reasoning
+    expressed in natural language. Problems require 2–8 reasoning steps but no calculus,
+    proofs, or advanced mathematics.
 
-  - name: BBH
-    measures: >
-      BIG-Bench Hard — 23 tasks from the BIG-Bench suite that prior language
-      models failed at below human baseline. Tasks include logical deduction,
-      causal reasoning, temporal sequences, object tracking, formal fallacies,
-      dyck languages, and multi-step arithmetic. Evaluated with chain-of-thought
-      prompting.
-    predicts:
-      - multi_step_logical_reasoning
-      - causal_reasoning
-      - formal_logic
-      - sequence_reasoning
-      - structured_problem_decomposition
-    does_not_predict:
-      - factual_knowledge
-      - code_generation
-      - natural_language_fluency
-      - instruction_following_precision
-    score_interpretation:
-      "0-40": "Below threshold for complex reasoning tasks"
-      "40-55": "Handles some reasoning tasks; fails formal logic"
-      "55-70": "Solid multi-step reasoning; suitable for analysis"
-      "70-82": "Strong; handles most BIG-Bench Hard tasks"
-      "82-100": "Exceptional multi-step reasoning"
-    saturation_threshold: 85
-    weight_for_task:
-      coding: 0.2
-      reasoning: 0.8
-      math: 0.4
-      creative: 0.05
-      documentation: 0.05
-      research: 0.4
-      analysis: 0.6
-      classification: 0.2
-      instruction_following: 0.1
-      general: 0.3
-    contamination_risk: medium
-    notes: >
-      Requires chain-of-thought prompting — scores without CoT are significantly
-      lower and not comparable. Evaluates reasoning processes, not just answer
-      correctness. Strong predictor of performance on structured analysis tasks.
+    '
+  name: GSM8K
+  notes: 'Saturated for frontier models (most score 95%+). Useful only as a floor
+    check — a model failing GSM8K is not suitable for any reasoning task. Prefer MATH
+    or MMLU-Pro for differentiating capable models. High contamination risk.
 
-  - name: IFEval
-    measures: >
-      Instruction Following Evaluation — 541 verifiable instructions testing
-      precise compliance with formatting and constraint requirements. Examples
-      include "respond in exactly N words", "do not use the word X", "wrap your
-      answer in JSON", "respond only with a list". Evaluated by programmatic
-      rule-checking, not LLM judgment.
-    predicts:
-      - instruction_following_precision
-      - formatting_compliance
-      - constraint_adherence
-      - structured_output_generation
-    does_not_predict:
-      - reasoning_quality
-      - factual_accuracy
-      - code_correctness
-      - response_helpfulness
-    score_interpretation:
-      "0-50": "Frequently violates explicit instructions"
-      "50-70": "Follows simple constraints; fails complex combinations"
-      "70-82": "Reliable instruction following; suitable for templated tasks"
-      "82-92": "Strong; handles multi-constraint instructions consistently"
-      "92-100": "Near-perfect compliance with explicit instructions"
-    saturation_threshold: 92
-    weight_for_task:
-      coding: 0.2
-      reasoning: 0.1
-      math: 0.05
-      creative: 0.1
-      documentation: 0.5
-      research: 0.2
-      analysis: 0.2
-      classification: 0.3
-      instruction_following: 1.0
-      general: 0.3
-    contamination_risk: low
-    notes: >
-      Programmatically verified, so scores are objective and reliable. Tests
-      a capability orthogonal to reasoning or knowledge — models can score well
-      on MMLU and poorly on IFEval. Critical for tasks requiring structured
-      output, templated responses, or strict format compliance.
+    '
+  predicts:
+  - arithmetic_word_problems
+  - basic_multi_step_reasoning
+  - natural_language_math_parsing
+  saturation_threshold: 95
+  score_interpretation:
+    0-60: Unreliable for multi-step arithmetic
+    60-80: Handles simple word problems; fails complex multi-step
+    80-92: Solid for business math and basic word problems
+    92-97: Near-saturated; all capable models cluster here
+    97-100: Saturated; differences are noise at this scale
+  weight_for_task:
+    analysis: 0.2
+    classification: 0.1
+    coding: 0.1
+    creative: 0.0
+    documentation: 0.0
+    general: 0.2
+    instruction_following: 0.05
+    math: 0.3
+    reasoning: 0.4
+    research: 0.1
+- contamination_risk: medium
+  does_not_predict:
+  - applied_statistics
+  - numerical_computation
+  - code_generation
+  - research_mathematics
+  measures: 'Competition-level mathematics from AMC, AIME, and similar olympiad sources.
+    12500 problems across 7 subjects including algebra, geometry, number theory, counting,
+    probability, and precalculus. Problems are rated by difficulty level 1–5. Tests
+    formal mathematical reasoning, symbolic manipulation, and proof-like multi-step
+    derivations.
 
-  - name: GPQA
-    measures: >
-      Graduate-level Professional QA — 448 multiple-choice questions written by
-      domain experts in physics, chemistry, and biology at PhD level. Questions
-      are designed so that non-experts with internet access score below 35%.
-      Tests genuine expert-level scientific reasoning, not memorization.
-    predicts:
-      - graduate_level_scientific_reasoning
-      - physics_domain_expertise
-      - chemistry_domain_expertise
-      - biology_domain_expertise
-      - expert_knowledge_application
-    does_not_predict:
-      - code_generation
-      - general_knowledge_breadth
-      - instruction_following
-      - social_science_reasoning
-    score_interpretation:
-      "0-30": "Near non-expert human baseline; cannot handle expert science"
-      "30-40": "Handles some graduate questions; unreliable for expert tasks"
-      "40-55": "Strong scientific reasoning; suitable for research assistance"
-      "55-70": "Expert-level; approaches PhD-level performance in these domains"
-      "70-100": "Exceptional; exceeds most domain experts in these areas"
-    saturation_threshold: 75
-    weight_for_task:
-      coding: 0.05
-      reasoning: 0.5
-      math: 0.3
-      creative: 0.0
-      documentation: 0.1
-      research: 0.8
-      analysis: 0.5
-      classification: 0.2
-      instruction_following: 0.0
-      general: 0.2
-    contamination_risk: low
-    notes: >
-      One of the hardest benchmarks available. Non-expert humans with Google
-      score ~34%. Top models score 50–65% as of early 2026. Diamond subset
-      (198 problems) is even harder. Strong signal for science and research
-      routing. Small sample size means confidence intervals are wide.
+    '
+  name: MATH
+  notes: 'Much harder than GSM8K. Scores for strong models range 60–85% as of early
+    2026. Difficulty-5 problems remain challenging for all models. A model scoring
+    well on MATH reliably also handles GSM8K — the converse is not true. Use MATH
+    for routing math-heavy analysis tasks.
 
-  - name: ARC-Challenge
-    measures: >
-      AI2 Reasoning Challenge (Challenge set) — 1172 grade-school science
-      questions that retrieval-based systems and word co-occurrence models
-      fail. Tests basic scientific knowledge and simple reasoning beyond
-      pattern matching. Four-choice multiple choice format.
-    predicts:
-      - basic_scientific_knowledge
-      - elementary_reasoning
-      - science_question_answering
-    does_not_predict:
-      - advanced_reasoning
-      - domain_expertise
-      - code_generation
-      - multi_step_problem_solving
-    score_interpretation:
-      "0-60": "Unreliable for science tasks"
-      "60-75": "Basic science competence; fails harder reasoning questions"
-      "75-85": "Solid; handles most grade-school science reliably"
-      "85-95": "Near-saturated for capable models"
-      "95-100": "Saturated"
-    saturation_threshold: 90
-    weight_for_task:
-      coding: 0.0
-      reasoning: 0.15
-      math: 0.05
-      creative: 0.0
-      documentation: 0.1
-      research: 0.2
-      analysis: 0.15
-      classification: 0.2
-      instruction_following: 0.0
-      general: 0.2
-    contamination_risk: high
-    notes: >
-      Saturated for capable models (most score 85%+). Useful only as a floor
-      check. A model failing ARC-Challenge is not suitable for any reasoning
-      task. Prefer BBH or GPQA for meaningful differentiation.
+    '
+  predicts:
+  - competition_mathematics
+  - formal_mathematical_reasoning
+  - symbolic_algebra
+  - proof_construction
+  - advanced_arithmetic
+  saturation_threshold: 85
+  score_interpretation:
+    0-30: Cannot handle competition math
+    30-50: Solves difficulty-1 and difficulty-2 problems reliably
+    50-65: Strong math reasoning; handles most AMC-level problems
+    65-80: Exceptional; approaches AIME-level proficiency
+    80-100: Elite mathematical reasoning
+  weight_for_task:
+    analysis: 0.3
+    classification: 0.05
+    coding: 0.05
+    creative: 0.0
+    documentation: 0.0
+    general: 0.2
+    instruction_following: 0.0
+    math: 0.9
+    reasoning: 0.5
+    research: 0.2
+- contamination_risk: high
+  does_not_predict:
+  - reasoning_depth
+  - multi_step_problem_solving
+  - instruction_following
+  - code_generation
+  - factual_accuracy_in_generation
+  measures: 'Massive Multitask Language Understanding — 57 academic subjects including
+    STEM, humanities, law, medicine, and social sciences. 14000+ four-choice multiple-choice
+    questions drawn from practice exams and textbooks. Tests breadth of factual world
+    knowledge.
 
-  - name: HellaSwag
-    measures: >
-      Sentence completion for activity descriptions requiring common-sense
-      reasoning about physical situations, daily activities, and social
-      interactions. Models choose the most plausible ending from four options.
-      Tests world knowledge grounded in everyday human experience.
-    predicts:
-      - common_sense_reasoning
-      - world_knowledge_about_everyday_activities
-      - natural_language_understanding
-    does_not_predict:
-      - formal_reasoning
-      - code_generation
-      - mathematical_ability
-      - instruction_following
-    score_interpretation:
-      "0-50": "Random-level common sense"
-      "50-70": "Basic common sense; misses activity continuations"
-      "70-85": "Reasonable world knowledge"
-      "85-95": "Near human baseline on this task"
-      "95-100": "Saturated; virtually all models above 85"
-    saturation_threshold: 88
-    weight_for_task:
-      coding: 0.0
-      reasoning: 0.1
-      math: 0.0
-      creative: 0.2
-      documentation: 0.1
-      research: 0.05
-      analysis: 0.05
-      classification: 0.1
-      instruction_following: 0.05
-      general: 0.2
-    contamination_risk: high
-    notes: >
-      Saturated for all capable models. Provides no meaningful signal for
-      differentiating modern models. Include only for completeness or as a
-      floor check. Nearly all models above 85%.
+    '
+  name: MMLU
+  notes: 'Saturated at 88–90 for frontier models. The 4-choice format allows partial
+    credit from elimination even without full knowledge. Prefer MMLU-Pro or GPQA for
+    differentiating capable models. Subject coverage is uneven — some subjects have
+    only 100 questions.
 
-  - name: WinoGrande
-    measures: >
-      Coreference resolution with pronoun disambiguation. 44000 problems in
-      Winograd schema format where the correct referent of a pronoun depends
-      on common-sense world knowledge. Tests whether models understand
-      which noun a pronoun refers to in ambiguous sentences.
-    predicts:
-      - pronoun_coreference_resolution
-      - common_sense_world_knowledge
-      - linguistic_disambiguation
-    does_not_predict:
-      - multi_step_reasoning
-      - code_generation
-      - factual_knowledge
-      - instruction_following
-    score_interpretation:
-      "0-50": "Near chance (50% is random binary choice)"
-      "50-65": "Weak common sense; fails many disambiguation cases"
-      "65-78": "Reasonable; handles most everyday disambiguation"
-      "78-88": "Strong; near human baseline"
-      "88-100": "Near-saturated"
-    saturation_threshold: 85
-    weight_for_task:
-      coding: 0.0
-      reasoning: 0.1
-      math: 0.0
-      creative: 0.15
-      documentation: 0.05
-      research: 0.05
-      analysis: 0.05
-      classification: 0.1
-      instruction_following: 0.05
-      general: 0.15
-    contamination_risk: high
-    notes: >
-      Near-saturated for capable models. Random baseline is 50% (binary choice).
-      Useful only as a floor check. Prefer BBH or IFEval for meaningful routing
-      decisions.
+    '
+  predicts:
+  - factual_knowledge_breadth
+  - academic_subject_coverage
+  - general_question_answering
+  saturation_threshold: 88
+  score_interpretation:
+    0-50: Near random (chance is 25%); not useful
+    50-65: Basic knowledge; fails specialist subjects
+    65-75: Solid general knowledge; competitive with college graduate
+    75-85: Strong breadth; handles most professional knowledge questions
+    85-90: Near-saturated; approaching ceiling for 4-choice format
+    90-100: Saturated; few questions left that distinguish models
+  weight_for_task:
+    analysis: 0.3
+    classification: 0.3
+    coding: 0.05
+    creative: 0.05
+    documentation: 0.2
+    general: 0.4
+    instruction_following: 0.1
+    math: 0.1
+    reasoning: 0.2
+    research: 0.5
+- contamination_risk: medium
+  does_not_predict:
+  - code_generation
+  - instruction_following
+  - open_ended_generation_quality
+  measures: 'Harder version of MMLU with 10-choice questions instead of 4-choice,
+    12000 questions, and explicit reasoning-required items added from STEM textbooks.
+    Reduces the effectiveness of elimination strategies, requiring deeper knowledge
+    and reasoning to score well.
 
-  - name: TruthfulQA
-    measures: >
-      Resistance to generating common misconceptions and false beliefs. 817
-      questions in categories where humans frequently answer incorrectly due to
-      myths, superstitions, conspiracy theories, and misattributed quotes.
-      Tests whether models confidently assert popular falsehoods.
-    predicts:
-      - factual_calibration
-      - resistance_to_common_misconceptions
-      - epistemic_humility
-    does_not_predict:
-      - reasoning_capability
-      - knowledge_breadth
-      - code_generation
-      - helpfulness
-    score_interpretation:
-      "0-40": "Frequently asserts common falsehoods"
-      "40-55": "Moderate truthfulness; fails on well-known misconception areas"
-      "55-70": "Reasonably calibrated; avoids most common myths"
-      "70-85": "Strong resistance to misconceptions"
-      "85-100": "Highly calibrated; rarely asserts untrue popular beliefs"
-    saturation_threshold: 85
-    weight_for_task:
-      coding: 0.0
-      reasoning: 0.2
-      math: 0.05
-      creative: 0.05
-      documentation: 0.2
-      research: 0.4
-      analysis: 0.3
-      classification: 0.2
-      instruction_following: 0.1
-      general: 0.3
-    contamination_risk: medium
-    notes: >
-      Scores can be gamed by refusing to answer, which increases truthfulness
-      at the cost of helpfulness. Some evaluations combine truthfulness and
-      informativeness scores to address this. Useful signal for research and
-      documentation routing where factual accuracy matters.
+    '
+  name: MMLU-Pro
+  notes: 'Better discriminator than MMLU because the 10-choice format and harder questions
+    spread scores across a wider range. Frontier models score 60–75%. More reliable
+    than MMLU for routing research and analysis tasks.
 
-  - name: MT-Bench
-    measures: >
-      Multi-turn conversation quality across 8 categories including writing,
-      roleplay, extraction, reasoning, math, coding, knowledge, and instruction
-      following. 80 two-turn questions rated on a 1–10 scale by GPT-4 as judge.
-      Tests conversational coherence and instruction compliance across turns.
-    predicts:
-      - multi_turn_conversation_quality
-      - instruction_following_in_dialogue
-      - response_quality_across_domains
-      - conversational_coherence
-    does_not_predict:
-      - single_turn_task_accuracy
-      - long_context_handling
-      - tool_use_capability
-    score_interpretation:
-      "0-5": "Poor conversational quality across categories"
-      "5-7": "Acceptable for simple tasks; inconsistent across categories"
-      "7-8.5": "Good; suitable for most conversational tasks"
-      "8.5-9.5": "Strong; competitive with frontier models"
-      "9.5-10": "Near-perfect judged quality"
-    saturation_threshold: 9
-    weight_for_task:
-      coding: 0.15
-      reasoning: 0.2
-      math: 0.1
-      creative: 0.4
-      documentation: 0.4
-      research: 0.2
-      analysis: 0.2
-      classification: 0.1
-      instruction_following: 0.5
-      general: 0.5
-    contamination_risk: medium
-    notes: >
-      GPT-4 as judge introduces bias toward GPT-4 style responses. Only 80
-      questions — high variance. Scores vary by judge model version. Better
-      as a rough signal than a precise measurement. The multi-turn aspect is
-      valuable for routing conversational tasks.
+    '
+  predicts:
+  - deep_domain_knowledge
+  - reasoning_combined_with_knowledge
+  - stem_expertise
+  - academic_question_answering
+  saturation_threshold: 78
+  score_interpretation:
+    0-35: Below threshold for knowledge-intensive tasks
+    35-50: Moderate knowledge; struggles with specialist STEM
+    50-65: Strong general knowledge with reasoning capability
+    65-75: Expert-level breadth; suitable for research assistance
+    75-100: Exceptional; few humans score above 75
+  weight_for_task:
+    analysis: 0.4
+    classification: 0.3
+    coding: 0.05
+    creative: 0.05
+    documentation: 0.2
+    general: 0.4
+    instruction_following: 0.1
+    math: 0.2
+    reasoning: 0.35
+    research: 0.7
+- contamination_risk: medium
+  does_not_predict:
+  - factual_knowledge
+  - code_generation
+  - natural_language_fluency
+  - instruction_following_precision
+  measures: 'BIG-Bench Hard — 23 tasks from the BIG-Bench suite that prior language
+    models failed at below human baseline. Tasks include logical deduction, causal
+    reasoning, temporal sequences, object tracking, formal fallacies, dyck languages,
+    and multi-step arithmetic. Evaluated with chain-of-thought prompting.
 
-  - name: AlpacaEval
-    measures: >
-      Instruction following quality rated by an LLM judge (GPT-4 or GPT-4-Turbo)
-      comparing model responses against a reference model (usually GPT-4).
-      Win rate measures how often the evaluated model is preferred over the
-      reference. Tests general instruction following and response quality.
-    predicts:
-      - general_instruction_following
-      - response_quality_preference
-      - response_helpfulness
-    does_not_predict:
-      - factual_accuracy
-      - code_correctness
-      - mathematical_ability
-      - long_context_handling
-    score_interpretation:
-      "0-30%": "Frequently inferior to the reference model"
-      "30-50%": "Comparable to earlier generation models"
-      "50-65%": "Competitive with strong instruction-tuned models"
-      "65-80%": "Frequently preferred over reference; strong instruction following"
-      "80-100%": "Consistently preferred; top-tier instruction following"
-    saturation_threshold: 80
-    weight_for_task:
-      coding: 0.1
-      reasoning: 0.1
-      math: 0.05
-      creative: 0.5
-      documentation: 0.5
-      research: 0.2
-      analysis: 0.2
-      classification: 0.1
-      instruction_following: 0.7
-      general: 0.5
-    contamination_risk: medium
-    notes: >
-      Length bias is a known issue — longer responses are often rated higher
-      regardless of quality. AlpacaEval 2.0 LC (Length Controlled) corrects
-      for this. Use LC variant when available. The reference model version
-      changes over time, making cross-version comparison unreliable.
+    '
+  name: BBH
+  notes: 'Requires chain-of-thought prompting — scores without CoT are significantly
+    lower and not comparable. Evaluates reasoning processes, not just answer correctness.
+    Strong predictor of performance on structured analysis tasks.
 
-  - name: HumanEval+
-    measures: >
-      Extended version of HumanEval with 80+ additional test cases per problem,
-      exposing edge cases that the original HumanEval tests miss. A solution
-      must pass all extended tests. Tests the same Python function completion
-      capability but requires more robust implementations.
-    predicts:
-      - robust_python_function_implementation
-      - edge_case_handling
-      - code_correctness_under_stress
-    does_not_predict:
-      - multi_language_coding
-      - multi_file_coding
-      - real_world_bug_fixing
-    score_interpretation:
-      "0-50": "Produces fragile implementations"
-      "50-70": "Handles common cases; fails edge cases"
-      "70-85": "Reasonably robust Python implementation"
-      "85-95": "Strong; handles most edge cases"
-      "95-100": "Near-saturated"
-    saturation_threshold: 92
-    weight_for_task:
-      coding: 0.6
-      reasoning: 0.1
-      math: 0.05
-      creative: 0.0
-      documentation: 0.05
-      research: 0.0
-      analysis: 0.1
-      classification: 0.0
-      instruction_following: 0.1
-      general: 0.2
-    contamination_risk: medium
-    notes: >
-      Scores are 5–15 points lower than HumanEval on the same model because
-      the extended test cases catch implementations that game the weak original
-      tests. Prefer HumanEval+ over HumanEval when Python robustness matters.
+    '
+  predicts:
+  - multi_step_logical_reasoning
+  - causal_reasoning
+  - formal_logic
+  - sequence_reasoning
+  - structured_problem_decomposition
+  saturation_threshold: 85
+  score_interpretation:
+    0-40: Below threshold for complex reasoning tasks
+    40-55: Handles some reasoning tasks; fails formal logic
+    55-70: Solid multi-step reasoning; suitable for analysis
+    70-82: Strong; handles most BIG-Bench Hard tasks
+    82-100: Exceptional multi-step reasoning
+  weight_for_task:
+    analysis: 0.6
+    classification: 0.2
+    coding: 0.2
+    creative: 0.05
+    documentation: 0.05
+    general: 0.3
+    instruction_following: 0.1
+    math: 0.4
+    reasoning: 0.8
+    research: 0.4
+- contamination_risk: low
+  does_not_predict:
+  - reasoning_quality
+  - factual_accuracy
+  - code_correctness
+  - response_helpfulness
+  measures: 'Instruction Following Evaluation — 541 verifiable instructions testing
+    precise compliance with formatting and constraint requirements. Examples include
+    "respond in exactly N words", "do not use the word X", "wrap your answer in JSON",
+    "respond only with a list". Evaluated by programmatic rule-checking, not LLM judgment.
 
-  - name: CRUX
-    measures: >
-      Code Reasoning and Understanding — 800 Python functions each paired with
-      an input and its output. Two tasks: (1) input prediction given function
-      and output, (2) output prediction given function and input. Tests the
-      ability to trace code execution mentally without running it.
-    predicts:
-      - code_tracing_and_execution_simulation
-      - program_semantics_understanding
-      - debugging_reasoning
-    does_not_predict:
-      - code_generation
-      - multi_file_reasoning
-      - real_world_bug_fixing
-    score_interpretation:
-      "0-30": "Cannot reliably trace Python execution"
-      "30-50": "Handles simple functions; fails loops and recursion"
-      "50-65": "Reasonable code tracing; suitable for debugging assistance"
-      "65-80": "Strong; handles complex execution traces"
-      "80-100": "Exceptional code comprehension"
-    saturation_threshold: 80
-    weight_for_task:
-      coding: 0.7
-      reasoning: 0.4
-      math: 0.1
-      creative: 0.0
-      documentation: 0.0
-      research: 0.0
-      analysis: 0.3
-      classification: 0.0
-      instruction_following: 0.0
-      general: 0.15
-    contamination_risk: low
-    notes: >
-      Tests a capability (code comprehension and tracing) that is largely
-      orthogonal to code generation. A model can score well on HumanEval and
-      poorly on CRUX. Highly predictive for debugging tasks where understanding
-      existing code matters more than generating new code.
+    '
+  name: IFEval
+  notes: 'Programmatically verified, so scores are objective and reliable. Tests a
+    capability orthogonal to reasoning or knowledge — models can score well on MMLU
+    and poorly on IFEval. Critical for tasks requiring structured output, templated
+    responses, or strict format compliance.
 
-  - name: LiveBench
-    measures: >
-      Monthly-updated benchmark across six categories: math, coding, reasoning,
-      language, instruction following, and data analysis. Problems are sourced
-      from recent competitions, papers, and news to prevent contamination.
-      Evaluated with objective scoring rather than LLM judges.
-    predicts:
-      - current_model_capability_across_domains
-      - contamination_resistant_general_performance
-      - multi_domain_breadth
-    does_not_predict:
-      - deep_expertise_in_any_single_domain
-      - tool_use_capability
-      - long_context_handling
-    score_interpretation:
-      "0-30": "Below threshold for general tasks"
-      "30-50": "Moderate across categories; significant gaps in some"
-      "50-65": "Strong general performance across most categories"
-      "65-80": "Exceptional breadth; near top of current leaderboard"
-      "80-100": "State-of-the-art across all categories"
-    saturation_threshold: 80
-    weight_for_task:
-      coding: 0.4
-      reasoning: 0.5
-      math: 0.4
-      creative: 0.1
-      documentation: 0.2
-      research: 0.4
-      analysis: 0.4
-      classification: 0.2
-      instruction_following: 0.3
-      general: 0.5
-    contamination_risk: low
-    notes: >
-      Updated monthly, making it one of the most contamination-resistant
-      comprehensive benchmarks. Scores are not directly comparable across
-      months as problems change. Use the same release date when comparing
-      models. Strong general-purpose routing signal.
+    '
+  predicts:
+  - instruction_following_precision
+  - formatting_compliance
+  - constraint_adherence
+  - structured_output_generation
+  saturation_threshold: 92
+  score_interpretation:
+    0-50: Frequently violates explicit instructions
+    50-70: Follows simple constraints; fails complex combinations
+    70-82: Reliable instruction following; suitable for templated tasks
+    82-92: Strong; handles multi-constraint instructions consistently
+    92-100: Near-perfect compliance with explicit instructions
+  weight_for_task:
+    analysis: 0.2
+    classification: 0.3
+    coding: 0.2
+    creative: 0.1
+    documentation: 0.5
+    general: 0.3
+    instruction_following: 1.0
+    math: 0.05
+    reasoning: 0.1
+    research: 0.2
+- contamination_risk: low
+  does_not_predict:
+  - code_generation
+  - general_knowledge_breadth
+  - instruction_following
+  - social_science_reasoning
+  measures: 'Graduate-level Professional QA — 448 multiple-choice questions written
+    by domain experts in physics, chemistry, and biology at PhD level. Questions are
+    designed so that non-experts with internet access score below 35%. Tests genuine
+    expert-level scientific reasoning, not memorization.
 
-  - name: MuSR
-    measures: >
-      Multi-step Soft Reasoning — complex reasoning problems requiring
-      integration of multiple clues across long narratives. Includes murder
-      mystery solving, team allocation under constraints, and object tracking
-      across scenarios. Tests sustained reasoning over extended contexts.
-    predicts:
-      - long_chain_reasoning
-      - constraint_satisfaction
-      - narrative_reasoning
-      - multi_clue_integration
-    does_not_predict:
-      - factual_knowledge
-      - code_generation
-      - mathematical_computation
-    score_interpretation:
-      "0-30": "Cannot handle multi-step reasoning across narratives"
-      "30-50": "Handles simple constraint scenarios; fails complex mysteries"
-      "50-65": "Solid narrative reasoning; suitable for analysis tasks"
-      "65-80": "Strong; handles most complex multi-step scenarios"
-      "80-100": "Exceptional sustained reasoning capability"
-    saturation_threshold: 75
-    weight_for_task:
-      coding: 0.1
-      reasoning: 0.7
-      math: 0.1
-      creative: 0.1
-      documentation: 0.05
-      research: 0.4
-      analysis: 0.6
-      classification: 0.1
-      instruction_following: 0.1
-      general: 0.3
-    contamination_risk: low
-    notes: >
-      Tests reasoning across longer narratives than BBH. Particularly useful
-      for routing tasks that require integrating information across a long
-      document or conversation. Scores vary significantly with context window
-      size and attention quality.
+    '
+  name: GPQA
+  notes: 'One of the hardest benchmarks available. Non-expert humans with Google score
+    ~34%. Top models score 50–65% as of early 2026. Diamond subset (198 problems)
+    is even harder. Strong signal for science and research routing. Small sample size
+    means confidence intervals are wide.
 
-  - name: BFCL
-    measures: >
-      Berkeley Function Calling Leaderboard — structured evaluation of function
-      and tool calling accuracy. Tests whether models correctly select functions
-      from a provided schema, pass arguments with correct types and values, and
-      handle nested calls, parallel calls, and irrelevant function detection.
-      Covers simple, multiple, parallel, nested, and irrelevant call scenarios.
-    predicts:
-      - function_and_tool_calling_accuracy
-      - api_invocation_correctness
-      - schema_adherence
-      - structured_output_for_tool_use
-      - argument_type_correctness
-    does_not_predict:
-      - general_reasoning
-      - code_generation_beyond_tool_calls
-      - factual_knowledge
-      - conversational_quality
-    score_interpretation:
-      "0-40": "Unreliable for tool use; frequent schema violations"
-      "40-60": "Handles simple single-call scenarios; fails parallel/nested"
-      "60-75": "Reliable for most tool-use patterns"
-      "75-88": "Strong; handles complex multi-function scenarios"
-      "88-100": "Near-perfect tool calling compliance"
-    saturation_threshold: 90
-    weight_for_task:
-      coding: 0.3
-      reasoning: 0.1
-      math: 0.0
-      creative: 0.0
-      documentation: 0.1
-      research: 0.2
-      analysis: 0.2
-      classification: 0.3
-      instruction_following: 0.4
-      general: 0.2
-    contamination_risk: low
-    notes: >
-      The most reliable benchmark for routing tasks that require tool or API
-      calling. Directly tests the structured output capability that agent
-      frameworks depend on. Models with high BFCL scores handle function schemas
-      reliably. Essential signal for any agentic task routing decision.
+    '
+  predicts:
+  - graduate_level_scientific_reasoning
+  - physics_domain_expertise
+  - chemistry_domain_expertise
+  - biology_domain_expertise
+  - expert_knowledge_application
+  saturation_threshold: 75
+  score_interpretation:
+    0-30: Near non-expert human baseline; cannot handle expert science
+    30-40: Handles some graduate questions; unreliable for expert tasks
+    40-55: Strong scientific reasoning; suitable for research assistance
+    55-70: Expert-level; approaches PhD-level performance in these domains
+    70-100: Exceptional; exceeds most domain experts in these areas
+  weight_for_task:
+    analysis: 0.5
+    classification: 0.2
+    coding: 0.05
+    creative: 0.0
+    documentation: 0.1
+    general: 0.2
+    instruction_following: 0.0
+    math: 0.3
+    reasoning: 0.5
+    research: 0.8
+- contamination_risk: high
+  does_not_predict:
+  - advanced_reasoning
+  - domain_expertise
+  - code_generation
+  - multi_step_problem_solving
+  measures: 'AI2 Reasoning Challenge (Challenge set) — 1172 grade-school science questions
+    that retrieval-based systems and word co-occurrence models fail. Tests basic scientific
+    knowledge and simple reasoning beyond pattern matching. Four-choice multiple choice
+    format.
 
-  - name: Aider Polyglot
-    measures: >
-      Real-world code editing across 647 exercises in multiple programming
-      languages including Python, TypeScript, Rust, Go, Java, C++, and others.
-      Tests the ability to understand an existing file, apply a requested change,
-      and produce code that passes the exercise test suite. Uses Aider's
-      diff-editing format (unified diff output).
-    predicts:
-      - multi_language_code_editing
-      - code_change_application
-      - test_driven_code_modification
-      - polyglot_programming_competence
-    does_not_predict:
-      - greenfield_system_design
-      - architectural_reasoning
-      - documentation_writing
-      - mathematical_reasoning
-    score_interpretation:
-      "0-20": "Cannot reliably apply code edits in most languages"
-      "20-40": "Handles Python and JavaScript; fails less common languages"
-      "40-60": "Solid polyglot editing; handles most mainstream languages"
-      "60-75": "Strong; reliable across all major languages"
-      "75-100": "Exceptional multi-language editing capability"
-    saturation_threshold: 78
-    weight_for_task:
-      coding: 0.85
-      reasoning: 0.1
-      math: 0.0
-      creative: 0.0
-      documentation: 0.05
-      research: 0.0
-      analysis: 0.1
-      classification: 0.0
-      instruction_following: 0.2
-      general: 0.2
-    contamination_risk: low
-    notes: >
-      The best proxy for real-world multi-language code editing because it uses
-      actual exercises with test suites. Requires models to understand diff
-      format and apply changes precisely. Correlates strongly with SWE-bench
-      for multi-language repositories. Scores are lower than HumanEval because
-      editing is harder than completion.
+    '
+  name: ARC-Challenge
+  notes: 'Saturated for capable models (most score 85%+). Useful only as a floor check.
+    A model failing ARC-Challenge is not suitable for any reasoning task. Prefer BBH
+    or GPQA for meaningful differentiation.
+
+    '
+  predicts:
+  - basic_scientific_knowledge
+  - elementary_reasoning
+  - science_question_answering
+  saturation_threshold: 90
+  score_interpretation:
+    0-60: Unreliable for science tasks
+    60-75: Basic science competence; fails harder reasoning questions
+    75-85: Solid; handles most grade-school science reliably
+    85-95: Near-saturated for capable models
+    95-100: Saturated
+  weight_for_task:
+    analysis: 0.15
+    classification: 0.2
+    coding: 0.0
+    creative: 0.0
+    documentation: 0.1
+    general: 0.2
+    instruction_following: 0.0
+    math: 0.05
+    reasoning: 0.15
+    research: 0.2
+- contamination_risk: high
+  does_not_predict:
+  - formal_reasoning
+  - code_generation
+  - mathematical_ability
+  - instruction_following
+  measures: 'Sentence completion for activity descriptions requiring common-sense
+    reasoning about physical situations, daily activities, and social interactions.
+    Models choose the most plausible ending from four options. Tests world knowledge
+    grounded in everyday human experience.
+
+    '
+  name: HellaSwag
+  notes: 'Saturated for all capable models. Provides no meaningful signal for differentiating
+    modern models. Include only for completeness or as a floor check. Nearly all models
+    above 85%.
+
+    '
+  predicts:
+  - common_sense_reasoning
+  - world_knowledge_about_everyday_activities
+  - natural_language_understanding
+  saturation_threshold: 88
+  score_interpretation:
+    0-50: Random-level common sense
+    50-70: Basic common sense; misses activity continuations
+    70-85: Reasonable world knowledge
+    85-95: Near human baseline on this task
+    95-100: Saturated; virtually all models above 85
+  weight_for_task:
+    analysis: 0.05
+    classification: 0.1
+    coding: 0.0
+    creative: 0.2
+    documentation: 0.1
+    general: 0.2
+    instruction_following: 0.05
+    math: 0.0
+    reasoning: 0.1
+    research: 0.05
+- contamination_risk: high
+  does_not_predict:
+  - multi_step_reasoning
+  - code_generation
+  - factual_knowledge
+  - instruction_following
+  measures: 'Coreference resolution with pronoun disambiguation. 44000 problems in
+    Winograd schema format where the correct referent of a pronoun depends on common-sense
+    world knowledge. Tests whether models understand which noun a pronoun refers to
+    in ambiguous sentences.
+
+    '
+  name: WinoGrande
+  notes: 'Near-saturated for capable models. Random baseline is 50% (binary choice).
+    Useful only as a floor check. Prefer BBH or IFEval for meaningful routing decisions.
+
+    '
+  predicts:
+  - pronoun_coreference_resolution
+  - common_sense_world_knowledge
+  - linguistic_disambiguation
+  saturation_threshold: 85
+  score_interpretation:
+    0-50: Near chance (50% is random binary choice)
+    50-65: Weak common sense; fails many disambiguation cases
+    65-78: Reasonable; handles most everyday disambiguation
+    78-88: Strong; near human baseline
+    88-100: Near-saturated
+  weight_for_task:
+    analysis: 0.05
+    classification: 0.1
+    coding: 0.0
+    creative: 0.15
+    documentation: 0.05
+    general: 0.15
+    instruction_following: 0.05
+    math: 0.0
+    reasoning: 0.1
+    research: 0.05
+- contamination_risk: medium
+  does_not_predict:
+  - reasoning_capability
+  - knowledge_breadth
+  - code_generation
+  - helpfulness
+  measures: 'Resistance to generating common misconceptions and false beliefs. 817
+    questions in categories where humans frequently answer incorrectly due to myths,
+    superstitions, conspiracy theories, and misattributed quotes. Tests whether models
+    confidently assert popular falsehoods.
+
+    '
+  name: TruthfulQA
+  notes: 'Scores can be gamed by refusing to answer, which increases truthfulness
+    at the cost of helpfulness. Some evaluations combine truthfulness and informativeness
+    scores to address this. Useful signal for research and documentation routing where
+    factual accuracy matters.
+
+    '
+  predicts:
+  - factual_calibration
+  - resistance_to_common_misconceptions
+  - epistemic_humility
+  saturation_threshold: 85
+  score_interpretation:
+    0-40: Frequently asserts common falsehoods
+    40-55: Moderate truthfulness; fails on well-known misconception areas
+    55-70: Reasonably calibrated; avoids most common myths
+    70-85: Strong resistance to misconceptions
+    85-100: Highly calibrated; rarely asserts untrue popular beliefs
+  weight_for_task:
+    analysis: 0.3
+    classification: 0.2
+    coding: 0.0
+    creative: 0.05
+    documentation: 0.2
+    general: 0.3
+    instruction_following: 0.1
+    math: 0.05
+    reasoning: 0.2
+    research: 0.4
+- contamination_risk: medium
+  does_not_predict:
+  - single_turn_task_accuracy
+  - long_context_handling
+  - tool_use_capability
+  measures: 'Multi-turn conversation quality across 8 categories including writing,
+    roleplay, extraction, reasoning, math, coding, knowledge, and instruction following.
+    80 two-turn questions rated on a 1–10 scale by GPT-4 as judge. Tests conversational
+    coherence and instruction compliance across turns.
+
+    '
+  name: MT-Bench
+  notes: 'GPT-4 as judge introduces bias toward GPT-4 style responses. Only 80 questions
+    — high variance. Scores vary by judge model version. Better as a rough signal
+    than a precise measurement. The multi-turn aspect is valuable for routing conversational
+    tasks.
+
+    '
+  predicts:
+  - multi_turn_conversation_quality
+  - instruction_following_in_dialogue
+  - response_quality_across_domains
+  - conversational_coherence
+  saturation_threshold: 9
+  score_interpretation:
+    0-5: Poor conversational quality across categories
+    5-7: Acceptable for simple tasks; inconsistent across categories
+    7-8.5: Good; suitable for most conversational tasks
+    8.5-9.5: Strong; competitive with frontier models
+    9.5-10: Near-perfect judged quality
+  weight_for_task:
+    analysis: 0.2
+    classification: 0.1
+    coding: 0.15
+    creative: 0.4
+    documentation: 0.4
+    general: 0.5
+    instruction_following: 0.5
+    math: 0.1
+    reasoning: 0.2
+    research: 0.2
+- contamination_risk: medium
+  does_not_predict:
+  - factual_accuracy
+  - code_correctness
+  - mathematical_ability
+  - long_context_handling
+  measures: 'Instruction following quality rated by an LLM judge (GPT-4 or GPT-4-Turbo)
+    comparing model responses against a reference model (usually GPT-4). Win rate
+    measures how often the evaluated model is preferred over the reference. Tests
+    general instruction following and response quality.
+
+    '
+  name: AlpacaEval
+  notes: 'Length bias is a known issue — longer responses are often rated higher regardless
+    of quality. AlpacaEval 2.0 LC (Length Controlled) corrects for this. Use LC variant
+    when available. The reference model version changes over time, making cross-version
+    comparison unreliable.
+
+    '
+  predicts:
+  - general_instruction_following
+  - response_quality_preference
+  - response_helpfulness
+  saturation_threshold: 80
+  score_interpretation:
+    0-30%: Frequently inferior to the reference model
+    30-50%: Comparable to earlier generation models
+    50-65%: Competitive with strong instruction-tuned models
+    65-80%: Frequently preferred over reference; strong instruction following
+    80-100%: Consistently preferred; top-tier instruction following
+  weight_for_task:
+    analysis: 0.2
+    classification: 0.1
+    coding: 0.1
+    creative: 0.5
+    documentation: 0.5
+    general: 0.5
+    instruction_following: 0.7
+    math: 0.05
+    reasoning: 0.1
+    research: 0.2
+- contamination_risk: medium
+  does_not_predict:
+  - multi_language_coding
+  - multi_file_coding
+  - real_world_bug_fixing
+  measures: 'Extended version of HumanEval with 80+ additional test cases per problem,
+    exposing edge cases that the original HumanEval tests miss. A solution must pass
+    all extended tests. Tests the same Python function completion capability but requires
+    more robust implementations.
+
+    '
+  name: HumanEval+
+  notes: 'Scores are 5–15 points lower than HumanEval on the same model because the
+    extended test cases catch implementations that game the weak original tests. Prefer
+    HumanEval+ over HumanEval when Python robustness matters.
+
+    '
+  predicts:
+  - robust_python_function_implementation
+  - edge_case_handling
+  - code_correctness_under_stress
+  saturation_threshold: 92
+  score_interpretation:
+    0-50: Produces fragile implementations
+    50-70: Handles common cases; fails edge cases
+    70-85: Reasonably robust Python implementation
+    85-95: Strong; handles most edge cases
+    95-100: Near-saturated
+  weight_for_task:
+    analysis: 0.1
+    classification: 0.0
+    coding: 0.6
+    creative: 0.0
+    documentation: 0.05
+    general: 0.2
+    instruction_following: 0.1
+    math: 0.05
+    reasoning: 0.1
+    research: 0.0
+- contamination_risk: low
+  does_not_predict:
+  - code_generation
+  - multi_file_reasoning
+  - real_world_bug_fixing
+  measures: 'Code Reasoning and Understanding — 800 Python functions each paired with
+    an input and its output. Two tasks: (1) input prediction given function and output,
+    (2) output prediction given function and input. Tests the ability to trace code
+    execution mentally without running it.
+
+    '
+  name: CRUX
+  notes: 'Tests a capability (code comprehension and tracing) that is largely orthogonal
+    to code generation. A model can score well on HumanEval and poorly on CRUX. Highly
+    predictive for debugging tasks where understanding existing code matters more
+    than generating new code.
+
+    '
+  predicts:
+  - code_tracing_and_execution_simulation
+  - program_semantics_understanding
+  - debugging_reasoning
+  saturation_threshold: 80
+  score_interpretation:
+    0-30: Cannot reliably trace Python execution
+    30-50: Handles simple functions; fails loops and recursion
+    50-65: Reasonable code tracing; suitable for debugging assistance
+    65-80: Strong; handles complex execution traces
+    80-100: Exceptional code comprehension
+  weight_for_task:
+    analysis: 0.3
+    classification: 0.0
+    coding: 0.7
+    creative: 0.0
+    documentation: 0.0
+    general: 0.15
+    instruction_following: 0.0
+    math: 0.1
+    reasoning: 0.4
+    research: 0.0
+- contamination_risk: low
+  does_not_predict:
+  - deep_expertise_in_any_single_domain
+  - tool_use_capability
+  - long_context_handling
+  measures: 'Monthly-updated benchmark across six categories: math, coding, reasoning,
+    language, instruction following, and data analysis. Problems are sourced from
+    recent competitions, papers, and news to prevent contamination. Evaluated with
+    objective scoring rather than LLM judges.
+
+    '
+  name: LiveBench
+  notes: 'Updated monthly, making it one of the most contamination-resistant comprehensive
+    benchmarks. Scores are not directly comparable across months as problems change.
+    Use the same release date when comparing models. Strong general-purpose routing
+    signal.
+
+    '
+  predicts:
+  - current_model_capability_across_domains
+  - contamination_resistant_general_performance
+  - multi_domain_breadth
+  saturation_threshold: 80
+  score_interpretation:
+    0-30: Below threshold for general tasks
+    30-50: Moderate across categories; significant gaps in some
+    50-65: Strong general performance across most categories
+    65-80: Exceptional breadth; near top of current leaderboard
+    80-100: State-of-the-art across all categories
+  weight_for_task:
+    analysis: 0.4
+    classification: 0.2
+    coding: 0.4
+    creative: 0.1
+    documentation: 0.2
+    general: 0.5
+    instruction_following: 0.3
+    math: 0.4
+    reasoning: 0.5
+    research: 0.4
+- contamination_risk: low
+  does_not_predict:
+  - factual_knowledge
+  - code_generation
+  - mathematical_computation
+  measures: 'Multi-step Soft Reasoning — complex reasoning problems requiring integration
+    of multiple clues across long narratives. Includes murder mystery solving, team
+    allocation under constraints, and object tracking across scenarios. Tests sustained
+    reasoning over extended contexts.
+
+    '
+  name: MuSR
+  notes: 'Tests reasoning across longer narratives than BBH. Particularly useful for
+    routing tasks that require integrating information across a long document or conversation.
+    Scores vary significantly with context window size and attention quality.
+
+    '
+  predicts:
+  - long_chain_reasoning
+  - constraint_satisfaction
+  - narrative_reasoning
+  - multi_clue_integration
+  saturation_threshold: 75
+  score_interpretation:
+    0-30: Cannot handle multi-step reasoning across narratives
+    30-50: Handles simple constraint scenarios; fails complex mysteries
+    50-65: Solid narrative reasoning; suitable for analysis tasks
+    65-80: Strong; handles most complex multi-step scenarios
+    80-100: Exceptional sustained reasoning capability
+  weight_for_task:
+    analysis: 0.6
+    classification: 0.1
+    coding: 0.1
+    creative: 0.1
+    documentation: 0.05
+    general: 0.3
+    instruction_following: 0.1
+    math: 0.1
+    reasoning: 0.7
+    research: 0.4
+- contamination_risk: low
+  does_not_predict:
+  - general_reasoning
+  - code_generation_beyond_tool_calls
+  - factual_knowledge
+  - conversational_quality
+  measures: 'Berkeley Function Calling Leaderboard — structured evaluation of function
+    and tool calling accuracy. Tests whether models correctly select functions from
+    a provided schema, pass arguments with correct types and values, and handle nested
+    calls, parallel calls, and irrelevant function detection. Covers simple, multiple,
+    parallel, nested, and irrelevant call scenarios.
+
+    '
+  name: BFCL
+  notes: 'The most reliable benchmark for routing tasks that require tool or API calling.
+    Directly tests the structured output capability that agent frameworks depend on.
+    Models with high BFCL scores handle function schemas reliably. Essential signal
+    for any agentic task routing decision.
+
+    '
+  predicts:
+  - function_and_tool_calling_accuracy
+  - api_invocation_correctness
+  - schema_adherence
+  - structured_output_for_tool_use
+  - argument_type_correctness
+  saturation_threshold: 90
+  score_interpretation:
+    0-40: Unreliable for tool use; frequent schema violations
+    40-60: Handles simple single-call scenarios; fails parallel/nested
+    60-75: Reliable for most tool-use patterns
+    75-88: Strong; handles complex multi-function scenarios
+    88-100: Near-perfect tool calling compliance
+  weight_for_task:
+    analysis: 0.2
+    classification: 0.3
+    coding: 0.3
+    creative: 0.0
+    documentation: 0.1
+    general: 0.2
+    instruction_following: 0.4
+    math: 0.0
+    reasoning: 0.1
+    research: 0.2
+- contamination_risk: low
+  does_not_predict:
+  - greenfield_system_design
+  - architectural_reasoning
+  - documentation_writing
+  - mathematical_reasoning
+  measures: 'Real-world code editing across 647 exercises in multiple programming
+    languages including Python, TypeScript, Rust, Go, Java, C++, and others. Tests
+    the ability to understand an existing file, apply a requested change, and produce
+    code that passes the exercise test suite. Uses Aider''s diff-editing format (unified
+    diff output).
+
+    '
+  name: Aider Polyglot
+  notes: 'The best proxy for real-world multi-language code editing because it uses
+    actual exercises with test suites. Requires models to understand diff format and
+    apply changes precisely. Correlates strongly with SWE-bench for multi-language
+    repositories. Scores are lower than HumanEval because editing is harder than completion.
+
+    '
+  predicts:
+  - multi_language_code_editing
+  - code_change_application
+  - test_driven_code_modification
+  - polyglot_programming_competence
+  saturation_threshold: 78
+  score_interpretation:
+    0-20: Cannot reliably apply code edits in most languages
+    20-40: Handles Python and JavaScript; fails less common languages
+    40-60: Solid polyglot editing; handles most mainstream languages
+    60-75: Strong; reliable across all major languages
+    75-100: Exceptional multi-language editing capability
+  weight_for_task:
+    analysis: 0.1
+    classification: 0.0
+    coding: 0.85
+    creative: 0.0
+    documentation: 0.05
+    general: 0.2
+    instruction_following: 0.2
+    math: 0.0
+    reasoning: 0.1
+    research: 0.0
+calibration:
+  mmlu:
+    mean_divergence: 0.4
+    sample_count: 50
+    score_offset: 0.4

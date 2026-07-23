@@ -17,6 +17,7 @@ from vetinari.types import AgentType
 
 logger = logging.getLogger(__name__)
 
+
 # Maps JSON Schema type names to Python types for structural validation.
 _TYPE_MAP: dict[str, type | tuple[type, ...]] = {
     "string": str,
@@ -28,7 +29,7 @@ _TYPE_MAP: dict[str, type | tuple[type, ...]] = {
 }
 
 
-class GraphValidatorMixin:
+class GraphValidationEngine:
     """Output schema validation methods for AgentGraph.
 
     Validates agent outputs against SkillSpec schemas after successful
@@ -55,13 +56,17 @@ class GraphValidatorMixin:
             List of validation issue strings. Empty list means output is valid.
         """
         spec = self.get_skill_spec(agent_type)
-        if spec is None or not spec.output_schema:
-            return []
+        if spec is None:
+            return [f"Missing SkillSpec for agent type: {agent_type.value}"]
+        if not spec.output_schema:
+            return [f"Missing output schema for agent type: {agent_type.value}"]
 
         schema = spec.output_schema
         if not isinstance(output, dict):
-            # Non-dict outputs can't be validated against object schemas
-            return []
+            issues = [f"Output for {agent_type.value} must be an object, got {type(output).__name__}"]
+            required = schema.get("required", [])
+            issues.extend(f"Missing required output field: '{key}'" for key in required)
+            return issues
 
         required = schema.get("required", [])
         properties = schema.get("properties", {})
@@ -95,7 +100,7 @@ class GraphValidatorMixin:
                     pydantic_schema(**output)
                 except Exception as val_err:
                     issues.append(f"Pydantic validation: {val_err}")
-        except Exception:
-            logger.warning("Pydantic schema validation unavailable for mode")
+        except Exception as exc:
+            issues.append(f"Pydantic schema validation unavailable: {exc}")
 
         return issues

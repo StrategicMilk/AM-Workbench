@@ -1,25 +1,13 @@
 # Cloud model providers available to Vetinari.
 # Each entry provides endpoint, authentication token env vars, and capability tags.
 # free_tier: false means all usage is billed; check the provider's pricing page before use.
+routing_posture:
+  default_path: local_first
+  cloud_use: explicit_opt_in
+  remote_access_product_flow: remote_control_companion_gate
+  tailscale_specific_setup: tailscale_serve_loopback_binding
+  disclosure: prompts_leave_machine_only_when_cloud_provider_is_selected
 providers:
-  huggingface_inference:
-    name: "HuggingFace Inference API"
-    endpoint: "https://api-inference.huggingface.co/models"
-    free_tier: false
-    context_len: 8192
-    memory_gb: 0
-    tags: ["cloud", "inference"]
-    env_token: "HF_HUB_TOKEN"
-
-  replicate:
-    name: "Replicate"
-    endpoint: "https://api.replicate.com/v1"
-    free_tier: false
-    context_len: 8192
-    memory_gb: 0
-    tags: ["cloud", "replicate"]
-    env_token: "REPLICATE_API_TOKEN"
-
   claude:
     name: "Claude (Anthropic)"
     endpoint: "https://api.anthropic.com/v1"
@@ -29,6 +17,10 @@ providers:
     tags: ["cloud", "reasoning", "claude"]
     env_token: "ANTHROPIC_API_KEY"
     env_token_fallback: "CLAUDE_API_KEY"
+    data_inventory_store_id: "cloud_provider_inference"
+    consent_basis: "explicit-opt-in"
+    retention_days: 0
+    redaction_applied: true
 
   gemini:
     name: "Gemini (Google)"
@@ -38,6 +30,10 @@ providers:
     memory_gb: 0
     tags: ["cloud", "gemini", "google"]
     env_token: "GEMINI_API_KEY"
+    data_inventory_store_id: "cloud_provider_inference"
+    consent_basis: "explicit-opt-in"
+    retention_days: 0
+    redaction_applied: true
 
   openai:
     name: "OpenAI"
@@ -47,3 +43,7 @@ providers:
     memory_gb: 0
     tags: ["cloud", "openai", "reasoning", "vision"]
     env_token: "OPENAI_API_KEY"
+    data_inventory_store_id: "cloud_provider_inference"
+    consent_basis: "explicit-opt-in"
+    retention_days: 0
+    redaction_applied: true

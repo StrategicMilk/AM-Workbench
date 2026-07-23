@@ -5,7 +5,7 @@ Contains methods that execute coding subtasks, check approval requirements,
 log approval decisions, and auto-approve low-risk tasks.
 
 All methods here are incorporated into PlanModeEngine via inheritance from
-_PlanExecutorMixin.
+_PlanExecutor.
 """
 
 from __future__ import annotations
@@ -13,14 +13,47 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Protocol, cast
 
+from vetinari.boundary_guards import account_evidence_drop
 from vetinari.planning.plan_types import Plan, Subtask, TaskDomain
 
 logger = logging.getLogger(__name__)
 
+APPROVAL_REQUIRED_DOMAINS = frozenset({TaskDomain.CODING})
+"""Subtask domains that require explicit approval while plan mode is active."""
 
-class _PlanExecutorMixin:
+
+class _PlanExecutorOwner(Protocol):
+    dry_run_risk_threshold: float
+
+    def log_approval_decision(
+        self,
+        plan_id: str,
+        subtask_id: str,
+        approved: bool,
+        approver: str,
+        reason: str = "",
+        risk_score: float = 0.0,
+        task_type: str = "",
+    ) -> bool:
+        """Persist an approval decision for a plan subtask.
+
+        Args:
+            plan_id: Parent plan identifier.
+            subtask_id: Approved or rejected subtask identifier.
+            approved: Whether execution was approved.
+            approver: Identity of the approving actor.
+            reason: Optional rationale for the decision.
+            risk_score: Risk score used for the decision.
+            task_type: Domain or execution type for the approved task.
+
+        Returns:
+            True when the approval decision was persisted.
+        """
+
+
+class _PlanExecutor:
     """Execution and approval methods for PlanModeEngine.
 
     Inheritors MUST provide:
@@ -48,7 +81,7 @@ class _PlanExecutorMixin:
         if not plan_mode:
             return False
 
-        return subtask.domain == TaskDomain.CODING
+        return bool(subtask.domain in APPROVAL_REQUIRED_DOMAINS)
 
     def check_subtask_approval_required(self, plan: Plan, subtask_id: str, plan_mode: bool = True) -> dict[str, Any]:
         """Check if a subtask requires approval and return its current status.
@@ -87,6 +120,7 @@ class _PlanExecutorMixin:
         approver: str,
         reason: str = "",
         risk_score: float = 0.0,
+        task_type: str = "",
     ) -> bool:
         """Log an approval decision to the unified memory store.
 
@@ -97,6 +131,8 @@ class _PlanExecutorMixin:
             approver: Identity of the approver.
             reason: Optional reason for the decision.
             risk_score: Risk score at the time of the decision.
+            task_type: Domain or execution type for the approved task. Defaults
+                to ``unknown`` instead of pretending every approval is coding.
 
         Returns:
             True if the log entry was persisted, False otherwise.
@@ -109,7 +145,7 @@ class _PlanExecutorMixin:
             if store is not None:
                 approval_details = ApprovalDetails(
                     task_id=subtask_id,
-                    task_type="coding",
+                    task_type=task_type.strip() or "unknown",
                     plan_id=plan_id,
                     approval_status="approved" if approved else "rejected",
                     approver=approver,
@@ -156,15 +192,28 @@ class _PlanExecutorMixin:
         if subtask.domain != TaskDomain.CODING:
             return True
 
-        if plan.risk_score <= self.dry_run_risk_threshold:  # type: ignore[attr-defined]
-            self.log_approval_decision(
-                plan.plan_id,
-                subtask.subtask_id,
+        owner = cast(_PlanExecutorOwner, self)
+        if plan.risk_score <= owner.dry_run_risk_threshold:
+            approval_record = {
+                "plan_id": plan.plan_id,
+                "subtask_id": subtask.subtask_id,
+                "approved": True,
+                "approver": "system_auto",
+                "risk_score": plan.risk_score,
+                "task_type": subtask.domain.value,
+            }
+            logged = owner.log_approval_decision(
+                approval_record["plan_id"],
+                approval_record["subtask_id"],
                 approved=True,
-                approver="system_auto",
+                approver=approval_record["approver"],
                 reason=f"Auto-approved due to low risk (score: {plan.risk_score:.2f})",
                 risk_score=plan.risk_score,
+                task_type=approval_record["task_type"],
             )
+            if not logged:
+                account_evidence_drop(approval_record, "approval_log", logger=logger)
+                return False
             return True
 
         return False
@@ -233,7 +282,7 @@ class _PlanExecutorMixin:
             return {"success": False, "error": "Coding task execution failed"}
 
     def execute_multi_step_coding(self, plan: Plan, subtasks: list[Subtask]) -> list[dict[str, Any]]:
-        """Execute multiple coding tasks in sequence (scaffold + module + tests).
+        """Execute multiple coding tasks under ExecutionStrategy.SCAFFOLD_THEN_FILL.
 
         Execution continues even when individual subtasks fail.
 
@@ -245,6 +294,8 @@ class _PlanExecutorMixin:
             List of result dicts, one per subtask in input order, each
             with the same structure as ``execute_coding_task`` returns.
         """
+        if not subtasks:
+            return []
         results = []
 
         for subtask in subtasks:

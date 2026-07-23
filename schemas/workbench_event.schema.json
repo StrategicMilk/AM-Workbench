@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_event.schema.json",
+  "title": "AM Workbench Universal Event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "kind",
+    "subject_kind",
+    "subject_ref",
+    "occurred_at_utc",
+    "actor",
+    "authority_level",
+    "evidence_refs",
+    "provenance_refs",
+    "confidence",
+    "project_id",
+    "source_surface",
+    "payload"
+  ],
+  "properties": {
+    "event_id": {"type": "string", "minLength": 1},
+    "kind": {
+      "type": "string",
+      "enum": [
+        "asset_recorded",
+        "run_recorded",
+        "trace_captured",
+        "eval_recorded",
+        "proposal_recorded",
+        "promotion_decided",
+        "lease_recorded",
+        "automation_simulated",
+        "monitoring_signal",
+        "improvement_decision",
+        "pack_acceptance"
+      ]
+    },
+    "subject_kind": {
+      "type": "string",
+      "enum": [
+        "asset",
+        "run",
+        "trace",
+        "eval",
+        "proposal",
+        "promotion",
+        "lease",
+        "automation",
+        "monitoring_signal",
+        "improvement",
+        "pack"
+      ]
+    },
+    "subject_ref": {"type": "string", "minLength": 1},
+    "occurred_at_utc": {
+      "type": "string",
+      "minLength": 1,
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "actor": {"type": "string", "minLength": 1},
+    "authority_level": {
+      "type": "string",
+      "enum": ["observed", "suggested", "proposed", "approved", "executed", "promoted"]
+    },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "provenance_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "confidence": {"type": "number", "exclusiveMinimum": 0.0, "maximum": 1.0},
+    "project_id": {"type": "string", "minLength": 1},
+    "source_surface": {"type": "string"},
+    "payload": {"type": "object"}
+  }
+}

@@ -1,128 +1,120 @@
-# Canary test corpus — canonical prompt/expected-output pairs for regression detection.
-# Run weekly. Alert if similarity drops below threshold (default 0.7).
-# Categories: code_generation, summarization, reasoning, instruction_following
-
 canary_pairs:
-  # -- Code Generation (5 pairs) --
-  - id: "canary_001"
-    category: "code_generation"
-    prompt: "Write a Python function that checks if a number is prime."
-    expected_output: "def is_prime(n):"
-    similarity_threshold: 0.4
+- id: canary_001
+  category: code_generation
+  prompt: Write a Python function that checks if a number is prime.
+  expected_output: 'def is_prime(n):'
+  similarity_threshold: 0.85
+- id: canary_002
+  category: code_generation
+  prompt: Write a Python function to reverse a linked list.
+  expected_output: 'def reverse_linked_list(head):'
+  similarity_threshold: 0.85
+- id: canary_003
+  category: code_generation
+  prompt: Write a Python class for a binary search tree with insert and search methods.
+  expected_output: 'class BinarySearchTree:'
+  similarity_threshold: 0.85
+- id: canary_004
+  category: code_generation
+  prompt: Write a Python decorator that caches function results.
+  expected_output: 'def cache(func):'
+  similarity_threshold: 0.85
+- id: canary_005
+  category: code_generation
+  prompt: Write a Python function that reads a CSV file and returns a list of dictionaries.
+  expected_output: 'def read_csv(filepath):'
+  similarity_threshold: 0.85
+- id: canary_006
+  category: summarization
+  prompt: 'Summarize: The quick brown fox jumps over the lazy dog. The dog was sleeping
+    in the sun. The fox was hungry and looking for food.'
+  expected_output: A fox jumped over a sleeping dog while searching for food.
+  similarity_threshold: 0.80
+- id: canary_007
+  category: summarization
+  prompt: 'Summarize in one sentence: Python is a high-level programming language
+    known for its readability. It supports multiple paradigms including OOP and functional
+    programming. It has a large standard library.'
+  expected_output: Python is a readable, multi-paradigm language with a large standard
+    library.
+  similarity_threshold: 0.80
+- id: canary_008
+  category: summarization
+  prompt: 'Summarize: Machine learning models learn patterns from data. They can be
+    supervised or unsupervised. Deep learning uses neural networks with many layers.'
+  expected_output: Machine learning finds patterns in data using supervised, unsupervised,
+    or deep neural network approaches.
+  similarity_threshold: 0.80
+- id: canary_009
+  category: summarization
+  prompt: 'Summarize: Git is a distributed version control system. It tracks changes
+    in source code. Multiple developers can work on the same project simultaneously.'
+  expected_output: Git is a distributed version control system for collaborative source
+    code management.
+  similarity_threshold: 0.80
+- id: canary_010
+  category: summarization
+  prompt: 'Summarize: REST APIs use HTTP methods to perform CRUD operations. GET retrieves
+    data, POST creates, PUT updates, DELETE removes.'
+  expected_output: REST APIs map HTTP methods to CRUD operations on resources.
+  similarity_threshold: 0.80
+- id: canary_011
+  category: reasoning
+  prompt: If all roses are flowers and some flowers fade quickly, can we conclude
+    that some roses fade quickly?
+  expected_output: No, we cannot conclude that. While all roses are flowers, the ones
+    that fade quickly might not include any roses.
+  similarity_threshold: 0.80
+- id: canary_012
+  category: reasoning
+  prompt: A bat and a ball cost $1.10 together. The bat costs $1.00 more than the
+    ball. How much does the ball cost?
+  expected_output: The ball costs $0.05
+  similarity_threshold: 0.80
+- id: canary_013
+  category: reasoning
+  prompt: If it takes 5 machines 5 minutes to make 5 widgets, how long would it take
+    100 machines to make 100 widgets?
+  expected_output: 5 minutes
+  similarity_threshold: 0.80
+- id: canary_014
+  category: reasoning
+  prompt: Is the following argument valid? All mammals are warm-blooded. All dogs
+    are mammals. Therefore, all dogs are warm-blooded.
+  expected_output: Yes, this is a valid syllogism.
+  similarity_threshold: 0.80
+- id: canary_015
+  category: reasoning
+  prompt: 'What comes next in the sequence: 2, 6, 12, 20, 30, ?'
+  expected_output: '42'
+  similarity_threshold: 0.80
+- id: canary_016
+  category: instruction_following
+  prompt: List exactly three benefits of exercise. Use bullet points.
+  expected_output: '- Improves cardiovascular health
 
-  - id: "canary_002"
-    category: "code_generation"
-    prompt: "Write a Python function to reverse a linked list."
-    expected_output: "def reverse_linked_list(head):"
-    similarity_threshold: 0.3
+    - Boosts mental well-being
 
-  - id: "canary_003"
-    category: "code_generation"
-    prompt: "Write a Python class for a binary search tree with insert and search methods."
-    expected_output: "class BinarySearchTree:"
-    similarity_threshold: 0.3
-
-  - id: "canary_004"
-    category: "code_generation"
-    prompt: "Write a Python decorator that caches function results."
-    expected_output: "def cache(func):"
-    similarity_threshold: 0.3
-
-  - id: "canary_005"
-    category: "code_generation"
-    prompt: "Write a Python function that reads a CSV file and returns a list of dictionaries."
-    expected_output: "def read_csv(filepath):"
-    similarity_threshold: 0.3
-
-  # -- Summarization (5 pairs) --
-  - id: "canary_006"
-    category: "summarization"
-    prompt: "Summarize: The quick brown fox jumps over the lazy dog. The dog was sleeping in the sun. The fox was hungry and looking for food."
-    expected_output: "A fox jumped over a sleeping dog while searching for food."
-    similarity_threshold: 0.4
-
-  - id: "canary_007"
-    category: "summarization"
-    prompt: "Summarize in one sentence: Python is a high-level programming language known for its readability. It supports multiple paradigms including OOP and functional programming. It has a large standard library."
-    expected_output: "Python is a readable, multi-paradigm language with a large standard library."
-    similarity_threshold: 0.4
-
-  - id: "canary_008"
-    category: "summarization"
-    prompt: "Summarize: Machine learning models learn patterns from data. They can be supervised or unsupervised. Deep learning uses neural networks with many layers."
-    expected_output: "Machine learning finds patterns in data using supervised, unsupervised, or deep neural network approaches."
-    similarity_threshold: 0.4
-
-  - id: "canary_009"
-    category: "summarization"
-    prompt: "Summarize: Git is a distributed version control system. It tracks changes in source code. Multiple developers can work on the same project simultaneously."
-    expected_output: "Git is a distributed version control system for collaborative source code management."
-    similarity_threshold: 0.4
-
-  - id: "canary_010"
-    category: "summarization"
-    prompt: "Summarize: REST APIs use HTTP methods to perform CRUD operations. GET retrieves data, POST creates, PUT updates, DELETE removes."
-    expected_output: "REST APIs map HTTP methods to CRUD operations on resources."
-    similarity_threshold: 0.4
-
-  # -- Reasoning (5 pairs) --
-  - id: "canary_011"
-    category: "reasoning"
-    prompt: "If all roses are flowers and some flowers fade quickly, can we conclude that some roses fade quickly?"
-    expected_output: "No, we cannot conclude that. While all roses are flowers, the ones that fade quickly might not include any roses."
-    similarity_threshold: 0.3
-
-  - id: "canary_012"
-    category: "reasoning"
-    prompt: "A bat and a ball cost $1.10 together. The bat costs $1.00 more than the ball. How much does the ball cost?"
-    expected_output: "The ball costs $0.05"
-    similarity_threshold: 0.3
-
-  - id: "canary_013"
-    category: "reasoning"
-    prompt: "If it takes 5 machines 5 minutes to make 5 widgets, how long would it take 100 machines to make 100 widgets?"
-    expected_output: "5 minutes"
-    similarity_threshold: 0.5
-
-  - id: "canary_014"
-    category: "reasoning"
-    prompt: "Is the following argument valid? All mammals are warm-blooded. All dogs are mammals. Therefore, all dogs are warm-blooded."
-    expected_output: "Yes, this is a valid syllogism."
-    similarity_threshold: 0.3
-
-  - id: "canary_015"
-    category: "reasoning"
-    prompt: "What comes next in the sequence: 2, 6, 12, 20, 30, ?"
-    expected_output: "42"
-    similarity_threshold: 0.5
-
-  # -- Instruction Following (5 pairs) --
-  - id: "canary_016"
-    category: "instruction_following"
-    prompt: "List exactly three benefits of exercise. Use bullet points."
-    expected_output: "- Improves cardiovascular health\n- Boosts mental well-being\n- Strengthens muscles and bones"
-    similarity_threshold: 0.3
-
-  - id: "canary_017"
-    category: "instruction_following"
-    prompt: "Respond with only the word 'yes' or 'no': Is Python an interpreted language?"
-    expected_output: "yes"
-    similarity_threshold: 0.5
-
-  - id: "canary_018"
-    category: "instruction_following"
-    prompt: "Convert the following to uppercase: hello world"
-    expected_output: "HELLO WORLD"
-    similarity_threshold: 0.8
-
-  - id: "canary_019"
-    category: "instruction_following"
-    prompt: "Count the number of words in this sentence: The cat sat on the mat."
-    expected_output: "7"
-    similarity_threshold: 0.5
-
-  - id: "canary_020"
-    category: "instruction_following"
-    prompt: "Replace all vowels in 'programming' with asterisks."
-    expected_output: "pr*gr*mm*ng"
-    similarity_threshold: 0.5
+    - Strengthens muscles and bones'
+  similarity_threshold: 0.85
+- id: canary_017
+  category: instruction_following
+  prompt: 'Respond with only the word ''yes'' or ''no'': Is Python an interpreted
+    language?'
+  expected_output: 'yes'
+  similarity_threshold: 0.95
+- id: canary_018
+  category: instruction_following
+  prompt: 'Convert the following to uppercase: hello world'
+  expected_output: HELLO WORLD
+  similarity_threshold: 0.95
+- id: canary_019
+  category: instruction_following
+  prompt: 'Count the number of words in this sentence: The cat sat on the mat.'
+  expected_output: '7'
+  similarity_threshold: 0.95
+- id: canary_020
+  category: instruction_following
+  prompt: Replace all vowels in 'programming' with asterisks.
+  expected_output: pr*gr*mm*ng
+  similarity_threshold: 0.95

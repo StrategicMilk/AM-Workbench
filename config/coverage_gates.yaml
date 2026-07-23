@@ -1,0 +1,52 @@
+schema_version: 1
+owner_pack: amw-full-coverage-branch-lane-manifest
+global_floor: 50
+branch_coverage_required: true
+release_authority:
+  full_release_required: true
+  local_changed_file_selection_can_satisfy_release: false
+  required_lane_ids:
+    - runtime-profile-sharded-coverage
+    - coverage-gates
+    - deletion-ledger
+high_risk_packages:
+  - pattern: "vetinari/workbench/**"
+    line_minimum: 70
+    branch_minimum: 60
+    evidence_artifact: ".vetinari/coverage/workbench-coverage.json"
+  - pattern: "vetinari/web/**"
+    line_minimum: 70
+    branch_minimum: 60
+    evidence_artifact: ".vetinari/coverage/web-coverage.json"
+  - pattern: "vetinari/security/**"
+    line_minimum: 80
+    branch_minimum: 70
+    evidence_artifact: ".vetinari/coverage/security-coverage.json"
+  - pattern: "vetinari/runtime/**"
+    line_minimum: 70
+    branch_minimum: 60
+    evidence_artifact: ".vetinari/coverage/runtime-coverage.json"
+  - pattern: "vetinari/desktop/**"
+    line_minimum: 65
+    branch_minimum: 55
+    evidence_artifact: ".vetinari/coverage/desktop-coverage.json"
+  - pattern: "vetinari/training/**"
+    line_minimum: 70
+    branch_minimum: 60
+    evidence_artifact: ".vetinari/coverage/training-coverage.json"
+  - pattern: "vetinari/mcp/**"
+    line_minimum: 75
+    branch_minimum: 65
+    evidence_artifact: ".vetinari/coverage/mcp-coverage.json"
+  - pattern: "crates/amw-kernel/**"
+    line_minimum: 70
+    branch_minimum: 60
+    evidence_artifact: ".vetinari/coverage/amw-kernel-coverage.json"
+  - pattern: "crates/amw-protocol/**"
+    line_minimum: 70
+    branch_minimum: 60
+    evidence_artifact: ".vetinari/coverage/amw-protocol-coverage.json"
+  - pattern: "src-tauri/**"
+    line_minimum: 65
+    branch_minimum: 55
+    evidence_artifact: ".vetinari/coverage/src-tauri-coverage.json"

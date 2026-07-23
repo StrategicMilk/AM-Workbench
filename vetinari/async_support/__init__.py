@@ -7,6 +7,7 @@ from vetinari.async_support.conversation import ConversationStore, get_conversat
 from vetinari.async_support.streaming import (
     BufferedStreamHandler,
     LoggingStreamHandler,
+    RedactingSSEStreamHandler,
     SSEStreamHandler,
     StreamChunk,
     StreamHandler,
@@ -18,6 +19,7 @@ __all__ = [
     "BufferedStreamHandler",
     "ConversationStore",
     "LoggingStreamHandler",
+    "RedactingSSEStreamHandler",
     "SSEStreamHandler",
     "StreamChunk",
     "StreamHandler",

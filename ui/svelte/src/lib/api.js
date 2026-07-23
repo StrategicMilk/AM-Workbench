@@ -6,8 +6,54 @@
  * analytics, plans, rules, credentials, ADRs, skills.
  */
 
+import { nativeKernelPathFromUrl } from './native_kernel_routes.js';
+
+// Native kernel route markers verified by scripts/check_litestar_retirement.py:
+// /api/workbench/method-library, /api/v1/workbench/migration.
 const API = '/api';
 const API_V1 = '/api/v1';
+
+function tauriInvoke() {
+  return globalThis.__TAURI__?.core?.invoke ?? globalThis.__TAURI_INTERNALS__?.invoke ?? null;
+}
+
+function nativeKernelPath(url) {
+  const path = nativeKernelPathFromUrl(String(url));
+  return path ? path.split('?')[0] : null;
+}
+
+function nativeKernelRejected(path, payload) {
+  return path.startsWith('/api/v1/training/')
+    || path.startsWith('/api/training/')
+    ? payload?.status === 'rejected'
+    : false;
+}
+
+function jsonBody(options) {
+  if (options.body == null || typeof options.body !== 'string') {
+    return options.body ?? null;
+  }
+  return JSON.parse(options.body);
+}
+
+export class WorkbenchApiError extends Error {
+  constructor(message, { status = null, statusText = '', body = null } = {}) {
+    super(message);
+    this.name = 'WorkbenchApiError';
+    this.status = status;
+    this.statusText = statusText;
+    this.body = body;
+  }
+}
+
+function parseErrorBody(rawBody) {
+  if (!rawBody) return null;
+  try {
+    return JSON.parse(rawBody);
+  } catch {
+    return { detail: rawBody };
+  }
+}
 
 // -- Internal helpers --------------------------------------------------------
 
@@ -21,16 +67,40 @@ async function request(url, options = {}) {
     method === 'POST' || method === 'PUT' || method === 'DELETE' || method === 'PATCH'
       ? { 'X-Requested-With': 'XMLHttpRequest' }
       : {};
+  const invoke = tauriInvoke();
+  const kernelPath = nativeKernelPath(url);
+  if (invoke && kernelPath) {
+    const payload = await invoke('vetinari_kernel_request', {
+      payload: {
+        method,
+        path: String(url),
+        body: jsonBody(options),
+      },
+    });
+    if (nativeKernelRejected(kernelPath, payload)) {
+      throw new Error(payload.message ?? payload.reason ?? 'native training action rejected');
+    }
+    return payload;
+  }
 
   const res = await fetch(url, {
     headers: { 'Content-Type': 'application/json', ...csrfHeaders, ...options.headers },
     ...options,
   });
   if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`${res.status} ${res.statusText}: ${body}`);
+    const rawBody = await res.text().catch(() => '');
+    const body = parseErrorBody(rawBody);
+    throw new WorkbenchApiError(`${res.status} ${res.statusText}: ${rawBody}`, {
+      status: res.status,
+      statusText: res.statusText,
+      body,
+    });
   }
   return res.json();
+}
+
+export function workbenchKernelRequest(url, options = {}) {
+  return request(url, options);
 }
 
 function get(url) {
@@ -49,16 +119,86 @@ function del(url) {
   return request(url, { method: 'DELETE' });
 }
 
+const WORKBENCH_CHANNEL_SENSITIVE_KEYS = new Set(['api_token', 'api-token', 'apikey', 'api_key', 'token', 'secret', 'password', 'local_path']);
+
+export function sanitizeWorkbenchChannelPayload(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeWorkbenchChannelPayload(item));
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !WORKBENCH_CHANNEL_SENSITIVE_KEYS.has(String(key).toLowerCase()))
+      .map(([key, item]) => [key, sanitizeWorkbenchChannelPayload(item)])
+  );
+}
+
 // -- Health ------------------------------------------------------------------
 
 export function getHealth() {
   return get('/health');
 }
 
+// -- Engine ------------------------------------------------------------------
+
+export function getEngineHealth() {
+  return get(`${API_V1}/engine/health`);
+}
+
+export function getEngineMetrics() {
+  return get(`${API_V1}/engine/metrics`);
+}
+
+export function getEngineVersion() {
+  return get(`${API_V1}/engine/version`);
+}
+
+// -- Full-Spectrum Audit Results --------------------------------------------
+
+export function getFullSpectrumAuditResults({ limit, includeArchived } = {}) {
+  const params = new URLSearchParams();
+  if (limit !== undefined) params.set('limit', String(limit));
+  if (includeArchived) params.set('include_archived', 'true');
+  const qs = params.toString();
+  return get(`${API}/audit/full-spectrum/results${qs ? `?${qs}` : ''}`);
+}
+
+export function getFullSpectrumAuditRun(runId, options = {}) {
+  const params = new URLSearchParams();
+  if (options.findingLimit !== undefined) params.set('finding_limit', String(options.findingLimit));
+  if (options.includeArchived) params.set('include_archived', 'true');
+  if (options.findingStatus) params.set('finding_status', String(options.findingStatus));
+  if (options.severity) params.set('severity', String(options.severity));
+  if (options.lane) params.set('lane', String(options.lane));
+  if (options.query) params.set('query', String(options.query));
+  const qs = params.toString();
+  return get(`${API}/audit/full-spectrum/results/${encodeURIComponent(runId)}${qs ? `?${qs}` : ''}`);
+}
+
+export function getProgramTierOverview() {
+  return get(`${API}/workbench/program-tier`);
+}
+
+export function getProgramTierDetail(programId) {
+  return get(`${API}/workbench/program-tier/${encodeURIComponent(programId)}`);
+}
+
+// -- Glossary ----------------------------------------------------------------
+
+export function listGlossary() {
+  return get(`${API}/glossary`);
+}
+
+export function getGlossaryTerm(term) {
+  return get(`${API}/glossary/${encodeURIComponent(term)}`);
+}
+
 // -- Projects ----------------------------------------------------------------
 
 export function listProjects() {
-  // GET /api/projects — the backend only exposes this as a GET (litestar_projects_api.py).
+  // GET /api/projects is read-only; project creation uses the intake/native workflow.
   // Previously called post() which returned 405; corrected to get().
   return get(`${API}/projects`);
 }
@@ -71,8 +211,28 @@ export function getProject(projectId) {
   return get(`${API}/project/${projectId}`);
 }
 
-export function sendMessage(projectId, message, attachments = []) {
-  return post(`${API}/project/${projectId}/message`, { message, attachments });
+export function sendMessage(projectId, message, attachments = [], options = {}) {
+  return post(`${API}/project/${projectId}/message`, { message, attachments, ...options });
+}
+
+export function listWorkbenchModeTemplates() {
+  return get(`${API}/workbench/mode-templates`);
+}
+
+export function getWorkbenchModeTemplate(templateId) {
+  return get(`${API}/workbench/mode-templates/${encodeURIComponent(templateId)}`);
+}
+
+export function convertChatBranchToArtifact(projectId, conversion) {
+  return post(`${API}/workbench/chat-mode/convert`, { project_id: projectId, ...conversion });
+}
+
+export function createWorkbenchConversation(payload) {
+  return post(`${API}/workbench/conversation`, payload);
+}
+
+export function submitIntakeWizard(payload) {
+  return post(`${API}/intake/wizard`, payload);
 }
 
 export async function uploadAttachment(projectId, file) {
@@ -116,6 +276,81 @@ export function rerunTask(projectId, taskId) {
 
 export function cancelProject(projectId) {
   return post(`${API}/project/${projectId}/cancel`);
+}
+
+export function getWorkflowBuilderMetadata() {
+  return get(`${API}/workbench/workflow-builder/metadata`);
+}
+
+export function validateWorkflowBuilderGraph(graph) {
+  return post(`${API}/workbench/workflow-builder/validate`, graph);
+}
+
+export function previewWorkflowBuilderGraph(graph) {
+  return post(`${API}/workbench/workflow-builder/preview`, graph);
+}
+
+export function saveWorkflowBuilderGraph(projectId, graph) {
+  return post(`${API}/workbench/workflow-builder/save`, { project_id: projectId, graph });
+}
+
+export function listWorkflowBuilderGraphs(projectId) {
+  return get(`${API}/workbench/workflow-builder/graphs/${encodeURIComponent(projectId)}`);
+}
+
+export function getWorkflowBuilderGraph(projectId, graphId) {
+  return get(`${API}/workbench/workflow-builder/graphs/${encodeURIComponent(projectId)}/${encodeURIComponent(graphId)}`);
+}
+
+export function getWorkflowBuilderConsole(projectId) {
+  return get(`${API}/workbench/workflow-builder/console/${encodeURIComponent(projectId)}`);
+}
+
+export function updateWorkflowBuilderSettings(projectId, settings) {
+  return post(`${API}/workbench/workflow-builder/settings/${encodeURIComponent(projectId)}`, settings);
+}
+
+export function getAdaptiveTuningSnapshot(projectId) {
+  return get(`${API}/workbench/adaptive-tuning/snapshot/${encodeURIComponent(projectId)}`);
+}
+
+export function normalizeAdaptiveTuningObservation(payload) {
+  return post(`${API}/workbench/adaptive-tuning/normalize`, payload);
+}
+
+export function proposeAdaptiveTuning(projectId, observations) {
+  return post(`${API}/workbench/adaptive-tuning/propose/${encodeURIComponent(projectId)}`, { observations });
+}
+
+export function previewAdaptiveTuningProposal(payload) {
+  return post(`${API}/workbench/adaptive-tuning/preview`, payload);
+}
+
+export function decideAdaptiveTuningHypothesis(projectId, hypothesisId, payload) {
+  return post(
+    `${API}/workbench/adaptive-tuning/decide/${encodeURIComponent(projectId)}/${encodeURIComponent(hypothesisId)}`,
+    payload
+  );
+}
+
+export function forgetAdaptiveTuningHypothesis(projectId, hypothesisId, payload) {
+  return post(
+    `${API}/workbench/adaptive-tuning/forget/${encodeURIComponent(projectId)}/${encodeURIComponent(hypothesisId)}`,
+    payload
+  );
+}
+
+export function revokeAdaptiveTuningHypothesis(projectId, hypothesisId, payload) {
+  return post(
+    `${API}/workbench/adaptive-tuning/revoke/${encodeURIComponent(projectId)}/${encodeURIComponent(hypothesisId)}`,
+    payload
+  );
+}
+
+export function getAdaptiveTuningRollbackReadiness(projectId, proposalId) {
+  return get(
+    `${API}/workbench/adaptive-tuning/rollback-readiness/${encodeURIComponent(projectId)}/${encodeURIComponent(proposalId)}`
+  );
 }
 
 export function pauseProject(projectId) {
@@ -220,6 +455,160 @@ export function searchModels(query) {
   return post(`${API_V1}/models/search`, { query });
 }
 
+// -- Model Hub (HuggingFace / NGC / Ollama browse and pull) ------------------
+
+/**
+ * Search the configured model hub for available repos.
+ *
+ * Backed by the native Rust kernel `/api/models/hub/search` compatibility route.
+ *
+ * @param {string} query - Free-text query (repo name fragment, tag, etc.).
+ * @returns {Promise<{results: Array<object>}>} Hub search payload.
+ */
+export function searchModelHub(query) {
+  return get(`${API}/models/hub/search?q=${encodeURIComponent(query)}`);
+}
+
+/**
+ * Request a pull of a hub model to local storage.
+ *
+ * Backed by the native Rust kernel `/api/models/hub/pull` compatibility route.
+ *
+ * @param {{repo_id: string, filename?: string, model_format?: string}} spec
+ *   Pull specification: ``repo_id`` is required; ``filename`` narrows to a
+ *   single artifact and ``model_format`` selects the storage layout.
+ * @returns {Promise<object>} Pull-start receipt with status + download_id.
+ */
+export function pullModelFromHub(spec) {
+  return post(`${API}/models/hub/pull`, spec);
+}
+
+// -- Chat completions (OpenAI-compatible, FSA-0048) --------------------------
+
+/**
+ * Send a chat-completion request via the OpenAI-compatible `/v1/chat/completions` route.
+ *
+ * Used by the experiment-lab side-by-side comparison (FSA-0048) to run the
+ * same prompt against multiple models without going through the project
+ * message pipeline.
+ *
+ * @param {object} payload - OpenAI chat-completions request body
+ *   (``model``, ``messages``, optional ``temperature``/``max_tokens``/etc.).
+ * @returns {Promise<object>} Parsed JSON response (choices, usage, ...).
+ */
+export function createChatCompletion(payload) {
+  return post('/v1/chat/completions', payload);
+}
+
+// -- Extensions (FSA-0057) ---------------------------------------------------
+
+const LOCAL_EXTENSION_ENTRYPOINT_PATTERNS = [
+  /^local:/i,
+  /^file:/i,
+  /^(?:\.{1,2}[\\/]|[a-zA-Z]:[\\/]|[\\/]{1,2})/,
+];
+
+function assertMarketplaceExtensionInstall(body = {}) {
+  const manifest = body?.manifest;
+  const extensionId = String(body?.extension_id ?? manifest?.extension_id ?? manifest?.id ?? manifest?.name ?? '').trim();
+  const marketplaceRef = String(
+    body?.marketplace_ref
+      ?? manifest?.marketplace_ref
+      ?? manifest?.registry_ref
+      ?? manifest?.source_ref
+      ?? '',
+  ).trim();
+  const entrypoint = String(manifest?.entrypoint ?? '').trim();
+
+  if (!extensionId) {
+    throw new Error('extension install requires a marketplace extension id');
+  }
+
+  if (manifest && !marketplaceRef) {
+    throw new Error('extension manifest installs require marketplace_ref provenance');
+  }
+
+  if (entrypoint && LOCAL_EXTENSION_ENTRYPOINT_PATTERNS.some((pattern) => pattern.test(entrypoint))) {
+    throw new Error('local extension manifest entrypoints are not installable from the UI');
+  }
+
+  return {
+    extension_id: extensionId,
+    marketplace_ref: marketplaceRef || `marketplace:${extensionId}`,
+    manifest,
+  };
+}
+
+/**
+ * List installed workbench extensions.
+ *
+ * Backed by GET /api/workbench/extensions.
+ *
+ * @returns {Promise<{extensions: Array<object>}>} Extension list payload.
+ */
+export function listExtensions() {
+  return get(`${API}/workbench/extensions`);
+}
+
+/**
+ * Install a workbench extension selected from the marketplace.
+ *
+ * Backed by POST /api/workbench/extensions/import.
+ *
+ * @param {{extension_id: string, marketplace_ref?: string, manifest?: object}} body
+ *   Marketplace install request. Raw local/file manifest entrypoints are rejected
+ *   client-side before the native kernel receives a request.
+ * @returns {Promise<{extension: object}>} Installed extension descriptor.
+ */
+export function installExtension(body) {
+  const requestBody = assertMarketplaceExtensionInstall(body);
+  return post(`${API}/workbench/extensions/import`, requestBody);
+}
+
+export const __extensionInstallGuardsForTest = {
+  assertMarketplaceExtensionInstall,
+};
+
+export function listWorkbenchExtensions() {
+  return get(`${API}/workbench/extensions`);
+}
+
+export function getWorkbenchExtension(extensionId) {
+  return get(`${API}/workbench/extensions/${encodeURIComponent(extensionId)}`);
+}
+
+export function selectWorkbenchExtension(extensionId) {
+  return post(`${API}/workbench/extensions/${encodeURIComponent(extensionId)}/select`);
+}
+
+// -- RAG document upload (FSA-0052) ------------------------------------------
+
+/**
+ * Upload one document file into the shared RAG knowledge base.
+ *
+ * Backed by POST /api/workbench/rag/documents. Sends the file as multipart form data
+ * under the field name ``data`` so the backend can stream it without first
+ * materializing it as JSON.
+ *
+ * @param {File|Blob} file - Browser File or Blob to upload.
+ * @returns {Promise<{doc_id: string, ingested_chunks: number, source: string}>}
+ *   Server-side ingestion receipt.
+ */
+export async function uploadRagDocument(file) {
+  const form = new FormData();
+  form.append('data', file);
+  const res = await fetch(`${API}/workbench/rag/documents`, {
+    method: 'POST',
+    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    body: form,
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`${res.status} ${res.statusText}: ${body}`);
+  }
+  return res.json();
+}
+
 // -- Memory ------------------------------------------------------------------
 
 export function getMemoryEntries(params = {}) {
@@ -249,6 +638,297 @@ export function getMemorySessions() {
 
 export function getMemoryStats() {
   return get(`${API_V1}/memory/stats`);
+}
+
+export function getWorkbenchMemoryReviewGraph(params = {}) {
+  const qs = new URLSearchParams(params).toString();
+  return get(`/api/workbench/memory/review-graph${qs ? '?' + qs : ''}`);
+}
+
+export function getKnowledgeVaultEntries(params = {}) {
+  const qs = new URLSearchParams(params).toString();
+  return get(`${API}/workbench/knowledge_vault/entries${qs ? '?' + qs : ''}`);
+}
+
+export function getKnowledgeVaultRejected() {
+  return get(`${API}/workbench/knowledge_vault/rejected`);
+}
+
+export function exportKnowledgeVault(requestedScope = 'shareable') {
+  return post(`${API}/workbench/knowledge_vault/export`, { requested_scope: requestedScope });
+}
+
+export function rebuildKnowledgeVault() {
+  return post(`${API}/workbench/knowledge_vault/rebuild`, {});
+}
+
+export function enrichWorkbenchContext(payload) {
+  return post(`${API}/workbench/context-enrichment/enrich`, payload);
+}
+
+export function preflightWorkbenchContextEdit(payload) {
+  return post(`${API}/workbench/context-enrichment/edit-preflight`, payload);
+}
+
+export async function squashToolOutputPreview(payload) {
+  try {
+    return await post(`${API}/workbench/tool-output-squasher/preview`, payload);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const bodyStart = message.indexOf(': ');
+    if (message.startsWith('409 ') && bodyStart !== -1) {
+      return JSON.parse(message.slice(bodyStart + 2));
+    }
+    if (message.startsWith('401 ')) {
+      const adminError = new Error('Admin access required for Tool Output Savings.');
+      adminError.code = 'admin_required';
+      throw adminError;
+    }
+    throw error;
+  }
+}
+
+export async function fetchWorkbenchReadinessSnapshot(projectId = 'default') {
+  try {
+    return await get(`${API}/workbench/readiness/snapshot?project_id=${encodeURIComponent(projectId)}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const bodyStart = message.indexOf(': ');
+    if ((message.startsWith('409 ') || message.startsWith('202 ')) && bodyStart !== -1) {
+      return JSON.parse(message.slice(bodyStart + 2));
+    }
+    if (message.startsWith('401 ')) {
+      const adminError = new Error('Admin access required for Workbench Readiness.');
+      adminError.code = 'admin_required';
+      throw adminError;
+    }
+    throw error;
+  }
+}
+
+export async function previewWorkbenchReadinessAdmission(payload) {
+  try {
+    return await post(`${API}/workbench/readiness/admission-preview`, payload);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const bodyStart = message.indexOf(': ');
+    if ((message.startsWith('409 ') || message.startsWith('202 ')) && bodyStart !== -1) {
+      return JSON.parse(message.slice(bodyStart + 2));
+    }
+    if (message.startsWith('401 ')) {
+      const adminError = new Error('Admin access required for Workbench Readiness.');
+      adminError.code = 'admin_required';
+      throw adminError;
+    }
+    throw error;
+  }
+}
+
+export function resolveWorkbenchApprovalChain(payload) {
+  return post(`${API}/workbench/approval-chain/resolve`, payload);
+}
+
+export function grantWorkbenchApprovalChainSessionAllow(payload) {
+  return post(`${API}/workbench/approval-chain/grant-session-allow`, payload);
+}
+
+export function revokeWorkbenchApprovalChainSessionAllow(payload) {
+  return post(`${API}/workbench/approval-chain/revoke-session-allow`, payload);
+}
+
+export function fetchWorkbenchApprovalChainLastDecision() {
+  return get(`${API}/workbench/approval-chain/explain-last`);
+}
+
+export function workbenchChannels() {
+  return get(`${API}/workbench/channels/config`);
+}
+
+export async function deliverWorkbenchChannel(payload) {
+  try {
+    return await post(`${API}/workbench/channels/deliver`, sanitizeWorkbenchChannelPayload(payload));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const bodyStart = message.indexOf(': ');
+    if (message.startsWith('409 ') && bodyStart !== -1) {
+      return JSON.parse(message.slice(bodyStart + 2));
+    }
+    throw error;
+  }
+}
+
+export function fetchWorkbenchCommandSafetyProfiles() {
+  return get(`${API}/workbench/command-safety/profiles`);
+}
+
+export function classifyWorkbenchCommandSafety(payload) {
+  return post(`${API}/workbench/command-safety/classify`, payload);
+}
+
+export async function decideWorkbenchCommandSafety(payload) {
+  try {
+    return await post(`${API}/workbench/command-safety/decide`, payload);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const bodyStart = message.indexOf(': ');
+    if (message.startsWith('409 ') && bodyStart !== -1) {
+      return JSON.parse(message.slice(bodyStart + 2));
+    }
+    throw error;
+  }
+}
+
+export async function routeWorkbenchChannelCommand(payload) {
+  try {
+    return await post(`${API}/workbench/channels/commands`, sanitizeWorkbenchChannelPayload(payload));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const bodyStart = message.indexOf(': ');
+    if (message.startsWith('409 ') && bodyStart !== -1) {
+      return JSON.parse(message.slice(bodyStart + 2));
+    }
+    throw error;
+  }
+}
+
+export function requestWorkbenchChannelApproval(payload) {
+  return post(`${API}/workbench/channels/approvals`, payload);
+}
+
+export function fetchWorkbenchChannelActivity() {
+  return get(`${API}/workbench/channels/activity`);
+}
+
+export function fetchWorkbenchCommandSafetyState(projectId, runId, sessionId, surfaceId) {
+  return get(`${API}/workbench/command-safety/state/${encodeURIComponent(projectId)}/${encodeURIComponent(runId)}/${encodeURIComponent(sessionId)}/${encodeURIComponent(surfaceId)}`);
+}
+
+export async function fetchWorkbenchStatusSnapshot(projectId = 'default') {
+  try {
+    return await get(`${API}/workbench/status/snapshot?project_id=${encodeURIComponent(projectId)}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith('401 ')) {
+      const adminError = new Error('Admin access required for Workbench Status.');
+      adminError.code = 'admin_required';
+      throw adminError;
+    }
+    throw error;
+  }
+}
+
+export function fetchWorkbenchStatusDomain(domain, projectId = 'default') {
+  return get(`${API}/workbench/status/health/${encodeURIComponent(domain)}?project_id=${encodeURIComponent(projectId)}`);
+}
+
+export function fetchWorkbenchStatusAssistantContext(projectId = 'default') {
+  return get(`${API}/workbench/status/assistant-context?project_id=${encodeURIComponent(projectId)}`);
+}
+
+export async function runWorkbenchStatusAction(payload) {
+  try {
+    return await post(`${API}/workbench/status/actions`, payload);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const bodyStart = message.indexOf(': ');
+    if (message.startsWith('409 ') && bodyStart !== -1) {
+      return JSON.parse(message.slice(bodyStart + 2));
+    }
+    if (message.startsWith('401 ')) {
+      const adminError = new Error('Admin access required for Workbench Status.');
+      adminError.code = 'admin_required';
+      throw adminError;
+    }
+    throw error;
+  }
+}
+
+export async function fetchWorkbenchUpdateReadiness(projectId = 'default', channel = 'stable', currentVersion = '0.0.0-dev') {
+  try {
+    const qs = new URLSearchParams({
+      project_id: projectId,
+      channel,
+      current_version: currentVersion,
+    }).toString();
+    return await get(`${API}/workbench/updates/readiness?${qs}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const bodyStart = message.indexOf(': ');
+    if (message.startsWith('409 ') && bodyStart !== -1) {
+      return JSON.parse(message.slice(bodyStart + 2));
+    }
+    if (message.startsWith('401 ')) {
+      const adminError = new Error('Admin access required for Workbench Updates.');
+      adminError.code = 'admin_required';
+      throw adminError;
+    }
+    throw error;
+  }
+}
+
+export function fetchWorkbenchUpdateChannels() {
+  return get(`${API}/workbench/updates/channels`);
+}
+
+export async function checkWorkbenchUpdates(payload = {}) {
+  try {
+    return await post(`${API}/workbench/updates/check`, payload);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const bodyStart = message.indexOf(': ');
+    if (message.startsWith('409 ') && bodyStart !== -1) {
+      return JSON.parse(message.slice(bodyStart + 2));
+    }
+    throw error;
+  }
+}
+
+export async function skipWorkbenchUpdateVersion(payload) {
+  try {
+    return await post(`${API}/workbench/updates/skip`, payload);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const bodyStart = message.indexOf(': ');
+    if (message.startsWith('409 ') && bodyStart !== -1) {
+      return JSON.parse(message.slice(bodyStart + 2));
+    }
+    throw error;
+  }
+}
+
+export async function createWorkbenchUpdateRollbackPlan(payload = {}) {
+  try {
+    return await post(`${API}/workbench/updates/rollback-plan`, payload);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const bodyStart = message.indexOf(': ');
+    if (message.startsWith('409 ') && bodyStart !== -1) {
+      return JSON.parse(message.slice(bodyStart + 2));
+    }
+    throw error;
+  }
+}
+
+export async function createWorkbenchUpdateSupportBundle(payload = {}) {
+  try {
+    return await post(`${API}/workbench/updates/support-bundle`, payload);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const bodyStart = message.indexOf(': ');
+    if (message.startsWith('409 ') && bodyStart !== -1) {
+      return JSON.parse(message.slice(bodyStart + 2));
+    }
+    throw error;
+  }
+}
+
+export function getMemoryRefinementJournal(params = {}) {
+  const qs = new URLSearchParams(params).toString();
+  return get(`${API}/workbench/memory_refinement/journal${qs ? '?' + qs : ''}`);
+}
+
+export function reverseMemoryRefinementEntry(eventId, reason) {
+  return post(`${API}/workbench/memory_refinement/journal/reverse`, { event_id: eventId, reason });
 }
 
 // -- Agents ------------------------------------------------------------------
@@ -395,6 +1075,10 @@ export function getRules() {
   return get(`${API_V1}/rules`);
 }
 
+export function getGlobalPrompt() {
+  return get(`${API_V1}/rules/global-prompt`);
+}
+
 /**
  * Persist a global system prompt that applies to all agents at runtime.
  *
@@ -407,7 +1091,15 @@ export function getRules() {
  * @returns {Promise} Resolves with the server response.
  */
 export function saveGlobalPrompt(prompt) {
-  return post('/api/v1/rules/global-prompt', { prompt });
+  return post(`${API_V1}/rules/global-prompt`, { prompt });
+}
+
+export function getPreferences() {
+  return get(`${API_V1}/preferences`);
+}
+
+export function setPreferences(preferences) {
+  return put(`${API_V1}/preferences`, preferences);
 }
 
 // -- Receipts (Control Center / Attention track) ----------------------------
@@ -542,6 +1234,110 @@ export function getAnalyticsAlerts() {
   return get(`${API_V1}/analytics/alerts`);
 }
 
+// -- Workbench Shell ---------------------------------------------------------
+
+export function getWorkbenchShellSnapshot(projectId = 'default') {
+  return get(`${API}/workbench/shell/snapshot?project_id=${encodeURIComponent(projectId)}`);
+}
+
+export function getWorkbenchGraphQuerySnapshot(projectId = 'default') {
+  return get(`${API}/workbench/query/snapshot?project_id=${encodeURIComponent(projectId)}`);
+}
+
+export function getWorkbenchPreferenceCardsSnapshot(projectId = 'default') {
+  return get(`${API}/workbench/preference-cards?project_id=${encodeURIComponent(projectId)}`);
+}
+
+export function getDomainReviewQueues(projectId = 'default') {
+  return get(`${API}/workbench/domain-review/queues?project_id=${encodeURIComponent(projectId)}`);
+}
+
+export function submitDomainReview(projectId = 'default', review) {
+  return post(`${API}/workbench/domain-review/submit`, { project_id: projectId, ...review });
+}
+
+export function getCreativeRoleplayStudio(projectId = 'default') {
+  return get(`${API}/workbench/creative-roleplay/studio?project_id=${encodeURIComponent(projectId)}`);
+}
+
+export function getMemoryScopes(projectId = 'default') {
+  return get(`${API}/workbench/memory-scopes?project_id=${encodeURIComponent(projectId)}`);
+}
+
+export function getPromotionRecipes(projectId = 'default') {
+  return get(`${API}/workbench/promotions/recipes?project_id=${encodeURIComponent(projectId)}`);
+}
+
+export function getRagQueryDefaults(projectId = 'default') {
+  return get(`${API}/workbench/rag/query-defaults?project_id=${encodeURIComponent(projectId)}`);
+}
+
+export function getRuntimeUxSnapshot(projectId = 'default') {
+  return get(`${API}/workbench/runtime-ux/snapshot?project_id=${encodeURIComponent(projectId)}`);
+}
+
+export function getSensitiveWorkflowBinding(projectId = 'default') {
+  return get(`${API}/workbench/sensitive-workflow/binding?project_id=${encodeURIComponent(projectId)}`);
+}
+
+export function fetchResourceCockpitSnapshot() {
+  return get('/api/workbench/resource-cockpit/snapshot');
+}
+
+export function fetchResourceCockpitLeases() {
+  return get('/api/workbench/resource-cockpit/leases');
+}
+
+export function fetchResourceCockpitQueued() {
+  return get('/api/workbench/resource-cockpit/queued');
+}
+
+export function fetchResourceCockpitSafeActions() {
+  return get('/api/workbench/resource-cockpit/safe-actions');
+}
+
+export function fetchResourceCockpitMachineProfile() {
+  return get('/api/workbench/resource-cockpit/machine-profile');
+}
+
+export function fetchResourceCockpitPolicyProposals() {
+  return get('/api/workbench/resource-cockpit/policy-proposals');
+}
+
+export function postResourceCockpitApprovalDiff(proposalId, payload) {
+  return post(`/api/workbench/resource-cockpit/policy-proposals/${proposalId}/approval-diff`, payload);
+}
+
+// -- Habit Health ------------------------------------------------------------
+
+export function getHabitHealthSummary(userId) {
+  return get(`${API}/workbench/habit-health/summary/${encodeURIComponent(userId)}`);
+}
+
+export function createHabitHealthRoutine(payload) {
+  return post(`${API}/workbench/habit-health/routines`, payload);
+}
+
+export function recordHabitHealthCheckIn(payload) {
+  return post(`${API}/workbench/habit-health/check-ins`, payload);
+}
+
+export function reviewHabitHealthData(userId) {
+  return get(`${API}/workbench/habit-health/review/${encodeURIComponent(userId)}`);
+}
+
+export function exportHabitHealthData(payload) {
+  return post(`${API}/workbench/habit-health/export`, payload);
+}
+
+export function deleteHabitHealthData(userId, reason = 'user-request') {
+  return post(`${API}/workbench/habit-health/delete`, { user_id: userId, reason });
+}
+
+export function previewHabitHealthDownstreamSignal(payload) {
+  return post(`${API}/workbench/habit-health/downstream-preview`, payload);
+}
+
 // -- Ponder (Planning Service) -----------------------------------------------
 
 export function getPonderModels() {
@@ -554,4 +1350,22 @@ export function getPonderTemplates() {
 
 export function getPonderHealth() {
   return get(`${API}/ponder/health`);
+}
+
+// -- Workflow pipeline API (GET /api/v1/workflows, POST /api/v1/workflows, etc.) --
+
+export function listPipelines() {
+  return get(`${API_V1}/workflows`);
+}
+
+export function loadPipeline(pipelineId) {
+  return get(`${API_V1}/workflows/${encodeURIComponent(pipelineId)}`);
+}
+
+export function savePipeline(pipeline) {
+  return post(`${API_V1}/workflows`, pipeline);
+}
+
+export function validatePipeline(pipelineId) {
+  return post(`${API_V1}/workflows/${encodeURIComponent(pipelineId)}/validate`, {});
 }

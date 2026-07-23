@@ -86,7 +86,7 @@ Thinking depth: **medium**.
 ## Pipeline Role
 
 The Foreman is the first agent in every pipeline tier:
-- **Express**: Foreman skipped (Worker builds directly, Inspector reviews)
+- **Express**: Foreman(plan) -> Worker(build) -> Inspector(code_review)
 - **Standard**: Foreman(plan) -> Worker(research->build) -> Inspector -> Worker(documentation)
 - **Custom**: Foreman(clarify->plan) -> Worker(research->architecture->build) -> Inspector -> Worker(documentation)
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from vetinari.benchmarks.runner import (
@@ -29,9 +30,18 @@ from vetinari.benchmarks.runner import (
     BenchmarkSuiteAdapter,
     BenchmarkTier,
 )
+from vetinari.boundary_guards import require_nonempty
+from vetinari.context import count_tokens
+from vetinari.security.fail_closed import assert_closed_schema, sanitize_untrusted_text
 from vetinari.types import StatusEnum
 
 logger = logging.getLogger(__name__)
+
+
+def _future_mock_expiry_iso(*, days: int = 30) -> str:
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    return (base + timedelta(days=days)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
 
 # -- Mock API definitions --
 
@@ -194,7 +204,7 @@ _SAMPLE_CASES: list[dict[str, Any]] = [
         },
         "mock_responses": [
             {"product_id": 777, "available": 50, "warehouse": "WH-East"},
-            {"reservation_id": "rsv-001", "expires_at": "2025-01-01T12:00:00Z"},
+            {"reservation_id": "rsv-001", "expires_at": _future_mock_expiry_iso()},
             {"message_id": "msg-002", "sent": True},
         ],
         "tags": ["level-3", "multi-step", "inventory"],
@@ -252,7 +262,7 @@ class APIBankAdapter(BenchmarkSuiteAdapter):
                 suite_name=self.name,
                 description=item["description"],
                 input_data={
-                    "user_query": item["user_query"],
+                    "user_query": sanitize_untrusted_text(item["user_query"], max_length=4_000),
                     "level": item["level"],
                     "api_catalog": _API_CATALOG,
                     "mock_responses": item["mock_responses"],
@@ -276,7 +286,9 @@ class APIBankAdapter(BenchmarkSuiteAdapter):
         Returns:
             The BenchmarkResult result.
         """
-        start = time.time()
+        run_id = sanitize_untrusted_text(run_id, max_length=200)
+        assert_closed_schema(case.input_data, allowed_keys={"user_query", "level", "api_catalog", "mock_responses"})
+        start = time.monotonic()
 
         error: str | None = None
         try:
@@ -291,7 +303,7 @@ class APIBankAdapter(BenchmarkSuiteAdapter):
                 "benchmark_mode": "unavailable",
             }
 
-        latency = (time.time() - start) * 1000
+        latency = (time.monotonic() - start) * 1000
 
         return BenchmarkResult(
             case_id=case.case_id,
@@ -300,7 +312,7 @@ class APIBankAdapter(BenchmarkSuiteAdapter):
             passed=False,
             score=0.0,
             latency_ms=round(latency, 2),
-            tokens_consumed=len(case.input_data.get("user_query", "")) * 3,
+            tokens_consumed=count_tokens(str(case.input_data.get("user_query", ""))),
             output=result_data,
             error=error,
         )
@@ -316,9 +328,14 @@ class APIBankAdapter(BenchmarkSuiteAdapter):
           - 0.15: Chain completeness (all steps executed)
 
         Returns:
-            The computed value.
+            float value produced by evaluate().
+
+        Raises:
+            TypeError: If the answer payload cannot be scored safely.
         """
         if not result.output:
+            return 0.0
+        if result.output.get("benchmark_mode") == "unavailable" or result.error:
             return 0.0
 
         expected = None
@@ -327,14 +344,17 @@ class APIBankAdapter(BenchmarkSuiteAdapter):
                 expected = item
                 break
 
+        case_id = require_nonempty(result.case_id, field_name="case_id")
         if expected is None:
-            return 0.3
+            return 0.0
 
         score = 0.0
         expected_chain = expected["expected_api_chain"]
         actual_chain = result.output.get("api_chain", [])
         expected_answer = expected["expected_answer"]
         actual_answer = result.output.get("answer", {})
+        if not isinstance(actual_answer, dict):
+            raise TypeError(f"api_bank: unsupported answer type {type(actual_answer).__name__!r} for case {case_id!r}")
 
         # API selection chain (0.35)
         if expected_chain:
@@ -366,11 +386,15 @@ class APIBankAdapter(BenchmarkSuiteAdapter):
             for key, exp_val in expected_answer.items():
                 act_val = actual_answer.get(key)
                 if act_val is not None:
-                    if isinstance(exp_val, (int, float)):
-                        if abs(float(act_val) - float(exp_val)) < 0.02:
+                    if isinstance(act_val, bool) and not isinstance(exp_val, bool):
+                        raise TypeError(
+                            f"api_bank: unsupported answer type {type(act_val).__name__!r} for case {case_id!r}"
+                        )
+                    if isinstance(exp_val, bool):
+                        if _bool_answer_matches(act_val, exp_val):
                             matching_fields += 1
-                    elif isinstance(exp_val, bool):
-                        if bool(act_val) == exp_val:
+                    elif isinstance(exp_val, (int, float)):
+                        if abs(float(act_val) - float(exp_val)) < 0.02:
                             matching_fields += 1
                     elif str(act_val) == str(exp_val):
                         matching_fields += 1
@@ -386,7 +410,10 @@ class APIBankAdapter(BenchmarkSuiteAdapter):
 
     def _run_via_orchestrator(self, case: BenchmarkCase) -> dict[str, Any]:
         """Attempt execution via Vetinari orchestrator."""
-        from vetinari.orchestration.two_layer import get_two_layer_orchestrator
+        try:
+            from vetinari.orchestration.two_layer import get_two_layer_orchestrator
+        except ImportError as exc:
+            raise RuntimeError("API-Bank live orchestrator path is unavailable") from exc
 
         orch = get_two_layer_orchestrator()
         result = orch.generate_and_execute(goal=case.input_data["user_query"])
@@ -395,10 +422,10 @@ class APIBankAdapter(BenchmarkSuiteAdapter):
             "answer": result.get("final_output", {}),
         }
 
-    def _mock_run(self, case: BenchmarkCase) -> dict[str, Any]:
-        """Compatibility helper retained for tests; not used by run_case."""
-        expected = case.expected or {}
-        return {
-            "api_chain": expected.get("expected_api_chain", []),
-            "answer": expected.get("expected_answer", {}),
-        }
+
+def _bool_answer_matches(actual: Any, expected: bool) -> bool:
+    if isinstance(actual, bool):
+        return actual is expected
+    if isinstance(actual, str) and actual.strip().lower() in {"true", "false"}:
+        return (actual.strip().lower() == "true") is expected
+    return False

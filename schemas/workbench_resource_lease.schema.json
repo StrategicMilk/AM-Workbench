@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_resource_lease.schema.json",
+  "title": "WorkbenchResourceLease",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "lease_id",
+    "workload_id",
+    "lane",
+    "status",
+    "model_residency",
+    "reasons",
+    "budget_status",
+    "machine_profile_id",
+    "evidence_ids"
+  ],
+  "properties": {
+    "lease_id": { "$ref": "#/$defs/nonEmptyString" },
+    "workload_id": { "$ref": "#/$defs/nonEmptyString" },
+    "lane": { "enum": ["interactive", "hub_agent", "training"] },
+    "status": { "enum": ["approved", "approval_required", "denied"] },
+    "model_residency": { "$ref": "#/$defs/modelResidency" },
+    "reasons": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "budget_status": { "enum": ["within_budget", "approval_required", "blocked"] },
+    "machine_profile_id": {
+      "anyOf": [{ "$ref": "#/$defs/nonEmptyString" }, { "type": "null" }]
+    },
+    "evidence_ids": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "modelResidency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_id", "placement", "action", "reasons"],
+      "properties": {
+        "model_id": { "$ref": "#/$defs/nonEmptyString" },
+        "placement": { "enum": ["cpu", "gpu", "deferred"] },
+        "action": { "enum": ["use_resident", "load", "cpu_first", "defer"] },
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    }
+  }
+}

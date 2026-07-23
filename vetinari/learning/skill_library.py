@@ -15,8 +15,10 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from vetinari.memory.interfaces import MemoryEntry, MemoryType
+from vetinari.utils import privacy_receipt
 
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -158,6 +160,13 @@ def extract_skill(episodes: list[dict[str, Any]]) -> Skill | None:
 
 def _skill_to_entry(skill: Skill) -> MemoryEntry:
     """Convert a Skill to a MemoryEntry for storage in the unified store."""
+    metadata = skill.to_dict()
+    metadata["privacy_receipt"] = privacy_receipt(
+        privacy_class="operational",
+        retention_days=30,
+        source="skill_library.skill_metadata",
+        redaction_applied=True,
+    )
     return MemoryEntry(
         id=skill.id,
         agent="system",
@@ -165,7 +174,7 @@ def _skill_to_entry(skill: Skill) -> MemoryEntry:
         content=skill.template,
         summary=f"Skill: {skill.name} ({skill.success_count} episodes, quality {skill.avg_quality:.2f})",
         provenance="skill_extraction",
-        metadata=skill.to_dict(),
+        metadata=metadata,
     )
 
 
@@ -214,7 +223,7 @@ def get_skill(skill_id: str) -> Skill | None:
     return _entry_to_skill(entry)
 
 
-def find_matching_skill(task_description: str, limit: int = 3) -> Skill | None:
+def find_matching_skill(task_description: str, limit: int = 3, task_type: str | None = None) -> Skill | None:
     """Find the best matching skill for a task description using semantic search.
 
     Searches the memory store for SKILL-type entries that semantically
@@ -223,6 +232,8 @@ def find_matching_skill(task_description: str, limit: int = 3) -> Skill | None:
     Args:
         task_description: Natural language description of the task to match.
         limit: Maximum candidates to consider before picking the best.
+        task_type: Optional task category. When supplied, candidates for other
+            task types are ignored before quality ranking.
 
     Returns:
         The best-matching Skill, or None when nothing relevant is found.
@@ -244,6 +255,8 @@ def find_matching_skill(task_description: str, limit: int = 3) -> Skill | None:
     for entry in results:
         skill = _entry_to_skill(entry)
         if skill is None:
+            continue
+        if task_type is not None and skill.task_type != task_type:
             continue
         if best is None or skill.avg_quality > best.avg_quality:
             best = skill

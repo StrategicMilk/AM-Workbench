@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from vetinari.dashboard.api_metrics import DashboardMetricsMixin
 from vetinari.telemetry import get_telemetry_collector
 from vetinari.utils.serialization import dataclass_to_dict
 
@@ -50,6 +51,7 @@ class MetricsSnapshot:
 
     # Plan mode metrics summary
     plan_summary: dict[str, Any]
+    rag_summary: dict[str, Any] | None = None
 
     def __repr__(self) -> str:
         return f"MetricsSnapshot(timestamp={self.timestamp!r}, uptime_ms={self.uptime_ms!r})"
@@ -69,6 +71,15 @@ class MetricsSnapshot:
             "adapters": self.adapter_summary,
             "memory": self.memory_summary,
             "plan": self.plan_summary,
+            "operations": {"queue_depth": 0},
+            "workbench": {"spine_corruption_count": 0},
+            "rag": self.rag_summary
+            or {
+                "status": "unavailable",
+                "rag_embedding_fallback_rate": 0.0,
+                "embedding_fallback_rate_percent": 0.0,
+            },
+            "security": {"authz_rejection_rate": 0.0, "authz_rejection_rate_percent": 0.0},
         }
 
 
@@ -97,9 +108,9 @@ class TimeSeriesData:
     metric: str
     unit: str
     points: list[TimeSeriesPoint]
-    min_value: float = 0.0
-    max_value: float = 0.0
-    avg_value: float = 0.0
+    min_value: float | None = 0.0
+    max_value: float | None = 0.0
+    avg_value: float | None = 0.0
 
     def __repr__(self) -> str:
         return f"TimeSeriesData(metric={self.metric!r}, unit={self.unit!r}, points={len(self.points)})"
@@ -160,7 +171,7 @@ class TraceDetail:
         return dataclass_to_dict(self)
 
 
-class DashboardAPI:
+class DashboardAPI(DashboardMetricsMixin):
     """Backend API for dashboard metrics and monitoring.
 
     Provides REST-style methods for accessing telemetry data,
@@ -189,78 +200,6 @@ class DashboardAPI:
         logger.info("DashboardAPI initialized")
 
     # === Metrics Endpoints ===
-
-    def get_latest_metrics(self) -> MetricsSnapshot:
-        """Get current snapshot of all metrics.
-
-        Returns:
-            MetricsSnapshot with latest values
-        """
-        with self._lock:
-            uptime = (datetime.now(timezone.utc) - self._start_time).total_seconds() * 1000
-
-            # Collect adapter metrics
-            adapter_metrics = self.telemetry.get_adapter_metrics()
-            adapter_summary = {
-                "total_providers": len({m.provider for m in adapter_metrics.values()}),
-                "total_requests": sum(m.total_requests for m in adapter_metrics.values()),
-                "total_successful": sum(m.successful_requests for m in adapter_metrics.values()),
-                "total_failed": sum(m.failed_requests for m in adapter_metrics.values()),
-                "average_latency_ms": self._calc_avg_latency(adapter_metrics),
-                "total_tokens_used": sum(m.total_tokens_used for m in adapter_metrics.values()),
-                "providers": {
-                    k: {
-                        "provider": v.provider,
-                        "model": v.model,
-                        "requests": v.total_requests,
-                        "success_rate": v.success_rate,
-                        "avg_latency_ms": v.avg_latency_ms,
-                        "min_latency_ms": v.min_latency_ms if v.min_latency_ms != float("inf") else 0,
-                        "max_latency_ms": v.max_latency_ms,
-                        "last_request": v.last_request_time,
-                    }
-                    for k, v in adapter_metrics.items()
-                },
-            }
-
-            # Collect memory metrics
-            memory_metrics = self.telemetry.get_memory_metrics()
-            memory_summary = {
-                "backends": {
-                    k: {
-                        "backend": v.backend,
-                        "writes": v.total_writes,
-                        "reads": v.total_reads,
-                        "searches": v.total_searches,
-                        "avg_write_latency_ms": v.avg_write_latency(),
-                        "avg_read_latency_ms": v.avg_read_latency(),
-                        "avg_search_latency_ms": v.avg_search_latency(),
-                        "dedup_hit_rate": v.dedup_hit_rate,
-                        "sync_failures": v.sync_failures,
-                    }
-                    for k, v in memory_metrics.items()
-                },
-            }
-
-            # Collect plan metrics
-            plan_metrics = self.telemetry.get_plan_metrics()
-            plan_summary = {
-                "total_decisions": plan_metrics.total_decisions,
-                "approved": plan_metrics.approved_decisions,
-                "rejected": plan_metrics.rejected_decisions,
-                "auto_approved": plan_metrics.auto_approved_decisions,
-                "approval_rate": plan_metrics.approval_rate,
-                "average_risk_score": plan_metrics.average_risk_score,
-                "average_approval_time_ms": plan_metrics.average_approval_time_ms,
-            }
-
-            return MetricsSnapshot(
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                uptime_ms=uptime,
-                adapter_summary=adapter_summary,
-                memory_summary=memory_summary,
-                plan_summary=plan_summary,
-            )
 
     def get_timeseries_data(
         self,
@@ -344,9 +283,9 @@ class DashboardAPI:
             metric="success_rate",
             unit="%",
             points=points,
-            min_value=min(rates) if rates else 0.0,
-            max_value=max(rates) if rates else 100.0,
-            avg_value=sum(rates) / len(rates) if rates else 0.0,
+            min_value=min(rates) if rates else None,
+            max_value=max(rates) if rates else None,
+            avg_value=sum(rates) / len(rates) if rates else None,
         )
 
     def _get_token_usage_timeseries(self, timerange: str, provider: str | None = None) -> TimeSeriesData:
@@ -518,7 +457,8 @@ class DashboardAPI:
 
     # === Helper Methods ===
 
-    def _calc_avg_latency(self, metrics: dict[str, Any]) -> float:
+    @staticmethod
+    def _calc_avg_latency(metrics: dict[str, Any]) -> float:
         """Calculate request-weighted average latency across all providers.
 
         A simple mean of per-provider averages would give equal weight to a

@@ -9,6 +9,8 @@
    * @prop {(config: object) => void} oncreate - Called with form data when submitted.
    */
 
+  import { IntakeDepth, IntakePriority } from '$lib/contracts/enums.js';
+
   let { oncreate } = $props();
 
   /** Category definitions matching the backend categories. */
@@ -23,17 +25,23 @@
 
   /** Priority options. */
   const PRIORITIES = [
-    { id: 'low', label: 'Low' },
-    { id: 'normal', label: 'Normal' },
-    { id: 'high', label: 'High' },
-    { id: 'critical', label: 'Critical' },
+    { id: IntakePriority.LOW, label: 'Low' },
+    { id: IntakePriority.MEDIUM, label: 'Normal' },
+    { id: IntakePriority.HIGH, label: 'High' },
+    { id: IntakePriority.CRITICAL, label: 'Critical' },
+  ];
+
+  const DEPTHS = [
+    { id: IntakeDepth.QUICK, label: 'Quick' },
+    { id: IntakeDepth.STANDARD, label: 'Standard' },
+    { id: IntakeDepth.DEEP, label: 'Deep' },
   ];
 
   let selectedCategory = $state(null);
   let goal = $state('');
-  let priority = $state('normal');
+  let priority = $state(IntakePriority.MEDIUM);
   let technologies = $state('');
-  let depth = $state('standard');
+  let depth = $state(IntakeDepth.STANDARD);
 
   let stage = $derived(selectedCategory ? 'config' : 'category');
 
@@ -59,9 +67,32 @@
     // Reset form
     selectedCategory = null;
     goal = '';
-    priority = 'normal';
+    priority = IntakePriority.MEDIUM;
     technologies = '';
-    depth = 'standard';
+    depth = IntakeDepth.STANDARD;
+  }
+
+  function moveRadioSelection(event, options, currentValue, setValue, idPrefix) {
+    const currentIndex = options.findIndex((option) => option.id === currentValue);
+    if (currentIndex === -1) return;
+
+    let nextIndex = currentIndex;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      nextIndex = (currentIndex + 1) % options.length;
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      nextIndex = (currentIndex - 1 + options.length) % options.length;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = options.length - 1;
+    } else {
+      return;
+    }
+
+    event.preventDefault();
+    const nextValue = options[nextIndex].id;
+    setValue(nextValue);
+    document.getElementById(`${idPrefix}-${nextValue}`)?.focus();
   }
 </script>
 
@@ -70,8 +101,8 @@
     <h3 class="intake-title">What would you like to do?</h3>
     <div class="category-grid">
       {#each CATEGORIES as cat}
-        <button class="category-card" onclick={() => selectCategory(cat)}>
-          <i class={cat.icon}></i>
+        <button type="button" class="category-card" onclick={() => selectCategory(cat)}>
+          <i class={cat.icon} aria-hidden="true"></i>
           <span class="category-label">{cat.label}</span>
           <span class="category-desc">{cat.desc}</span>
         </button>
@@ -80,11 +111,11 @@
   {:else}
     <div class="config-form">
       <div class="config-header">
-        <button class="btn btn-ghost" onclick={goBack} aria-label="Back to categories">
-          <i class="fas fa-arrow-left"></i>
+        <button type="button" class="btn btn-ghost" onclick={goBack} aria-label="Back to categories">
+          <i class="fas fa-arrow-left" aria-hidden="true"></i>
         </button>
         <h3>
-          <i class={selectedCategory.icon}></i>
+          <i class={selectedCategory.icon} aria-hidden="true"></i>
           {selectedCategory.label}
         </h3>
       </div>
@@ -110,7 +141,10 @@
                 class:active={priority === p.id}
                 role="radio"
                 aria-checked={priority === p.id}
+                tabindex={priority === p.id ? 0 : -1}
+                id={`intake-priority-${p.id}`}
                 onclick={() => { priority = p.id; }}
+                onkeydown={(event) => moveRadioSelection(event, PRIORITIES, priority, (value) => { priority = value; }, 'intake-priority')}
               >
                 {p.label}
               </button>
@@ -121,15 +155,18 @@
         <div class="form-group">
           <label for="intake-depth">Depth</label>
           <div class="pill-selector" role="radiogroup" aria-label="Depth">
-            {#each ['quick', 'standard', 'thorough'] as d}
+            {#each DEPTHS as d}
               <button
                 class="pill"
-                class:active={depth === d}
+                class:active={depth === d.id}
                 role="radio"
-                aria-checked={depth === d}
-                onclick={() => { depth = d; }}
+                aria-checked={depth === d.id}
+                tabindex={depth === d.id ? 0 : -1}
+                id={`intake-depth-${d.id}`}
+                onclick={() => { depth = d.id; }}
+                onkeydown={(event) => moveRadioSelection(event, DEPTHS, depth, (value) => { depth = value; }, 'intake-depth')}
               >
-                {d.charAt(0).toUpperCase() + d.slice(1)}
+                {d.label}
               </button>
             {/each}
           </div>
@@ -148,11 +185,12 @@
       </div>
 
       <button
+        type="button"
         class="btn btn-primary submit-btn"
         onclick={handleSubmit}
         disabled={!goal.trim()}
       >
-        <i class="fas fa-rocket"></i>
+        <i class="fas fa-rocket" aria-hidden="true"></i>
         Start Project
       </button>
     </div>
@@ -266,6 +304,7 @@
   }
 
   .pill {
+    min-height: 44px;
     padding: 6px 14px;
     border: 1px solid var(--border-default);
     border-radius: 20px;

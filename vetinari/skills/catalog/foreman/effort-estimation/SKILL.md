@@ -1,6 +1,6 @@
 ---
 name: Effort Estimation
-description: Estimate token cost, wall-clock time, and complexity using historical data from episode memory and quality scoring
+description: Estimate token cost, wall-clock time, and complexity using caller-provided history, LLM-driven episode-memory notes, and quality scoring
 mode: plan
 agent: foreman
 version: "1.0.0"
@@ -18,7 +18,7 @@ tags:
 
 ## Purpose
 
-Effort Estimation produces confidence-rated predictions for token cost, wall-clock duration, and complexity tier for each task in a plan. It draws on historical execution data from episode_memory, quality_scorer baselines, and structural analysis of the target codebase to calibrate estimates. Accurate estimation enables the Foreman to set realistic budgets, prioritize work within constraints, and alert users when a request exceeds available resources before committing any execution tokens.
+Effort Estimation produces confidence-rated predictions for token cost, wall-clock duration, and complexity tier for each task in a plan. It draws on caller-provided historical execution data, LLM-driven episode_memory notes when available, quality_scorer baselines, and structural analysis of the target codebase to calibrate estimates. The episode_memory step is a prose integration point, not a guaranteed Python API call; if no history is supplied or found, the estimate must say it is uncalibrated. Accurate estimation enables the Foreman to set realistic budgets, prioritize work within constraints, and alert users when a request exceeds available resources before committing any execution tokens.
 
 ## When to Use
 
@@ -35,7 +35,7 @@ Effort Estimation produces confidence-rated predictions for token cost, wall-clo
 |------------------|-----------------|----------|---------------------------------------------------------------------|
 | tasks            | list[dict]      | Yes      | Tasks to estimate (from task decomposition output)                  |
 | context          | dict            | No       | Codebase context (size, complexity, language distribution)           |
-| history          | list[dict]      | No       | Historical execution records from episode_memory                    |
+| history          | list[dict]      | Yes      | Historical execution records supplied by the caller or LLM-driven episode_memory notes |
 | model_config     | dict            | No       | Model tier configuration with per-token costs                       |
 | budget           | dict            | No       | Available budget constraints (max_tokens, max_cost_usd, max_time)   |
 | confidence_level | string          | No       | Desired confidence: "low" (50%), "medium" (75%), "high" (90%)       |
@@ -44,7 +44,7 @@ Effort Estimation produces confidence-rated predictions for token cost, wall-clo
 
 1. **Task classification** -- Classify each task by archetype: research (read-heavy, low output), architecture (analysis, medium output), build (write-heavy, high output), review (read-heavy, structured output), documentation (write-heavy, narrative output). Each archetype has different token profiles.
 
-2. **Historical lookup** -- Query episode_memory for similar completed tasks. Match on: mode, file count, complexity tier, and description similarity. Extract actual token usage, wall-clock time, and pass/fail rates from historical records.
+2. **Historical lookup** -- Require caller-provided history or a successful LLM-driven episode_memory lookup for similar completed tasks. Match on: mode, file count, complexity tier, and description similarity. Extract actual token usage, wall-clock time, and pass/fail rates from historical records. If no history is available, return an uncalibrated estimate status instead of claiming memory-calibrated confidence.
 
 3. **Structural analysis** -- For build tasks, analyze the target files: lines of code, number of functions, cyclomatic complexity, import depth. Larger and more complex files require more tokens for context and more tokens for output.
 
@@ -132,7 +132,7 @@ tasks:
   - {id: "T3", description: "Implement JWT middleware", assigned_agent: "WORKER", mode: "build"}
   - {id: "T4", description: "Write tests for JWT middleware", assigned_agent: "WORKER", mode: "build"}
   - {id: "T5", description: "Security audit of JWT implementation", assigned_agent: "INSPECTOR", mode: "security_audit"}
-history: [12 prior auth-related tasks from episode_memory]
+history: [12 prior auth-related tasks supplied by caller or LLM-driven episode_memory notes]
 budget: {max_cost_usd: 5.00, max_time_seconds: 3600}
 ```
 

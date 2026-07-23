@@ -16,17 +16,18 @@ import logging
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
 
+
 ROLLING_WINDOW = 50  # Rolling average over last N tasks
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class BottleneckAgentMetrics:
     """Per-agent performance metrics for bottleneck identification.
 
@@ -115,32 +116,38 @@ class BottleneckIdentifier:
             times = list(self._execution_times[agent_type])
             total = self._success_counts[agent_type] + self._failure_counts[agent_type]
 
-            metrics = self._metrics[agent_type]
-            metrics.avg_execution_time_ms = sum(times) / len(times) if times else 0.0
-            metrics.failure_rate = self._failure_counts[agent_type] / total if total > 0 else 0.0
+            avg_execution_time_ms = sum(times) / len(times) if times else 0.0
+            failure_rate = self._failure_counts[agent_type] / total if total > 0 else 0.0
 
             # Throughput: completions per minute over rolling window
             completions = list(self._completion_times[agent_type])
             if len(completions) >= 2:
                 window_duration = completions[-1] - completions[0]
                 if window_duration > 0:
-                    metrics.throughput = (len(completions) - 1) / (window_duration / 60.0)
+                    throughput = (len(completions) - 1) / (window_duration / 60.0)
                 else:
-                    metrics.throughput = 0.0
+                    throughput = 0.0
             else:
-                metrics.throughput = 0.0
+                throughput = 0.0
 
             # Utilization: busy time / elapsed time
             elapsed = now - self._start_time
             if elapsed > 0:
-                metrics.utilization = min(
+                utilization = min(
                     1.0,
                     self._total_busy_time[agent_type] / elapsed,
                 )
             else:
-                metrics.utilization = 0.0
+                utilization = 0.0
+            self._metrics[agent_type] = replace(
+                self._metrics[agent_type],
+                avg_execution_time_ms=avg_execution_time_ms,
+                failure_rate=failure_rate,
+                throughput=throughput,
+                utilization=utilization,
+            )
 
-    def set_queue_depth(self, agent_type: str, depth: int) -> None:
+    def update_queue_depth(self, agent_type: str, depth: int) -> None:
         """Update the queue depth for an agent.
 
         Args:
@@ -150,7 +157,10 @@ class BottleneckIdentifier:
         with self._lock:
             if agent_type not in self._metrics:
                 self._metrics[agent_type] = BottleneckAgentMetrics(agent_type=agent_type)
-            self._metrics[agent_type].queue_depth = depth
+            self._metrics[agent_type] = replace(self._metrics[agent_type], queue_depth=depth)
+
+    # Backward compatibility alias for callers still using the old setter verb.
+    set_queue_depth = update_queue_depth
 
     def identify_constraint(self) -> str | None:
         """Identify the bottleneck agent.

@@ -24,6 +24,7 @@ from typing import Any
 
 from vetinari.a2a.agent_cards import get_all_cards
 from vetinari.a2a.executor import A2ATask, VetinariA2AExecutor
+from vetinari.utils.bounded_collections import BoundedDict
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ _ERR_INTERNAL = -32603  # Internal server error
 # generic internal errors.
 _ERR_TASK_NOT_FOUND = -32001  # Requested task_id is unknown to this transport instance
 _ERR_GUARDRAIL_BLOCKED = -32002  # Input was rejected by safety guardrails before execution
+_MAX_IN_MEMORY_TASKS = 1000
 
 
 # ── Internal sentinel exceptions ────────────────────────────────────────────
@@ -102,8 +104,8 @@ class A2ATransport:
         self.host = host
         self.port = port
         self._executor = executor or VetinariA2AExecutor()
-        # In-memory task store: task_id → A2ATask (for status queries)
-        self._tasks: dict[str, A2ATask] = {}
+        # In-memory task store: task_id -> A2ATask (for status queries)
+        self._tasks: BoundedDict[str, A2ATask] = BoundedDict(_MAX_IN_MEMORY_TASKS)
         logger.info("A2ATransport initialised on %s:%d", self.host, self.port)
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -210,7 +212,8 @@ class A2ATransport:
 
     # ── Method handlers ───────────────────────────────────────────────────────
 
-    def _handle_agent_card_request(self, params: dict) -> dict:
+    @staticmethod
+    def _handle_agent_card_request(params: dict) -> dict:
         """Return the agent cards for all pipeline agents.
 
         Args:
@@ -224,34 +227,12 @@ class A2ATransport:
         logger.debug("Returning %d agent cards", len(serialised))
         return {"agents": serialised}
 
-    def _handle_task_send(self, params: dict) -> dict:
-        """Accept, store, and execute an incoming A2A task.
-
-        Input guardrails run BEFORE execution so that blocked content is
-        never passed to the pipeline.  Output guardrails run AFTER execution
-        to filter the result; a blocked output is redacted rather than raised.
-
-        If guardrail infrastructure itself raises, the task is rejected — both
-        an explicit block decision and an infrastructure failure cause the task
-        to be rejected (fail-closed).  A guardrail that cannot complete its
-        check must never silently pass input through.
-
-        Args:
-            params: Must contain ``taskType`` and optionally ``inputData``
-                and ``metadata`` keys.
-
-        Returns:
-            Dict with ``taskId``, ``status``, ``outputData``, and ``error``
-            keys reflecting the execution result.
-
-        Raises:
-            KeyError: If ``taskType`` is missing from params.
-            _GuardrailBlockedError: If the input payload is rejected by the
-                safety guardrails before any execution occurs.
-        """
+    def _parse_task_send_params(self, params: dict[str, Any]) -> tuple[str, dict[str, Any], dict[str, Any], str]:
+        """Validate task-send params and allocate the task id."""
         task_type = params.get("taskType")
         if not isinstance(task_type, str) or not task_type:
             raise ValueError("taskType must be a non-empty string")
+
         supported_task_types = getattr(self._executor, "supported_task_types", None)
         if isinstance(supported_task_types, (list, tuple, set, frozenset)) and task_type not in supported_task_types:
             raise ValueError(f"Unsupported taskType: {task_type!r}")
@@ -278,15 +259,11 @@ class A2ATransport:
 
         if self._task_id_exists(task_id):
             raise ValueError(f"Duplicate taskId: {task_id!r}")
+        return task_type, input_data, metadata, task_id
 
-        # Build the plain-text representation used for guardrail checks.
-        input_text = input_data.get("text") or input_data.get("prompt") or json.dumps(input_data)
-
-        # ── Input guardrail: runs BEFORE execution (fail-closed on any failure) ──
-        # Both an explicit "allowed=False" decision and any infrastructure error
-        # (ImportError, unexpected exception) reject the task.  A guardrail that
-        # cannot complete its check MUST NOT silently pass the input through —
-        # that would be a default-pass verifier anti-pattern.
+    @staticmethod
+    def _check_input_guardrails(task_id: str, input_text: str) -> None:
+        """Reject an A2A task when input guardrails block or cannot run."""
         try:
             from vetinari.safety.guardrails import get_guardrails
 
@@ -298,13 +275,72 @@ class A2ATransport:
                 )
                 raise _GuardrailBlockedError(f"Task '{task_id}' input was rejected by safety guardrails")
         except _GuardrailBlockedError:
-            raise  # re-raise sentinel so handle_request emits the right error code
-        except Exception:
+            raise
+        except Exception as exc:
             logger.exception(
                 "Guardrail infrastructure failure for A2A task id=%s — rejecting task to fail closed",
                 task_id,
             )
-            raise _GuardrailBlockedError(f"Task '{task_id}' rejected: guardrail check could not complete") from None
+            raise _GuardrailBlockedError(f"Task '{task_id}' rejected: guardrail check could not complete") from exc
+
+    @staticmethod
+    def _redact_blocked_output(task_id: str, input_text: str, result_dict: dict[str, Any]) -> dict[str, Any]:
+        """Redact output when post-execution guardrails block or fail."""
+        output_text = str(result_dict.get("outputData") or result_dict.get("output") or "")
+        try:
+            from vetinari.safety.guardrails import get_guardrails
+
+            _input_recheck, output_gr = get_guardrails().check_both(input_text, output_text)
+            if not output_gr.allowed:
+                logger.warning("A2A task id=%s output blocked by guardrails — redacting", task_id)
+                if "outputData" in result_dict:
+                    result_dict["outputData"] = "[Content filtered for safety]"
+        except Exception:
+            logger.warning(
+                "Output guardrails check failed for A2A task id=%s — redacting output as fail-closed safety measure",
+                task_id,
+                exc_info=True,
+            )
+            if "outputData" in result_dict:
+                result_dict["outputData"] = "[Content filtered for safety]"
+        return result_dict
+
+    def _handle_task_send(self, params: dict) -> dict:
+        """Accept, store, and execute an incoming A2A task.
+
+        Input guardrails run BEFORE execution so that blocked content is
+        never passed to the pipeline.  Output guardrails run AFTER execution
+        to filter the result; a blocked output is redacted rather than raised.
+
+        If guardrail infrastructure itself raises, the task is rejected — both
+        an explicit block decision and an infrastructure failure cause the task
+        to be rejected (fail-closed).  A guardrail that cannot complete its
+        check must never silently pass input through.
+
+        Args:
+            params: Must contain ``taskType`` and optionally ``inputData``
+                and ``metadata`` keys.
+
+        Returns:
+            Dict with ``taskId``, ``status``, ``outputData``, and ``error``
+            keys reflecting the execution result.
+
+        Raises:
+            KeyError: If ``taskType`` is missing from params.
+            _GuardrailBlockedError: If the input payload is rejected by the
+                safety guardrails before any execution occurs.
+        """
+        task_type, input_data, metadata, task_id = self._parse_task_send_params(params)
+
+        # Build the plain-text representation used for guardrail checks.
+        input_text = input_data.get("text") or input_data.get("prompt") or json.dumps(input_data)
+
+        # ── Input guardrail: runs BEFORE execution (fail-closed on any failure) ──
+        # Both an explicit "allowed=False" decision and any infrastructure error
+        # (ImportError, unexpected exception) reject the task.  A guardrail that
+        # cannot complete its check MUST NOT silently pass the input through —
+        # that would be a default-pass verifier anti-pattern.
+        self._check_input_guardrails(task_id, input_text)
 
         task = A2ATask(
             task_id=task_id,
@@ -323,24 +359,7 @@ class A2ATransport:
         # the post-execute check is caught at the trust boundary.  The input
         # re-verdict is informational (we already rejected blocked input
         # above); only the output verdict drives redaction here.
-        result_dict = result.to_dict()
-        output_text = str(result_dict.get("outputData") or result_dict.get("output") or "")
-        try:
-            from vetinari.safety.guardrails import get_guardrails
-
-            _input_recheck, output_gr = get_guardrails().check_both(input_text, output_text)
-            if not output_gr.allowed:
-                logger.warning("A2A task id=%s output blocked by guardrails — redacting", task_id)
-                if "outputData" in result_dict:
-                    result_dict["outputData"] = "[Content filtered for safety]"
-        except Exception:
-            logger.warning(
-                "Output guardrails check failed for A2A task id=%s — redacting output as fail-closed safety measure",
-                task_id,
-                exc_info=True,
-            )
-            if "outputData" in result_dict:
-                result_dict["outputData"] = "[Content filtered for safety]"
+        result_dict = self._redact_blocked_output(task_id, input_text, result.to_dict())
 
         # Persist final task state
         self._tasks[task_id] = task
@@ -388,10 +407,14 @@ class A2ATransport:
         try:
             from vetinari.database import get_connection
 
-            row = get_connection().execute(
-                "SELECT status FROM a2a_tasks WHERE task_id = ?",
-                (task_id,),
-            ).fetchone()
+            row = (
+                get_connection()
+                .execute(
+                    "SELECT status FROM a2a_tasks WHERE task_id = ?",
+                    (task_id,),
+                )
+                .fetchone()
+            )
         except Exception:
             logger.warning("A2A persisted status lookup failed for task %s", task_id)
             return None

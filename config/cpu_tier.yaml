@@ -1,0 +1,22 @@
+process_mode: in_process
+model_path: models/cpu-tier/qwen2.5-7b-q4.gguf
+synthesis_model: qwen2.5-7b-q4
+bonsai_model: qwen2.5-0.5b-bonsai
+embed_model: sentence-transformers/all-MiniLM-L6-v2
+pinned_embedding_models:
+  - sentence-transformers/all-MiniLM-L6-v2
+  - text-embedding-nomic-embed-text-v1.5
+smoke_test_timeout_s: 30.0
+release_timeout_s: 30.0
+mlock_weights: false
+persistent_jobs_db: outputs/inference_jobs.db
+persistent_jobs:
+  worker_poll_interval_s: 1.0
+  max_in_flight: 4
+  claim_timeout_s: 300.0
+  heartbeat_interval_s: 30.0
+memory_pressure:
+  poll_interval_s: 1.0
+  release_threshold_mb: 2048
+  reload_threshold_mb: 4096
+  release_timeout_s: 30.0

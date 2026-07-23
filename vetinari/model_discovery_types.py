@@ -13,7 +13,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ModelSource:
     """Provenance record -- kept for backward compat with model_search callers."""
 
@@ -92,7 +92,7 @@ class ModelCandidate:
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RepoModelFile:
     """Immutable metadata for a downloadable model artifact."""
 
@@ -130,7 +130,7 @@ class RepoModelFile:
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RepoSnapshotFile:
     """Immutable metadata for one file in a native Hugging Face snapshot."""
 
@@ -151,7 +151,7 @@ class RepoSnapshotFile:
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RepoModelSnapshot:
     """Immutable metadata for a native vLLM/NIM Hugging Face snapshot."""
 

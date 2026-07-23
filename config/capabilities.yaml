@@ -1,0 +1,242 @@
+schema_version: 1
+capabilities:
+  - kind: local_llama_cpp
+    display_name: Local llama.cpp inference
+    description: Python llama.cpp bindings for local GGUF inference.
+    target_environment: gpu
+    pip_extra: local
+    extra_packages: ["llama-cpp-python>=0.3.23,<0.4.0"]
+    disk_impact_mb: 650
+    network_impact_mb: 300
+    requires_native_binary: true
+    requires_wsl: false
+    requires_credentials: []
+    risk_level: high
+    degraded_fallback: Use configured remote or CPU-tier inference backends.
+    uninstall_note: Run pip uninstall llama-cpp-python and remove downloaded GGUF models manually.
+    detection_rule: {kind: import_probe, target: llama_cpp, timeout_s: 2.0}
+  - kind: local_vllm
+    display_name: Local vLLM inference
+    description: High-throughput GPU inference backend for Linux or WSL targets.
+    target_environment: gpu
+    pip_extra: vllm
+    extra_packages: [vllm>=0.13]
+    disk_impact_mb: 7000
+    network_impact_mb: 4500
+    requires_native_binary: true
+    requires_wsl: true
+    requires_credentials: []
+    risk_level: critical
+    degraded_fallback: Route requests through llama.cpp, SGLang, or cloud adapters.
+    uninstall_note: Run pip uninstall vllm and remove model cache and WSL packages manually.
+    detection_rule: {kind: import_probe, target: vllm, timeout_s: 2.0}
+  - kind: local_sglang
+    display_name: Local SGLang inference
+    description: SGLang server backend for structured local inference.
+    target_environment: gpu
+    pip_extra: sglang
+    extra_packages: [sglang>=0.4.4, openai>=1.0.0]
+    disk_impact_mb: 6500
+    network_impact_mb: 4200
+    requires_native_binary: true
+    requires_wsl: true
+    requires_credentials: []
+    risk_level: critical
+    degraded_fallback: Use CPU-tier or remote inference routes.
+    uninstall_note: Run pip uninstall sglang and remove model cache and WSL packages manually.
+    detection_rule: {kind: import_probe, target: sglang, timeout_s: 2.0}
+  - kind: local_comfyui
+    display_name: Local ComfyUI support
+    description: Diffusion package set used by local ComfyUI-style image workflows.
+    target_environment: gpu
+    pip_extra: comfyui
+    extra_packages: [diffusers>=0.31.0, torch>=2.7.0, "transformers>=4.57,<5.0", Pillow>=10.0.0, accelerate>=0.25.0]
+    disk_impact_mb: 5000
+    network_impact_mb: 3300
+    requires_native_binary: true
+    requires_wsl: false
+    requires_credentials: []
+    risk_level: high
+    degraded_fallback: Image workflows remain disabled until the package set is installed.
+    uninstall_note: Run pip uninstall for the ComfyUI packages and clear model caches manually.
+    detection_rule: {kind: import_probe, target: diffusers, timeout_s: 2.0}
+  - kind: embeddings_local
+    display_name: Local embeddings
+    description: Local sentence-transformer and vector search packages.
+    target_environment: training
+    pip_extra: ml
+    extra_packages: [sentence-transformers>=3.0.0, sqlite-vec>=0.1.6]
+    disk_impact_mb: 1800
+    network_impact_mb: 1200
+    requires_native_binary: true
+    requires_wsl: false
+    requires_credentials: []
+    risk_level: high
+    degraded_fallback: Use remote embeddings or lexical retrieval only.
+    uninstall_note: Run pip uninstall for embedding packages and remove embedding cache manually.
+    detection_rule: {kind: import_probe, target: sentence_transformers, timeout_s: 2.0}
+  - kind: image_generation
+    display_name: Image generation
+    description: Local diffusion stack for image generation workflows.
+    target_environment: gpu
+    pip_extra: image
+    extra_packages: [diffusers>=0.31.0, torch>=2.7.0, accelerate>=0.25.0, Pillow>=10.0.0, "transformers>=4.57,<5.0"]
+    disk_impact_mb: 5000
+    network_impact_mb: 3300
+    requires_native_binary: true
+    requires_wsl: false
+    requires_credentials: [HUGGINGFACE_TOKEN]
+    risk_level: high
+    degraded_fallback: Image generation requests return a typed missing-capability prompt.
+    uninstall_note: Run pip uninstall for image packages and remove model caches manually.
+    detection_rule: {kind: import_probe, target: diffusers, timeout_s: 2.0}
+  - kind: dpo_training
+    display_name: DPO and preference tuning
+    description: Accelerated Unsloth training packages for DPO, LoRA, and preference optimization.
+    target_environment: training
+    pip_extra: training-unsloth
+    extra_packages: [peft>=0.19, "trl>=0.24,<0.25", "transformers>=5.1,<5.5", datasets>=3.4.1, "bitsandbytes>=0.49,<0.50", "unsloth>=2026.5.9,<2027.0", "huggingface-hub>=0.36,<2.0"]
+    disk_impact_mb: 6200
+    network_impact_mb: 4200
+    requires_native_binary: true
+    requires_wsl: true
+    requires_credentials: [HUGGINGFACE_TOKEN]
+    risk_level: critical
+    degraded_fallback: Tuning jobs stay queued and export review datasets only.
+    uninstall_note: Run pip uninstall for training packages and remove checkpoints manually.
+    detection_rule: {kind: import_probe, target: trl, timeout_s: 2.0}
+  - kind: speculative_decoding
+    display_name: Speculative decoding
+    description: Optional speculative decoding helper packages.
+    target_environment: gpu
+    pip_extra: speculators
+    extra_packages: [speculators>=0.3.0]
+    disk_impact_mb: 450
+    network_impact_mb: 240
+    requires_native_binary: false
+    requires_wsl: false
+    requires_credentials: []
+    risk_level: moderate
+    degraded_fallback: Use standard single-model decoding.
+    uninstall_note: Run pip uninstall speculators.
+    detection_rule: {kind: import_probe, target: speculators, timeout_s: 2.0}
+  - kind: llmlingua_compression
+    display_name: LLMLingua prompt compression
+    description: Optional prompt compression package for long-context workflows.
+    target_environment: core
+    pip_extra: llmlingua
+    extra_packages: [llmlingua>=0.1.0]
+    disk_impact_mb: 900
+    network_impact_mb: 550
+    requires_native_binary: false
+    requires_wsl: false
+    requires_credentials: []
+    risk_level: moderate
+    degraded_fallback: Use ordinary context trimming and summarization.
+    uninstall_note: Run pip uninstall llmlingua.
+    detection_rule: {kind: import_probe, target: llmlingua, timeout_s: 2.0}
+  - kind: dynamic_browser_scraping
+    display_name: Dynamic browser scraping
+    description: Playwright and Chromium support for JavaScript-rendered pages.
+    target_environment: browser
+    pip_extra: scraping-dynamic
+    extra_packages: [playwright>=1.45]
+    disk_impact_mb: 480
+    network_impact_mb: 300
+    requires_native_binary: true
+    requires_wsl: false
+    requires_credentials: []
+    risk_level: moderate
+    degraded_fallback: Static-page scraping remains available.
+    uninstall_note: Run pip uninstall playwright and remove Chromium from the Playwright cache manually.
+    detection_rule: {kind: import_probe, target: playwright, timeout_s: 2.0}
+  - kind: audio_transcription
+    display_name: Audio transcription
+    description: Faster-Whisper and audio device packages for local transcription.
+    target_environment: audio
+    pip_extra: audio
+    extra_packages: [faster-whisper>=1.1.0, sounddevice>=0.4.7, soundfile>=0.12.1]
+    disk_impact_mb: 2400
+    network_impact_mb: 1500
+    requires_native_binary: true
+    requires_wsl: false
+    requires_credentials: []
+    risk_level: high
+    degraded_fallback: Audio inputs remain stored but untranscribed.
+    uninstall_note: Run pip uninstall for audio packages and remove model cache manually.
+    detection_rule: {kind: import_probe, target: faster_whisper, timeout_s: 2.0}
+  - kind: video_processing
+    display_name: Video processing
+    description: ImageIO, ffmpeg, and MoviePy packages for local video workflows.
+    target_environment: video
+    pip_extra: video
+    extra_packages: [imageio>=2.34.0, imageio-ffmpeg>=0.5.0, moviepy>=1.0.3]
+    disk_impact_mb: 700
+    network_impact_mb: 420
+    requires_native_binary: true
+    requires_wsl: false
+    requires_credentials: []
+    risk_level: high
+    degraded_fallback: Video files can be archived but not processed.
+    uninstall_note: Run pip uninstall imageio imageio-ffmpeg moviepy.
+    detection_rule: {kind: import_probe, target: moviepy, timeout_s: 2.0}
+  - kind: cloud_adapters
+    display_name: Cloud model adapters
+    description: Optional native cloud model SDKs for first-class cloud providers.
+    target_environment: core
+    pip_extra: cloud
+    extra_packages: ["anthropic>=0.103.1,<1.0", openai>=1.0.0, "google-genai>=2.5.0,<3.0"]
+    disk_impact_mb: 900
+    network_impact_mb: 520
+    requires_native_binary: false
+    requires_wsl: false
+    requires_credentials: [OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY]
+    risk_level: high
+    degraded_fallback: Local-only routing remains available.
+    uninstall_note: Run pip uninstall for the cloud adapter packages.
+    detection_rule: {kind: import_probe, target: openai, timeout_s: 2.0}
+  - kind: guardrails_runtime
+    display_name: Guardrails runtime
+    description: Runtime policy and prompt-safety guardrail packages.
+    target_environment: core
+    pip_extra: guardrails
+    extra_packages: [nemoguardrails>=0.20.0, fastembed>=0.8.0]
+    disk_impact_mb: 2200
+    network_impact_mb: 1400
+    requires_native_binary: true
+    requires_wsl: false
+    requires_credentials: []
+    risk_level: high
+    degraded_fallback: Built-in static policy checks remain active without runtime guardrail models.
+    uninstall_note: Run pip uninstall nemoguardrails llm_guard fastembed.
+    detection_rule: {kind: import_probe, target: nemoguardrails, timeout_s: 2.0}
+  - kind: observability_otlp
+    display_name: OTLP observability export
+    description: OpenTelemetry SDK and OTLP exporter support.
+    target_environment: core
+    pip_extra: observability
+    extra_packages: [opentelemetry-api>=1.20, opentelemetry-exporter-otlp-proto-http>=1.20, opentelemetry-sdk>=1.20]
+    disk_impact_mb: 180
+    network_impact_mb: 90
+    requires_native_binary: false
+    requires_wsl: false
+    requires_credentials: [OTEL_EXPORTER_OTLP_ENDPOINT]
+    risk_level: high
+    degraded_fallback: Local logs and receipt evidence remain available without OTLP export.
+    uninstall_note: Run pip uninstall opentelemetry-api opentelemetry-exporter-otlp-proto-http opentelemetry-sdk.
+    detection_rule: {kind: import_probe, target: opentelemetry, timeout_s: 2.0}
+  - kind: eval_workflow
+    display_name: Workbench eval workflow
+    description: Built-in Workbench trace-to-eval workflow capability pack.
+    target_environment: core
+    pip_extra: dev
+    extra_packages: []
+    disk_impact_mb: 0
+    network_impact_mb: 0
+    requires_native_binary: false
+    requires_wsl: false
+    requires_credentials: []
+    risk_level: low
+    degraded_fallback: Workbench trace-to-eval pack remains disabled until trust checks pass.
+    uninstall_note: Disable or uninstall the Workbench capability pack; no external package removal is required.
+    detection_rule: {kind: import_probe, target: vetinari.workbench.capability_packs, timeout_s: 2.0}

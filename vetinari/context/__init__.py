@@ -42,13 +42,14 @@ from vetinari.context.session_state import (
     get_session_state_extractor,
 )
 from vetinari.context.tool_persistence import ToolResultStore
-from vetinari.context.window_manager import (  # noqa: VET123 - barrel export preserves public import compatibility
+from vetinari.context.window_manager import (
     CompressionConfig,
     CompressionResult,
     ContextCompressor,
     ContextWindowManager,
     WindowConversationMessage,
-    estimate_tokens,
+    count_tokens,
+    fallback_estimate_tokens,
     get_context_compressor,
     get_window_manager,
 )
@@ -81,9 +82,10 @@ __all__ = [
     "StageUsage",
     "ToolResultStore",
     "WindowConversationMessage",
+    "count_tokens",
     "create_budget_for_model",
     "create_pipeline_context_manager",
-    "estimate_tokens",
+    "fallback_estimate_tokens",
     "get_acon_compressor",
     "get_compactor",
     "get_context_compressor",

@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_automation_shadow.schema.json",
+  "title": "Workbench Automation Shadow Plan",
+  "oneOf": [
+    {"$ref": "#/$defs/shadow_plan"},
+    {"$ref": "#/$defs/shadow_receipt"}
+  ],
+  "$defs": {
+    "non_empty_string": {"type": "string", "minLength": 1},
+    "string_array": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/non_empty_string"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "simulated_side_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "effect_id",
+        "effect_type",
+        "target_ref",
+        "description",
+        "reversible",
+        "evidence_refs"
+      ],
+      "properties": {
+        "effect_id": {"$ref": "#/$defs/non_empty_string"},
+        "effect_type": {"$ref": "#/$defs/non_empty_string"},
+        "target_ref": {"$ref": "#/$defs/non_empty_string"},
+        "description": {"$ref": "#/$defs/non_empty_string"},
+        "reversible": {"type": "boolean"},
+        "evidence_refs": {"$ref": "#/$defs/string_array"}
+      }
+    },
+    "approval_diff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "diff_id",
+        "before_ref",
+        "after_ref",
+        "summary",
+        "operator_review_ref",
+        "changed_fields"
+      ],
+      "properties": {
+        "diff_id": {"$ref": "#/$defs/non_empty_string"},
+        "before_ref": {"$ref": "#/$defs/non_empty_string"},
+        "after_ref": {"$ref": "#/$defs/non_empty_string"},
+        "summary": {"$ref": "#/$defs/non_empty_string"},
+        "operator_review_ref": {"$ref": "#/$defs/non_empty_string"},
+        "changed_fields": {"$ref": "#/$defs/string_array"}
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_cost_usd", "max_runtime_minutes", "posture", "evidence_ref"],
+      "properties": {
+        "max_cost_usd": {"type": "number", "exclusiveMinimum": 0},
+        "max_runtime_minutes": {"type": "integer", "minimum": 1},
+        "posture": {"type": "string", "enum": ["within_limit", "exceeded", "unknown"]},
+        "evidence_ref": {"$ref": "#/$defs/non_empty_string"}
+      }
+    },
+    "quiet_hours": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timezone", "start_hour", "end_hour", "posture", "evidence_ref"],
+      "properties": {
+        "timezone": {"$ref": "#/$defs/non_empty_string"},
+        "start_hour": {"type": "integer", "minimum": 0, "maximum": 23},
+        "end_hour": {"type": "integer", "minimum": 0, "maximum": 23},
+        "posture": {"type": "string", "enum": ["outside_quiet_hours", "active", "unknown"]},
+        "evidence_ref": {"$ref": "#/$defs/non_empty_string"}
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "target_ref", "evidence_ref"],
+      "properties": {
+        "strategy": {"$ref": "#/$defs/non_empty_string"},
+        "target_ref": {"$ref": "#/$defs/non_empty_string"},
+        "evidence_ref": {"$ref": "#/$defs/non_empty_string"}
+      }
+    },
+    "shadow_receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receipt_id",
+        "automation_id",
+        "mode",
+        "replay_boundary_ref",
+        "evidence_refs",
+        "simulated_effect_ids",
+        "emitted_at_utc"
+      ],
+      "properties": {
+        "receipt_id": {"$ref": "#/$defs/non_empty_string"},
+        "automation_id": {"$ref": "#/$defs/non_empty_string"},
+        "mode": {"type": "string", "enum": ["dry_run", "shadow_run"]},
+        "replay_boundary_ref": {"$ref": "#/$defs/non_empty_string"},
+        "evidence_refs": {"$ref": "#/$defs/string_array"},
+        "simulated_effect_ids": {"$ref": "#/$defs/string_array"},
+        "emitted_at_utc": {"$ref": "#/$defs/non_empty_string"}
+      }
+    },
+    "shadow_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plan_id",
+        "automation_id",
+        "mode",
+        "status",
+        "high_impact",
+        "action_type",
+        "target_ref",
+        "proposed_by_ref",
+        "blocked_reasons",
+        "simulated_side_effects",
+        "approval_diff",
+        "budget",
+        "quiet_hours",
+        "rollback",
+        "activation_gate_ids",
+        "receipt",
+        "source_metadata"
+      ],
+      "properties": {
+        "plan_id": {"$ref": "#/$defs/non_empty_string"},
+        "automation_id": {"$ref": "#/$defs/non_empty_string"},
+        "mode": {"type": "string", "enum": ["dry_run", "shadow_run"]},
+        "status": {"type": "string", "enum": ["proposed", "blocked"]},
+        "high_impact": {"type": "boolean"},
+        "action_type": {"$ref": "#/$defs/non_empty_string"},
+        "target_ref": {"$ref": "#/$defs/non_empty_string"},
+        "proposed_by_ref": {"$ref": "#/$defs/non_empty_string"},
+        "blocked_reasons": {
+          "type": "array",
+          "items": {"type": "string"},
+          "uniqueItems": true
+        },
+        "simulated_side_effects": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/simulated_side_effect"},
+          "minItems": 1
+        },
+        "approval_diff": {"$ref": "#/$defs/approval_diff"},
+        "budget": {"$ref": "#/$defs/budget"},
+        "quiet_hours": {"$ref": "#/$defs/quiet_hours"},
+        "rollback": {"$ref": "#/$defs/rollback"},
+        "activation_gate_ids": {"$ref": "#/$defs/string_array"},
+        "receipt": {"$ref": "#/$defs/shadow_receipt"},
+        "policy_evidence_ref": {"type": ["string", "null"], "minLength": 1},
+        "harness_evidence_ref": {"type": ["string", "null"], "minLength": 1},
+        "harness_authority_ref": {"type": ["string", "null"], "minLength": 1},
+        "harness_provenance_ref": {"type": ["string", "null"], "minLength": 1},
+        "source_metadata": {"type": "object"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "high_impact": {"const": true},
+              "proposed_by_ref": {"pattern": "^(agent|model):"}
+            },
+            "required": ["high_impact", "proposed_by_ref"]
+          },
+          "then": {
+            "properties": {
+              "status": {"const": "blocked"},
+              "blocked_reasons": {
+                "contains": {"const": "high-impact-agent-or-model-self-promotion-blocked"}
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

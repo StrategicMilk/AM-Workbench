@@ -16,6 +16,7 @@ GPU detection strategies:
 
 from __future__ import annotations
 
+import importlib
 import logging
 import os
 import platform
@@ -27,6 +28,7 @@ from enum import Enum
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -72,9 +74,6 @@ class GpuInfo:
 @dataclass(frozen=True, slots=True)
 class HardwareProfile:
     """Complete hardware profile for a system.
-
-    def __repr__(self) -> str:
-        return f"HardwareProfile(...)"
 
     Immutable snapshot of detected compute resources, used by the model
     recommender to select appropriate GGUF models and quantization levels.
@@ -167,7 +166,7 @@ def _detect_nvidia_gpu() -> GpuInfo | None:
         GpuInfo if an NVIDIA GPU is found, None otherwise.
     """
     try:
-        import pynvml  # type: ignore[import-untyped]
+        pynvml = importlib.import_module("pynvml")
 
         pynvml.nvmlInit()
         try:

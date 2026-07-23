@@ -1,0 +1,49 @@
+[[permission]]
+identifier = "allow-workbench-lifecycle-command"
+description = "Enables workbench_lifecycle_command; renderer admin equivalence is stripped by src-tauri/src/commands.rs."
+commands.allow = ["workbench_lifecycle_command"]
+
+[[permission]]
+identifier = "allow-vetinari-kernel-request"
+description = "Enables vetinari_kernel_request; allowed methods and routes are constrained by src-tauri/src/commands.rs."
+commands.allow = ["vetinari_kernel_request"]
+
+[[permission]]
+identifier = "allow-vetinari-status"
+description = "Enables vetinari_status for native kernel status only."
+commands.allow = ["vetinari_status"]
+
+[[permission]]
+identifier = "allow-vetinari-api-domains"
+description = "Enables vetinari_api_domains for read-only native domain inventory."
+commands.allow = ["vetinari_api_domains"]
+
+[[permission]]
+identifier = "allow-vetinari-require-domain"
+description = "Enables vetinari_require_domain for native domain-authority checks."
+commands.allow = ["vetinari_require_domain"]
+
+[[permission]]
+identifier = "allow-vetinari-workbench-surfaces"
+description = "Enables vetinari_workbench_surfaces for read-only surface policy inventory."
+commands.allow = ["vetinari_workbench_surfaces"]
+
+[[permission]]
+identifier = "allow-vetinari-resource-action"
+description = "Enables vetinari_resource_action; live actions still require kernel safety signals."
+commands.allow = ["vetinari_resource_action"]
+
+[[permission]]
+identifier = "allow-vetinari-training-status"
+description = "Enables vetinari_training_status for read-only native training status."
+commands.allow = ["vetinari_training_status"]
+
+[[permission]]
+identifier = "allow-vetinari-mcp-tools"
+description = "Enables vetinari_mcp_tools for read-only MCP tool discovery."
+commands.allow = ["vetinari_mcp_tools"]
+
+[[permission]]
+identifier = "allow-vetinari-mission-control-snapshot"
+description = "Enables vetinari_mission_control_snapshot; project identifiers are validated before route construction."
+commands.allow = ["vetinari_mission_control_snapshot"]

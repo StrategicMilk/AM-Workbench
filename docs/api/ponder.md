@@ -1,119 +1,42 @@
-# Vetinari Ponder API Contracts
+# AM Workbench Ponder Contracts
 
-This document defines key API endpoints introduced for plan-wide ponder orchestration and cloud provider health visibility.
+Ponder is currently an in-process model-selection helper, not a mounted HTTP API in this checkout. The live source is `vetinari/models/ponder.py` and `vetinari/models/ponder_scoring.py`.
 
-## POST /api/ponder/plan/<plan_id>
+Do not treat the former Ponder HTTP paths as live endpoints until a current
+route module is restored, authentication and request validation are wired, route
+tests exist, and the route-to-test matrix is regenerated.
 
-Triggers a plan-wide ponder pass for the given plan.
+## Live Functions
 
-**Request:**
-```bash
-POST /api/ponder/plan/plan_123
-Content-Type: application/json
-{}
-```
+- `ponder_project_for_plan(plan_id)` runs a plan-wide scoring pass for subtasks known to the planning subsystem.
+- `get_ponder_results_for_plan(plan_id)` returns stored per-subtask Ponder rankings and scores.
+- `get_ponder_health()` returns model-discovery enablement, cloud-weight configuration, and cloud-provider health.
+- `rank_models(task_description, top_n)` scores local models for a task description.
+- `PonderEngine.get_template_prompts()` returns the current in-process prompt list. The removed template-file catalog is not a route contract.
 
-**Response (success):**
+## Health Payload
+
+`get_ponder_health()` returns this shape:
+
 ```json
-HTTP/1.1 200 OK
 {
-  "plan_id": "plan_123",
-  "total_subtasks": 5,
-  "updated_subtasks": 3,
-  "errors": [],
-  "success": true
-}
-```
-
-**Response (error):**
-```json
-HTTP/1.1 400 Bad Request
-{
-  "error": "Plan plan_123 not found",
-  "success": false
-}
-```
-
-## GET /api/ponder/plan/<plan_id>
-
-Fetch per-subtask ponder audit data for the plan.
-
-**Response (success):**
-```json
-HTTP/1.1 200 OK
-{
-  "plan_id": "plan_123",
-  "total_subtasks": 5,
-  "subtasks_with_ponder": 5,
-  "subtasks": [
-    {
-      "subtask_id": "st_0001",
-      "description": "Write Python function",
-      "agent_type": "builder",
-      "ponder_ranking": [
-        {"rank": 1, "model_id": "qwen2.5-coder-14b", "total_score": 0.95},
-        {"rank": 2, "model_id": "claude:3.5-sonnet", "total_score": 0.88}
-      ],
-      "ponder_scores": {"qwen2.5-coder-14b": 0.95, "claude:3.5-sonnet": 0.88},
-      "ponder_used": true
-    }
-  ]
-}
-```
-
-## GET /api/ponder/health
-
-Returns provider health status and token presence.
-
-**Response (success):**
-```json
-HTTP/1.1 200 OK
-{
-  "enable_model_search": true,
+  "enable_model_discovery": true,
   "cloud_weight": 0.2,
   "providers": {
-    "huggingface_inference": {
+    "provider_id": {
       "available": true,
-      "name": "HuggingFace Inference API",
+      "name": "Provider Name",
       "has_token": true
-    },
-    "replicate": {
-      "available": true,
-      "name": "Replicate",
-      "has_token": true
-    },
-    "claude": {
-      "available": true,
-      "name": "Claude (Anthropic)",
-      "has_token": true
-    },
-    "gemini": {
-      "available": false,
-      "name": "Gemini (Google)",
-      "has_token": false
     }
   }
 }
 ```
 
-## POST /api/ponder/choose-model
+## Ranking Payload
 
-Get top-N model rankings for a specific task description.
+`rank_models(task_description, top_n)` returns this shape:
 
-**Request:**
-```bash
-POST /api/ponder/choose-model
-Content-Type: application/json
-{
-  "task_description": "Write Python code for data processing",
-  "top_n": 3,
-  "template_version": "v1"
-}
-```
-
-**Response (success):**
 ```json
-HTTP/1.1 200 OK
 {
   "task_id": "ponder_20240101_120000",
   "task_description": "Write Python code for data processing",
@@ -136,27 +59,15 @@ HTTP/1.1 200 OK
 }
 ```
 
-## GET /api/ponder/templates
+## Route Restoration Requirement
 
-Get available Ponder templates.
-
-**Response (success):**
-```json
-HTTP/1.1 200 OK
-{
-  "templates": [
-    {
-      "template_id": "ponder_rank_default",
-      "name": "Default Model Ranking",
-      "description": "Standard model selection for subtask"
-    }
-  ],
-  "total": 5,
-  "version": "v1"
-}
-```
+If Ponder is mounted again as HTTP, the implementation must add a live route
+file, wire authentication and request validation, add route tests, and update
+`docs/security/route-auth-matrix.md` before this document may describe
+endpoints as live.
 
 ## Security Notes
-- Tokens are never returned in API responses
-- Tokens are sourced exclusively from environment variables
-- Use proper RBAC for plan-level endpoints; restrict to admins where necessary
+
+- Tokens must never be returned in API responses.
+- Tokens are sourced from environment variables or configured provider credentials.
+- Plan-level Ponder operations must be restricted to authorized operators if re-exposed over HTTP.

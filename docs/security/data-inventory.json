@@ -1,0 +1,339 @@
+{
+  "schema_version": "1.0",
+  "authority": "docs/security/data-inventory.json",
+  "retention_model_refs": [
+    "vetinari/memory/governance/lifecycle.py::RetentionClass",
+    "vetinari/memory/governance/lifecycle.py::MemoryGovernanceRecord"
+  ],
+  "stores": [
+    {
+      "store_id": "training_collector",
+      "file_path": "training_data.jsonl",
+      "data_categories": ["prompt", "response", "model_id", "latency", "quality_score", "training_metadata"],
+      "pii_classification": "high-sensitivity-user-content",
+      "consent_basis": "local-only",
+      "retention_days": 30,
+      "redaction_applied": true,
+      "retention_policy_id": "training-records-30d",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "external_training_cache",
+      "file_path": "~/.vetinari/training_data/*.jsonl",
+      "data_categories": ["instruction", "input", "output", "prompt", "chosen", "rejected", "source_dataset", "license_ref", "dataset_revision", "privacy_receipt"],
+      "pii_classification": "high-sensitivity-training-content",
+      "consent_basis": "local-only-with-license-provenance",
+      "retention_days": 30,
+      "redaction_applied": true,
+      "retention_policy_id": "training-records-30d",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "cloud_output_distillation",
+      "file_path": "~/.vetinari/cloud_outputs.jsonl",
+      "data_categories": ["prompt", "response", "score", "model", "privacy_envelope"],
+      "pii_classification": "high-sensitivity-user-content",
+      "consent_basis": "local-only-distillation-cache",
+      "retention_days": 30,
+      "redaction_applied": false,
+      "retention_policy_id": "training-records-30d",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "pipeline_checkpoint_snapshots",
+      "file_path": "pipeline_traces.input_snapshot_json/output_snapshot_json",
+      "data_categories": ["trace_id", "execution_id", "step_name", "redacted_stage_payload", "privacy_receipt"],
+      "pii_classification": "high-sensitivity-user-content",
+      "consent_basis": "local-only-observability",
+      "retention_days": 30,
+      "redaction_applied": true,
+      "retention_policy_id": "observability-checkpoints-30d",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "memory_store",
+      "file_path": "vetinari_memory.db::memories",
+      "data_categories": ["memory_content", "summary", "metadata", "provenance", "fact_graph"],
+      "pii_classification": "high-sensitivity-user-content",
+      "consent_basis": "local-only",
+      "retention_days": 365,
+      "redaction_applied": true,
+      "retention_policy_id": "memory-active-plus-tombstone",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.RETAINED"
+    },
+    {
+      "store_id": "dashboard_log_streaming",
+      "file_path": "logs/vetinari_audit.jsonl and in-process SSE buffer",
+      "data_categories": ["log_message", "trace_id", "span_id", "request_id", "logger_name", "log_metadata"],
+      "pii_classification": "high-sensitivity-user-content",
+      "consent_basis": "local-only",
+      "retention_days": 14,
+      "redaction_applied": true,
+      "retention_policy_id": "logs-14d",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "dashboard_datadog_log_shipping",
+      "file_path": "Datadog Logs Intake API",
+      "data_categories": ["log_message", "trace_id", "span_id", "request_id", "logger_name", "log_metadata"],
+      "pii_classification": "high-sensitivity-user-content",
+      "consent_basis": "explicit-opt-in",
+      "retention_days": 0,
+      "redaction_applied": true,
+      "retention_policy_id": "external-log-shipping-operator-owned",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "dashboard_webhook_log_shipping",
+      "file_path": "operator-configured webhook endpoint",
+      "data_categories": ["log_message", "trace_id", "span_id", "request_id", "logger_name", "log_metadata"],
+      "pii_classification": "high-sensitivity-user-content",
+      "consent_basis": "explicit-opt-in",
+      "retention_days": 0,
+      "redaction_applied": true,
+      "retention_policy_id": "external-log-shipping-operator-owned",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "launcher_support_bundles",
+      "file_path": "operator-selected support-bundle .zip",
+      "data_categories": ["subsystem_health", "sanitized_config", "log_excerpt", "governance_checker_output"],
+      "pii_classification": "high-sensitivity-user-content",
+      "consent_basis": "explicit-opt-in",
+      "retention_days": 0,
+      "redaction_applied": true,
+      "retention_policy_id": "support-bundles-operator-owned",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "outputs_scratch",
+      "file_path": "outputs/",
+      "data_categories": ["task_output", "temporary_trace", "workbench_snapshot", "scratch_artifact"],
+      "pii_classification": "high-sensitivity-user-content",
+      "consent_basis": "local-only",
+      "retention_days": 14,
+      "redaction_applied": true,
+      "retention_policy_id": "outputs-scratch-14d",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "rag_debugger_experiments",
+      "file_path": "outputs/workbench/rag_debugger/<project_id>/experiments.jsonl",
+      "data_categories": ["retrieval_query", "retrieved_context_text", "candidate_chunk_text", "faithfulness_verdict", "retrieval_metadata"],
+      "pii_classification": "high-sensitivity-user-content",
+      "consent_basis": "local-only",
+      "retention_days": 14,
+      "redaction_applied": true,
+      "retention_policy_id": "rag-debugger-experiments-14d",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "rag_knowledge_base",
+      "file_path": "vetinari_memory.db::documents / isolated KnowledgeBase SQLite files",
+      "data_categories": ["document_content", "source", "category", "embedding", "privacy_envelope"],
+      "pii_classification": "high-sensitivity-user-content",
+      "consent_basis": "local-only",
+      "retention_days": 30,
+      "redaction_applied": true,
+      "retention_policy_id": "rag-knowledge-base-30d",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "resource_accounting_lease_registry",
+      "file_path": "outputs/workbench/resource_cockpit/lease_registry.json",
+      "data_categories": ["project_id", "lease_id", "lane", "workload_id", "target_compute", "target_model", "timestamp"],
+      "pii_classification": "low-sensitivity-usage-metadata",
+      "consent_basis": "local-only",
+      "retention_days": 30,
+      "redaction_applied": true,
+      "retention_policy_id": "resource-accounting-30d",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "resource_accounting_ledgers",
+      "file_path": "outputs/workbench/resource_cockpit/*.jsonl",
+      "data_categories": ["project_id", "lease_id", "model_id", "token_usage", "gpu_hours", "total_cost_usd", "cost_breakdown"],
+      "pii_classification": "low-sensitivity-usage-metadata",
+      "consent_basis": "local-only",
+      "retention_days": 30,
+      "redaction_applied": true,
+      "retention_policy_id": "resource-accounting-30d",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "training_resource_ledger",
+      "file_path": "outputs/workbench/training/ledger.jsonl",
+      "data_categories": ["project_id", "job_id", "model_id", "elapsed_s", "gpu_hours", "total_cost_usd", "training_metadata"],
+      "pii_classification": "low-sensitivity-usage-metadata",
+      "consent_basis": "local-only",
+      "retention_days": 30,
+      "redaction_applied": true,
+      "retention_policy_id": "resource-accounting-30d",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "workbench_network_evidence",
+      "file_path": "workbench network state JSON artifacts",
+      "data_categories": ["network_observation", "provider_health", "routing_decision", "approval_packet"],
+      "pii_classification": "low-sensitivity-usage-metadata",
+      "consent_basis": "local-only",
+      "retention_days": 30,
+      "redaction_applied": true,
+      "retention_policy_id": "network-evidence-30d",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "cloud_provider_inference",
+      "file_path": "operator-enabled cloud inference APIs",
+      "data_categories": ["prompt", "response", "model_id", "token_usage", "routing_metadata"],
+      "pii_classification": "high-sensitivity-user-content",
+      "consent_basis": "explicit-opt-in",
+      "retention_days": 0,
+      "redaction_applied": true,
+      "retention_policy_id": "cloud-provider-operator-owned",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "genai_trace_export",
+      "file_path": "observability GenAI trace export JSON",
+      "data_categories": ["span_attribute", "tool_input", "tool_output", "token_usage"],
+      "pii_classification": "high-sensitivity-user-content",
+      "consent_basis": "local-only",
+      "retention_days": 14,
+      "redaction_applied": true,
+      "retention_policy_id": "trace-exports-14d",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "chat_conversation_export",
+      "file_path": "chat export and attachment download responses",
+      "data_categories": ["conversation_message", "attachment_text", "agent_name", "timestamp"],
+      "pii_classification": "high-sensitivity-user-content",
+      "consent_basis": "explicit-opt-in",
+      "retention_days": 0,
+      "redaction_applied": true,
+      "retention_policy_id": "chat-exports-operator-owned",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "feedback_loop_model_performance_signals",
+      "file_path": "feedback_loop_model_performance_signals.jsonl",
+      "data_categories": ["model_id", "quality_score", "drift_signal", "feedback_metadata", "task_metadata"],
+      "pii_classification": "low-sensitivity-usage-metadata",
+      "consent_basis": "local-only",
+      "retention_days": 30,
+      "redaction_applied": true,
+      "retention_policy_id": "feedback-signals-30d",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "model_performance_store",
+      "file_path": "plan_tracking.db::model_performance",
+      "data_categories": ["model_id", "task_id", "quality_score", "latency", "token_usage", "plan_metadata"],
+      "pii_classification": "low-sensitivity-usage-metadata",
+      "consent_basis": "local-only",
+      "retention_days": 30,
+      "redaction_applied": true,
+      "retention_policy_id": "model-performance-30d",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    },
+    {
+      "store_id": "capability_maturity_records",
+      "file_path": "outputs/models/capability.jsonl",
+      "data_categories": ["model_id", "task_profile", "evidence_basis", "score", "redacted_issues", "redacted_suggestions", "tool_evidence_hashes", "provenance_metadata"],
+      "pii_classification": "low-sensitivity-usage-metadata",
+      "consent_basis": "local-only",
+      "retention_days": 30,
+      "redaction_applied": true,
+      "retention_policy_id": "capability-maturity-30d",
+      "governance_class_ref": "vetinari/memory/governance/lifecycle.py::RetentionClass.EPHEMERAL"
+    }
+  ],
+  "retention_policies": [
+    {
+      "retention_policy_id": "training-records-30d",
+      "maximum_retention_days": 30,
+      "deletion_mechanism": "TrainingDataCollector.purge_expired_records(cutoff_days=30) removes stale JSONL rows at startup; TrainingDataCollector.delete_records_for_subject() removes subject-matching training rows and trace artifacts; raw prompt/response are redacted before write and exports derive from the redacted records"
+    },
+    {
+      "retention_policy_id": "observability-checkpoints-30d",
+      "maximum_retention_days": 30,
+      "deletion_mechanism": "Pipeline checkpoint snapshots store redacted stage payloads and privacy receipts only; checkpoint cleanup follows the ephemeral observability retention class and removes stale snapshot rows before they can be reused as training or export data"
+    },
+    {
+      "retention_policy_id": "memory-active-plus-tombstone",
+      "maximum_retention_days": 365,
+      "deletion_mechanism": "forget() tombstones records and overwrites content with [forgotten]; compact_memories() physically removes tombstoned rows"
+    },
+    {
+      "retention_policy_id": "logs-14d",
+      "maximum_retention_days": 14,
+      "deletion_mechanism": "bounded SSE buffer plus operator log rotation; LogRecord serialization redacts PII before file/SSE emission"
+    },
+    {
+      "retention_policy_id": "external-log-shipping-operator-owned",
+      "maximum_retention_days": 0,
+      "deletion_mechanism": "DatadogBackend and WebhookBackend are explicit opt-in transports; LogRecord serialization redacts payloads before network send and remote retention is governed by the operator-configured external system"
+    },
+    {
+      "retention_policy_id": "support-bundles-operator-owned",
+      "maximum_retention_days": 0,
+      "deletion_mechanism": "operator-owned export artifact; builder redacts UTF-8 content before writing bundle"
+    },
+    {
+      "retention_policy_id": "outputs-scratch-14d",
+      "maximum_retention_days": 14,
+      "deletion_mechanism": "TrainingScheduler idle maintenance sweeps stale outputs/ scratch artifacts"
+    },
+    {
+      "retention_policy_id": "rag-debugger-experiments-14d",
+      "maximum_retention_days": 14,
+      "deletion_mechanism": "RAG debugger experiments are local-only diagnostic JSONL under outputs/workbench/rag_debugger; resource JSONL rotation redacts raw prompts and payload secrets before append; operator output cleanup removes stale experiment logs and experiments are not reused for training unless exported through an explicit eval workflow"
+    },
+    {
+      "retention_policy_id": "rag-knowledge-base-30d",
+      "maximum_retention_days": 30,
+      "deletion_mechanism": "KnowledgeBase document rows carry vetinari-privacy-envelope.v1 receipts with erasure tokens; retrieval fails closed when a row lacks a valid receipt, and local database cleanup owns stale document removal."
+    },
+    {
+      "retention_policy_id": "resource-accounting-30d",
+      "maximum_retention_days": 30,
+      "deletion_mechanism": "Resource accounting state stores only project, lease, model, token, GPU-hour, and cost metadata. JSONL ledgers rotate before configured byte/line budgets are exceeded, lease registry writes use atomic replace, subject deletion follows project-output cleanup, and records are not reused for training or evals unless exported through an explicit operator workflow."
+    },
+    {
+      "retention_policy_id": "network-evidence-30d",
+      "maximum_retention_days": 30,
+      "deletion_mechanism": "NetworkTransportStateStore writes only redacted evidence; operator state cleanup removes stale JSON artifacts"
+    },
+    {
+      "retention_policy_id": "cloud-provider-operator-owned",
+      "maximum_retention_days": 0,
+      "deletion_mechanism": "Cloud providers are explicit opt-in inference transports; local request records are governed by the local training/trace policies and provider-side deletion follows the operator-configured provider account"
+    },
+    {
+      "retention_policy_id": "trace-exports-14d",
+      "maximum_retention_days": 14,
+      "deletion_mechanism": "GenAI exporter redacts tool payloads at record/export time; trace export files are operator-managed"
+    },
+    {
+      "retention_policy_id": "chat-exports-operator-owned",
+      "maximum_retention_days": 0,
+      "deletion_mechanism": "operator-requested response artifact; export and attachment paths redact content before response bytes leave the app"
+    },
+    {
+      "retention_policy_id": "feedback-signals-30d",
+      "maximum_retention_days": 30,
+      "deletion_mechanism": "FeedbackLoop retention uses local-only redacted signals and periodic store pruning before reuse in adaptive tuning"
+    },
+    {
+      "retention_policy_id": "model-performance-30d",
+      "maximum_retention_days": 30,
+      "deletion_mechanism": "SubtaskMemory.prune_old_plans and plan retention receipts bound model-performance rows used for plan quality adaptation"
+    },
+    {
+      "retention_policy_id": "capability-maturity-30d",
+      "maximum_retention_days": 30,
+      "deletion_mechanism": "append_capability_record persists minimized OutcomeSignal evidence only: tool stdout is replaced by a hash, commands/issues/suggestions/provenance source text are redacted, and LLM reasoning is omitted before JSONL write; local output cleanup owns stale file removal"
+    }
+  ]
+}

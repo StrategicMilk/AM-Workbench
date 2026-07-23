@@ -14,6 +14,7 @@ from typing import Generic, TypeVar
 
 logger = logging.getLogger(__name__)
 
+
 K = TypeVar("K")
 V = TypeVar("V")
 

@@ -1,4 +1,4 @@
-# Vetinari CLI Reference
+# AM Workbench CLI Reference
 
 **Entry point:** `python -m vetinari <command>` or `vetinari <command>` (if installed via pip)
 
@@ -9,8 +9,8 @@
 | Command | Category | Summary |
 |---|---|---|
 | `run` | Core | Execute a goal or manifest task |
-| `serve` | Core | Start the API/backend server |
-| `start` | Core | Start Vetinari (default command) |
+| `serve` | Core | Start the web dashboard |
+| `start` | Core | Start AM Workbench |
 | `status` | Core | Show system status |
 | `health` | Core | Health check all providers |
 | `interactive` | Core | Enter interactive REPL |
@@ -27,7 +27,8 @@
 | `watch` | Training | File watcher for @vetinari directives |
 | `init` | Package | First-run setup wizard |
 | `doctor` | Package | Run packaging and runtime-readiness diagnostic checks |
-| `models` | Package | Manage local GGUF model files |
+| `models` | Package | List models across all configured backends; download/scan operates on llama-cpp GGUF files (other backends resolve by HuggingFace repo ID or backend-native identifier) |
+| `python -m vetinari.cli_backend_overlay` | Package utility | Validate and plan governed backend overlay patches |
 | `forget` | Package | Purge learned data for a project |
 | `config` | Package | Configuration management |
 | `resume` | Package | Resume interrupted plan from checkpoint |
@@ -69,7 +70,7 @@ vetinari run --task auth-refactor-001
 
 ### `serve`
 
-Start the Litestar API/backend server.
+Start the native Rust kernel API server for the migrated Workbench API surface.
 
 ```bash
 vetinari serve
@@ -87,7 +88,7 @@ vetinari serve --debug
 
 ### `start`
 
-Start Vetinari with backend services and optional goal execution. This is the default command when no subcommand is given.
+Start AM Workbench with the optional native Rust kernel API server. Running `vetinari` without a subcommand prints help and exits without starting services.
 
 ```bash
 vetinari start
@@ -100,7 +101,7 @@ vetinari start --no-dashboard --skip-preflight
 | `--goal` / `-g` TEXT | str | — | Execute goal on startup |
 | `--task` / `-t` TEXT | str | — | Execute task on startup |
 | `--port` INT | int | — | Dashboard port |
-| `--no-dashboard` | flag | — | Disable background server startup |
+| `--no-dashboard` | flag | — | Disable web dashboard |
 | `--skip-preflight` | flag | — | Skip dependency preflight check |
 
 ---
@@ -236,7 +237,7 @@ vetinari mcp --transport http
 | `--mcp-port` INT | int | `8765` | HTTP port (http transport only) |
 | `--mcp-host` TEXT | str | `127.0.0.1` | HTTP bind address (http transport only) |
 
-`--transport http` does not launch a standalone MCP HTTP server. HTTP MCP requests are served by the Litestar app as JSON-RPC at `POST /mcp/message`; start the web server with `python -m vetinari` or `vetinari serve` first.
+`--transport http` does not launch a standalone MCP HTTP server. HTTP MCP requests are served by the native Rust kernel API as JSON-RPC at `POST /mcp/message`; start the Workbench API host before using the HTTP transport.
 
 ---
 
@@ -353,11 +354,14 @@ First-run setup wizard. Guides through model selection and initial configuration
 ```bash
 vetinari init
 vetinari init --skip-download
+vetinari init --dry-run --modality text
 ```
 
 | Flag | Description |
 |---|---|
 | `--skip-download` | Skip model download and print the URL instead |
+| `--dry-run` | Print setup recommendations without running the wizard or writing files |
+| `--modality` TEXT | Comma-separated modalities for dry-run catalog recommendations |
 
 ---
 
@@ -408,7 +412,9 @@ vetinari doctor --json
 
 ### `models`
 
-Manage local GGUF model files.
+List configured models across all inference backends and manage on-disk assets.
+
+`models list` enumerates every model the loaded config knows about, regardless of provider. `models scan` and `models download` operate on local llama-cpp GGUF files under `VETINARI_MODELS_DIR`; for vLLM/SGLang/NIM, point the backend at a HuggingFace repo ID via the relevant `VETINARI_*_MODEL` variable; for faster-whisper, use a CTranslate2 repo ID; for hosted providers (LiteLLM-fronted), set the API-key environment variable — no local files are required.
 
 ```bash
 vetinari models list
@@ -437,6 +443,36 @@ vetinari models check
 | `--repo` TEXT | `download` | HuggingFace repo ID |
 | `--filename` TEXT | `download` | GGUF filename within the repo |
 | `--name` TEXT | `remove`, `info` | Model name to match |
+
+---
+
+### Backend overlay utility
+
+Backend overlay planning is not a `vetinari` subcommand. Invoke the module
+entry point directly:
+
+```bash
+python -m vetinari.cli_backend_overlay check
+python -m vetinari.cli_backend_overlay dry-run --backend vllm
+python -m vetinari.cli_backend_overlay apply-plan --backend vllm --approve
+python -m vetinari.cli_backend_overlay rollback --backend vllm
+python -m vetinari.cli_backend_overlay rebase-status --backend vllm
+```
+
+| Subcommand | Description |
+|---|---|
+| `check` | Validate overlay manifests without applying patches |
+| `dry-run` | Print patch-check commands for one backend |
+| `apply-plan` | Build an approval-gated apply plan |
+| `rollback` | Print the recorded rollback command |
+| `rebase-status` | Print the recorded overlay rebase status |
+
+| Flag | Default | Description |
+|---|---|---|
+| `--manifest PATH` | `third_party_overlays/overlays.example.yaml` | Overlay manifest YAML path |
+| `--pins PATH` | `config/backend_pins.yaml` | Backend pins YAML path |
+| `--backend TEXT` | `vllm` | Backend key to inspect |
+| `--approve` | off | Required by `apply-plan` before a ready apply plan is returned |
 
 ---
 

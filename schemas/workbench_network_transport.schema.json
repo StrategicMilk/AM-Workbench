@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_network_transport.schema.json",
+  "title": "Workbench Network Transport",
+  "type": "object",
+  "required": ["policy"],
+  "properties": {
+    "policy": {
+      "type": "object",
+      "required": [
+        "bandwidth_budget_mbps",
+        "max_retry_backoff_seconds",
+        "cache_ttl_seconds",
+        "stale_after_seconds",
+        "allow_host_network_mutation"
+      ],
+      "properties": {
+        "bandwidth_budget_mbps": {"type": "number", "exclusiveMinimum": 0},
+        "max_retry_backoff_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "cache_ttl_seconds": {"type": "integer", "minimum": 1},
+        "stale_after_seconds": {"type": "integer", "minimum": 1},
+        "preferred_providers": {"type": "array", "items": {"type": "string"}},
+        "risky_change_requires_approval": {"type": "boolean"},
+        "allow_host_network_mutation": {"const": false}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

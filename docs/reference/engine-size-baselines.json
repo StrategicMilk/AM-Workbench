@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "ceiling_formula": "ceil(baseline_bytes * 1.20 / 1048576) * 1048576",
+  "artifacts": {
+    "windows-cpu": {
+      "baseline_bytes": null,
+      "ceiling_bytes": null,
+      "workflow_run_url": null
+    },
+    "windows-cuda": {
+      "baseline_bytes": null,
+      "ceiling_bytes": null,
+      "workflow_run_url": null
+    },
+    "linux-cpu": {
+      "baseline_bytes": null,
+      "ceiling_bytes": null,
+      "workflow_run_url": null
+    },
+    "linux-cuda": {
+      "baseline_bytes": null,
+      "ceiling_bytes": null,
+      "workflow_run_url": null
+    }
+  }
+}

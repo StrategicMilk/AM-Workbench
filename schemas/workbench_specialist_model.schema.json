@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_specialist_model.schema.json",
+  "title": "Workbench Specialist Model Registry",
+  "type": "object",
+  "required": ["cards"],
+  "additionalProperties": false,
+  "properties": {
+    "cards": {
+      "type": "array",
+      "minItems": 6,
+      "items": {
+        "type": "object",
+        "required": [
+          "card_id",
+          "model_ref",
+          "task",
+          "task_contract",
+          "input_schema_ref",
+          "output_schema_ref",
+          "confidence_calibration_ref",
+          "abstain_threshold",
+          "allowed_callers",
+          "fallback_behavior",
+          "eval_suite_ref",
+          "known_failure_modes",
+          "safety_ref",
+          "budget_ref",
+          "authority_ref",
+          "provenance_ref",
+          "persisted_state_ref"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "card_id": { "type": "string", "minLength": 1 },
+          "model_ref": { "type": "string", "minLength": 1 },
+          "task": {
+            "type": "string",
+            "enum": [
+              "failure_cause_classification",
+              "prompt_injection_detection",
+              "source_quality_classification",
+              "retrieval_reranking",
+              "plan_quality_discrimination",
+              "route_classification"
+            ]
+          },
+          "task_contract": { "type": "string", "minLength": 1 },
+          "input_schema_ref": { "type": "string", "minLength": 1 },
+          "output_schema_ref": { "type": "string", "minLength": 1 },
+          "confidence_calibration_ref": { "type": "string", "minLength": 1 },
+          "abstain_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+          "allowed_callers": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "fallback_behavior": { "type": "string", "minLength": 1 },
+          "eval_suite_ref": { "type": "string", "minLength": 1 },
+          "known_failure_modes": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "safety_ref": { "type": "string", "minLength": 1 },
+          "budget_ref": { "type": "string", "minLength": 1 },
+          "authority_ref": { "type": "string", "minLength": 1 },
+          "provenance_ref": { "type": "string", "minLength": 1 },
+          "persisted_state_ref": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

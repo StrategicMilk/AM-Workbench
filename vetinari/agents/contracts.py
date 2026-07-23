@@ -13,231 +13,50 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from vetinari.agents.agent_registry import ACTIVE_AGENT_TYPES, build_agent_registry
+from vetinari.agents.evidence_contracts import AttestedArtifact, LLMJudgment, OutcomeSignal, Provenance, ToolEvidence
 from vetinari.constants import (
-    AGENT_QUALITY_GATE_STRICT,
     DEFAULT_MAX_TOKENS,
     DEFAULT_QUALITY_THRESHOLD,
-    QUALITY_GATE_HIGH,
     SANDBOX_TIMEOUT,
 )
-from vetinari.exceptions import InsufficientEvidenceError
 from vetinari.types import (  # canonical source
     AgentType,
-    ArtifactKind,
-    EvidenceBasis,
     InferenceStatus,
     StatusEnum,
 )
 from vetinari.utils.serialization import dataclass_to_dict
 
-# -- Evidence and outcome-signal contracts (SESSION-05 / SHARD-01) ----------
+__all__ = [
+    "ACTIVE_AGENT_TYPES",
+    "AGENT_REGISTRY",
+    "AgentResult",
+    "AgentSpec",
+    "AgentTask",
+    "AttestedArtifact",
+    "DecomposeDecision",
+    "ExecutionPlan",
+    "LLMJudgment",
+    "OutcomeSignal",
+    "Plan",
+    "Provenance",
+    "Task",
+    "ToolEvidence",
+    "VerificationResult",
+    "get_agent_spec",
+    "get_all_agent_specs",
+    "get_enabled_agents",
+]
+
+
+def _default_model(agent_type: AgentType, mode: str | None = None) -> str:
+    """Resolve the current catalog-backed default model for an agent."""
+    from vetinari.config.agent_model_defaults import resolve
+
+    return resolve(agent_type, mode=mode)
 
 
 @dataclass(frozen=True, slots=True)
-class Provenance:
-    """Origin metadata attached to every OutcomeSignal.
-
-    Records where and how a signal was produced so consumers can trace the
-    claim back to its source without replaying the full execution history.
-
-    Attributes:
-        source: Human-readable name of the producing component or agent.
-        timestamp_utc: ISO-8601 UTC timestamp of when the signal was created.
-        model_id: Identifier of the LLM that produced the judgment, or empty
-            string when the basis is not LLM_JUDGMENT.
-        tool_name: Name of the tool that produced the evidence, or empty
-            string when the basis is not TOOL_EVIDENCE.
-        tool_version: Version string of the tool, or empty string when not
-            applicable.
-        attested_by: Identity of the human who attested, or empty string when
-            the basis is not HUMAN_ATTESTED.
-    """
-
-    source: str
-    timestamp_utc: str
-    model_id: str = ""
-    tool_name: str = ""
-    tool_version: str = ""
-    attested_by: str = ""
-
-    def __repr__(self) -> str:
-        return (
-            f"Provenance(source={self.source!r}, timestamp_utc={self.timestamp_utc!r},"
-            f" tool_name={self.tool_name!r}, model_id={self.model_id!r})"
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class ToolEvidence:
-    """A single deterministic tool result backing an OutcomeSignal.
-
-    Captures the essential fields needed to reproduce and verify a tool
-    invocation: what was run, what it returned, and whether it succeeded.
-
-    Attributes:
-        tool_name: Name of the tool that was invoked (e.g. "pytest", "ruff").
-        command: The full command string that was executed.
-        exit_code: Process exit code; 0 means success for most tools.
-        stdout_snippet: First 2 KB of stdout, for human inspection.
-        stdout_hash: SHA-256 hex digest of the full stdout, for integrity.
-        passed: True when the tool reported a passing result.
-    """
-
-    tool_name: str
-    command: str
-    exit_code: int
-    stdout_snippet: str = ""
-    stdout_hash: str = ""
-    passed: bool = False
-
-    def __repr__(self) -> str:
-        return f"ToolEvidence(tool_name={self.tool_name!r}, exit_code={self.exit_code!r}, passed={self.passed!r})"
-
-
-@dataclass(frozen=True, slots=True)
-class LLMJudgment:
-    """A model-generated judgment backing an OutcomeSignal.
-
-    Captures the essential fields needed to understand and audit a
-    model-produced assessment: which model, what it said, and how confident.
-
-    Attributes:
-        model_id: Identifier of the model that produced the judgment.
-        summary: Short (<=500 chars) plain-English summary of the judgment.
-        score: Model's self-reported confidence in [0.0, 1.0].
-        reasoning: Full chain-of-thought or explanation, may be long.
-    """
-
-    model_id: str
-    summary: str
-    score: float = 0.0
-    reasoning: str = ""
-
-    def __repr__(self) -> str:
-        return f"LLMJudgment(model_id={self.model_id!r}, score={self.score!r}, summary={self.summary[:60]!r})"
-
-
-@dataclass(frozen=True, slots=True)
-class AttestedArtifact:
-    """A concrete artifact that a human attested to as part of claim substantiation.
-
-    Bare "a user said yes" is NOT an AttestedArtifact — it has no kind to
-    attach to.  An AttestedArtifact requires a specific ArtifactKind and a
-    kind-specific payload dict that can be independently verified.
-
-    The ``payload`` dict keys depend on ``kind``:
-    - COMMAND_INVOCATION: {"command": str, "stdout_hash": str, "exit_code": int}
-    - COMMIT_SHA:         {"repo": str, "sha": str, "signed": bool}
-    - SIGNED_REVIEW:      {"reviewer_id": str, "signature": str, "reviewed_at": str}
-    - ADR_REFERENCE:      {"adr_id": str, "status": str}
-    - EXTERNAL_RECEIPT:   {"issuer": str, "receipt_id": str, "url": str}
-
-    Attributes:
-        kind: Classification of what the artifact is.
-        attested_by: Identity of the human providing the attestation.
-        attested_at_utc: ISO-8601 UTC timestamp of the attestation.
-        payload: Kind-specific structured data dict (see above).
-    """
-
-    kind: ArtifactKind
-    attested_by: str
-    attested_at_utc: str
-    payload: dict[str, Any]
-
-    def __repr__(self) -> str:
-        return (
-            f"AttestedArtifact(kind={self.kind.value!r},"
-            f" attested_by={self.attested_by!r},"
-            f" attested_at_utc={self.attested_at_utc!r})"
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class OutcomeSignal:
-    """Evidence-backed verdict on whether an agent output meets its quality contract.
-
-    This is the fail-closed replacement for bare boolean pass/fail returns.
-    Every OutcomeSignal carries its evidence basis so consumers can decide
-    whether the evidence is sufficient for the use case (promotion audit,
-    release proof, human-approval gate).
-
-    Default constructor produces ``passed=False``, ``score=0.0``,
-    ``basis=EvidenceBasis.UNSUPPORTED`` — the fail-closed sentinel (Rule 2).
-
-    The ``use_case`` field selects the enforcement regime:
-    - ``None`` (default): full enforcement — HUMAN_ATTESTED signals on factual
-      claim paths must carry non-empty ``attested_artifacts``.
-    - ``"INTENT_CONFIRMATION"``: relaxed — bare human attestation is acceptable
-      for destructive-op consent and override appeals.
-
-    Attributes:
-        passed: Whether the output clears the quality contract.
-        score: Continuous quality score in [0.0, 1.0].
-        basis: What kind of evidence backs this signal.
-        tool_evidence: Zero or more deterministic tool results.
-        llm_judgment: Optional model-generated judgment.
-        attested_artifacts: Zero or more human-attested concrete artifacts.
-        provenance: Origin metadata (source, timestamp, model/tool/human id).
-        issues: Identified problems with the output.
-        suggestions: Recommended improvements.
-        use_case: Optional use-case label; set to ``"INTENT_CONFIRMATION"``
-            to permit bare human attestation for consent / override paths.
-
-    Raises:
-        InsufficientEvidenceError: At construction time, if ``basis`` is
-            ``HUMAN_ATTESTED``, ``use_case`` is not ``"INTENT_CONFIRMATION"``,
-            and ``attested_artifacts`` is empty.  This enforces the narrowed
-            HUMAN_ATTESTED semantics: bare attestation cannot close a factual
-            claim.
-    """
-
-    passed: bool = False
-    score: float = 0.0
-    basis: EvidenceBasis = EvidenceBasis.UNSUPPORTED
-    tool_evidence: tuple[ToolEvidence, ...] = field(default_factory=tuple)
-    llm_judgment: LLMJudgment | None = None
-    attested_artifacts: tuple[AttestedArtifact, ...] = field(default_factory=tuple)
-    provenance: Provenance | None = None
-    issues: tuple[str, ...] = field(default_factory=tuple)
-    suggestions: tuple[str, ...] = field(default_factory=tuple)
-    use_case: Literal["INTENT_CONFIRMATION"] | None = None
-
-    def __post_init__(self) -> None:
-        """Enforce the narrowed HUMAN_ATTESTED invariant at construction time.
-
-        Raises:
-            InsufficientEvidenceError: When basis is HUMAN_ATTESTED, use_case
-                is not ``"INTENT_CONFIRMATION"``, and attested_artifacts is empty.
-                Bare human attestation ("a user said yes") is NOT sufficient
-                to close a high-accuracy factual claim.  Pass
-                ``use_case="INTENT_CONFIRMATION"`` for consent / override appeal
-                paths where no artifact is required.
-        """
-        if (
-            self.basis is EvidenceBasis.HUMAN_ATTESTED
-            and self.use_case != "INTENT_CONFIRMATION"
-            and not self.attested_artifacts
-        ):
-            raise InsufficientEvidenceError(
-                "HUMAN_ATTESTED OutcomeSignal requires at least one AttestedArtifact "
-                "on non-intent-confirmation paths. Provide an AttestedArtifact (command "
-                "invocation, commit SHA, signed review, ADR reference, or external "
-                "receipt) or set use_case='INTENT_CONFIRMATION' for consent / override "
-                "appeal paths.",
-                basis=self.basis.value,
-                use_case=self.use_case,
-            )
-
-    def __repr__(self) -> str:
-        return (
-            f"OutcomeSignal(passed={self.passed!r}, score={self.score!r},"
-            f" basis={self.basis.value!r},"
-            f" tool_evidence={len(self.tool_evidence)},"
-            f" attested_artifacts={len(self.attested_artifacts)})"
-        )
-
-
-@dataclass(frozen=True)
 class AgentSpec:
     """Specification for an agent type."""
 
@@ -518,6 +337,8 @@ class ExecutionPlan:
             final_delivery_path=data.get("final_delivery_path", ""),
             final_delivery_summary=data.get("final_delivery_summary", ""),
             created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
+            results=data.get("results", {}),
+            completed_at=data.get("completed_at", ""),
         )
 
     @classmethod
@@ -535,7 +356,9 @@ class AgentResult:
     """Result from an agent's execution.
 
     Enhanced with task tracking, status, issue reporting, and metric
-    fields to support budget accounting and quality dashboards.
+    fields to support budget accounting and quality dashboards. Workers
+    can also set ``escalated`` with a reason when a task is too large for
+    their tier and must be re-judged by Foreman instead of failed directly.
     """
 
     success: bool
@@ -549,6 +372,8 @@ class AgentResult:
     issues: list[dict[str, Any]] = field(default_factory=list)  # Quality issues
     metrics: dict[str, Any] = field(default_factory=dict)  # tokens, latency, cost
     output_type: str = ""  # Semantic type: "code", "plan", "report", etc.
+    escalated: bool = False  # Worker asks Foreman to re-judge oversized scope
+    escalation_reason: str = ""  # Why the Worker escalated instead of executing
 
     def __repr__(self) -> str:
         return (
@@ -564,6 +389,38 @@ class AgentResult:
             errors, and provenance chain.
         """
         return dataclass_to_dict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class DecomposeDecision:
+    """Foreman's typed judgment about recursive decomposition.
+
+    ``execute_here`` keeps the work at the current tier, ``decompose_further``
+    authorizes a child plan or deeper decomposition, and ``escalate`` fails
+    closed for depth caps, missing confidence signals, or human-review cases.
+    Every decision should be recorded in a WorkReceipt by the caller so the
+    action, reason, confidence, model id, and provenance can be audited later.
+
+    Raises:
+        ValueError: If ``reason`` is empty or ``confidence`` is outside
+            the inclusive ``0.0`` to ``1.0`` range.
+    """
+
+    action: Literal["execute_here", "decompose_further", "escalate"]
+    reason: str
+    suggested_agent: AgentType | None = None
+    confidence: float = 0.0
+    model_id: str = ""
+    provenance: Provenance | None = None
+
+    def __post_init__(self) -> None:
+        if not self.reason.strip():
+            raise ValueError("DecomposeDecision.reason must not be empty")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("DecomposeDecision.confidence must be between 0.0 and 1.0")
+
+    def __repr__(self) -> str:
+        return f"DecomposeDecision(action={self.action!r}, reason={self.reason!r}, confidence={self.confidence!r})"
 
 
 @dataclass
@@ -588,154 +445,7 @@ class VerificationResult:
         return dataclass_to_dict(self)
 
 
-# ── Active agents (v0.5.0 — 3-agent factory pipeline) ────────────────
-# Foreman orchestrates; Worker executes; Inspector gates quality.
-ACTIVE_AGENT_TYPES: frozenset[AgentType] = frozenset({
-    AgentType.FOREMAN,
-    AgentType.WORKER,
-    AgentType.INSPECTOR,
-})
-
-# Registry of the 3 active factory-pipeline agents
-AGENT_REGISTRY: dict[AgentType, AgentSpec] = {
-    AgentType.FOREMAN: AgentSpec(
-        agent_type=AgentType.FOREMAN,
-        name="Foreman",
-        description=("Planning, goal decomposition, Worker assignment, user interaction, context management"),
-        default_model="qwen2.5-72b",
-        thinking_variant="xhigh",
-        modes=["plan", "clarify", "consolidate", "summarise", "prune", "extract"],
-        jurisdiction=[
-            "vetinari/agents/planner_agent.py",
-            "vetinari/agents/contracts.py",
-            "vetinari/core/",
-        ],
-        capabilities=[
-            "goal_decomposition",
-            "task_sequencing",
-            "context_management",
-            "user_clarification",
-            "plan_consolidation",
-            "dependency_resolution",
-        ],
-        can_delegate_to=[AgentType.WORKER.value, AgentType.INSPECTOR.value],
-        max_delegation_depth=5,
-        quality_gate_score=AGENT_QUALITY_GATE_STRICT,
-        max_tokens=8192,  # noqa: VET129 — agent spec config, not inference param
-        timeout_seconds=600,
-    ),
-    AgentType.WORKER: AgentSpec(
-        agent_type=AgentType.WORKER,
-        name="Worker",
-        description=(
-            "Unified execution agent — research, architecture, build, and operations across 24 modes in 4 groups"
-        ),
-        default_model="qwen2.5-72b",
-        thinking_variant="high",
-        modes=[
-            # Research group (8)
-            "code_discovery",
-            "domain_research",
-            "api_lookup",
-            "lateral_thinking",
-            "ui_design",
-            "database",
-            "devops",
-            "git_workflow",
-            # Architecture group (5)
-            "architecture",
-            "risk_assessment",
-            "ontological_analysis",
-            "contrarian_review",
-            "suggest",
-            # Build group (2)
-            "build",
-            "image_generation",
-            # Operations group (9)
-            "documentation",
-            "creative_writing",
-            "cost_analysis",
-            "experiment",
-            "error_recovery",
-            "synthesis",
-            "improvement",
-            "monitor",
-            "devops_ops",
-        ],
-        jurisdiction=[
-            "vetinari/agents/builder_agent.py",
-            "vetinari/agents/consolidated/",
-            "vetinari/research/",
-            "vetinari/architecture/",
-            "vetinari/templates/",
-            "docs/",
-        ],
-        capabilities=[
-            "code_pattern_search",
-            "domain_analysis",
-            "api_documentation_lookup",
-            "lateral_thinking",
-            "ui_ux_design",
-            "database_schema_design",
-            "devops_pipeline_design",
-            "git_workflow_analysis",
-            "architecture_decision_support",
-            "risk_and_tradeoff_analysis",
-            "ontological_analysis",
-            "contrarian_review",
-            "code_scaffolding",
-            "image_generation",
-            "documentation_generation",
-            "creative_writing",
-            "cost_analysis",
-            "experiment_management",
-            "error_recovery",
-            "synthesis",
-            "improvement_suggestions",
-            "monitoring",
-            "reporting",
-        ],
-        can_delegate_to=[AgentType.INSPECTOR.value],
-        max_delegation_depth=3,
-        quality_gate_score=QUALITY_GATE_HIGH,
-        max_tokens=32768,  # noqa: VET129 — agent spec config, not inference param
-        timeout_seconds=600,
-    ),
-    # Decision: Inspector uses 14B+ model for security_audit (CWE classification,
-    # trust boundary tracing) — 7B is insufficient for deep semantic analysis.
-    # Code review and test generation also benefit from stronger reasoning.
-    AgentType.INSPECTOR: AgentSpec(
-        agent_type=AgentType.INSPECTOR,
-        name="Inspector",
-        description=(
-            "Independent quality gate — code review, security audit, "
-            "test generation, simplification. Gate decisions are authoritative."
-        ),
-        default_model="qwen3-30b-a3b",
-        thinking_variant="high",
-        modes=[
-            "code_review",
-            "security_audit",
-            "test_generation",
-            "simplification",
-        ],
-        jurisdiction=[
-            "vetinari/agents/consolidated/quality_agent.py",
-            "tests/",
-        ],
-        capabilities=[
-            "code_review",
-            "security_audit",
-            "test_generation",
-            "code_simplification",
-        ],
-        can_delegate_to=[AgentType.WORKER.value],
-        max_delegation_depth=2,
-        quality_gate_score=AGENT_QUALITY_GATE_STRICT,
-        max_tokens=4096,  # noqa: VET129 — agent spec config, not inference param
-        timeout_seconds=300,
-    ),
-}
+AGENT_REGISTRY: dict[AgentType, AgentSpec] = build_agent_registry(AgentSpec, _default_model)
 
 
 def get_agent_spec(agent_type: AgentType) -> AgentSpec | None:

@@ -1,10 +1,10 @@
 #!/bin/bash
 # Vetinari Startup Script (Linux/macOS)
 # Usage: ./start.sh [options]
-#   ./start.sh                          -- Start the default orchestrator
+#   ./start.sh                          -- Start with dashboard
 #   ./start.sh --goal "My goal here"    -- Run a specific goal
 #   ./start.sh --no-dashboard           -- CLI only
-#   ./start.sh serve                    -- API server
+#   ./start.sh serve                    -- Dashboard only
 
 set -e
 

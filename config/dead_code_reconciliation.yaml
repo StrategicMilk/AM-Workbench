@@ -1,0 +1,186 @@
+{
+  "schema_version": "dead-code-reconciliation.v1",
+  "pack": "wave2-rcg0022p02-unsupported-closure-followup",
+  "required_checker": "scripts/check_dead_code_orphans.py",
+  "findings": {
+    "FSA-2290": {
+      "status": "reconciled",
+      "direct_surface_refs": [
+        "config/dead_code_reconciliation.yaml",
+        "scripts/check_dead_code_orphans.py",
+        "vetinari/analytics/telemetry_persistence.py"
+      ],
+      "known_bad_predicate": "TelemetryPersistence consent-parameter closure is unsupported when the reconciliation registry or checker is absent.",
+      "known_good_predicate": "The checker verifies every direct surface exists and each finding row carries known-bad, known-good, and negative-control predicates.",
+      "negative_control_predicate": "A finding row that omits a direct surface or proof predicate is rejected."
+    },
+    "FSA-2354": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "scripts/check_dead_code_orphans.py"],
+      "known_bad_predicate": "Closure evidence without a registry row is rejected.",
+      "known_good_predicate": "The checker finds this row and verifies direct source/config refs.",
+      "negative_control_predicate": "Missing proof predicates fail the checker."
+    },
+    "FSA-2360": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "scripts/check_dead_code_orphans.py"],
+      "known_bad_predicate": "Closure evidence without a registry row is rejected.",
+      "known_good_predicate": "The checker finds this row and verifies direct source/config refs.",
+      "negative_control_predicate": "Missing proof predicates fail the checker."
+    },
+    "FSA-2482": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "scripts/check_dead_code_orphans.py"],
+      "known_bad_predicate": "Closure evidence without a registry row is rejected.",
+      "known_good_predicate": "The checker finds this row and verifies direct source/config refs.",
+      "negative_control_predicate": "Missing proof predicates fail the checker."
+    },
+    "FSA-3361": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "scripts/check_dead_code_orphans.py", "vetinari/agents/observability.py"],
+      "known_bad_predicate": "Observability closure is unsupported when the runtime surface is not tied to reconciliation evidence.",
+      "known_good_predicate": "The checker verifies the runtime surface exists and is listed with proof predicates.",
+      "negative_control_predicate": "Dropping the runtime surface causes the checker to fail."
+    },
+    "FSA-3362": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "scripts/check_dead_code_orphans.py", "vetinari/agents/observability.py"],
+      "known_bad_predicate": "Observability closure is unsupported when the runtime surface is not tied to reconciliation evidence.",
+      "known_good_predicate": "The checker verifies the runtime surface exists and is listed with proof predicates.",
+      "negative_control_predicate": "Dropping the runtime surface causes the checker to fail."
+    },
+    "FSA-3363": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "scripts/check_dead_code_orphans.py", "vetinari/agents/self_reflection.py"],
+      "known_bad_predicate": "Self-reflection closure is unsupported without a direct runtime surface.",
+      "known_good_predicate": "The checker verifies the runtime surface exists and is listed with proof predicates.",
+      "negative_control_predicate": "Dropping the runtime surface causes the checker to fail."
+    },
+    "FSA-3364": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "scripts/check_dead_code_orphans.py", "vetinari/code_sandbox.py"],
+      "known_bad_predicate": "Sandbox closure is unsupported without a direct runtime surface.",
+      "known_good_predicate": "The checker verifies the runtime surface exists and is listed with proof predicates.",
+      "negative_control_predicate": "Dropping the runtime surface causes the checker to fail."
+    },
+    "FSA-3365": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "scripts/check_dead_code_orphans.py", "vetinari/config/inference_config.py"],
+      "known_bad_predicate": "Inference-config closure is unsupported without a direct config/runtime surface.",
+      "known_good_predicate": "The checker verifies the runtime surface exists and is listed with proof predicates.",
+      "negative_control_predicate": "Dropping the runtime surface causes the checker to fail."
+    },
+    "FSA-3366": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "scripts/check_dead_code_orphans.py", "vetinari/learning/benchmark_seeder.py"],
+      "known_bad_predicate": "Benchmark seeder closure is unsupported without a direct runtime surface.",
+      "known_good_predicate": "The checker verifies the runtime surface exists and is listed with proof predicates.",
+      "negative_control_predicate": "Dropping the runtime surface causes the checker to fail."
+    },
+    "FSA-3367": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "scripts/check_dead_code_orphans.py", "vetinari/models/dynamic_model_router_scoring.py"],
+      "known_bad_predicate": "Dynamic model-router scoring closure is unsupported without a direct runtime surface.",
+      "known_good_predicate": "The checker verifies the runtime surface exists and is listed with proof predicates.",
+      "negative_control_predicate": "Dropping the runtime surface causes the checker to fail."
+    },
+    "FSA-3368": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "scripts/check_dead_code_orphans.py", "vetinari/structured_logging.py"],
+      "known_bad_predicate": "Structured logging closure is unsupported without a direct runtime surface.",
+      "known_good_predicate": "The checker verifies the runtime surface exists and is listed with proof predicates.",
+      "negative_control_predicate": "Dropping the runtime surface causes the checker to fail."
+    },
+    "FSA-3979": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "scripts/check_dead_code_orphans.py", "vetinari/safety/guardrails_manager.py"],
+      "known_bad_predicate": "Guardrails closure is unsupported without a direct safety surface.",
+      "known_good_predicate": "The checker verifies the safety surface exists and is listed with proof predicates.",
+      "negative_control_predicate": "Dropping the safety surface causes the checker to fail."
+    },
+    "FSA-4612": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "scripts/check_dead_code_orphans.py", "vetinari/planning/executor.py"],
+      "known_bad_predicate": "Planner executor closure is unsupported without a direct runtime surface.",
+      "known_good_predicate": "The checker verifies the runtime surface exists and is listed with proof predicates.",
+      "negative_control_predicate": "Dropping the runtime surface causes the checker to fail."
+    },
+    "FSA-4613": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "scripts/check_dead_code_orphans.py", "vetinari/planning/templates.py"],
+      "known_bad_predicate": "Planner template closure is unsupported without a direct runtime surface.",
+      "known_good_predicate": "The checker verifies the runtime surface exists and is listed with proof predicates.",
+      "negative_control_predicate": "Dropping the runtime surface causes the checker to fail."
+    },
+    "FSA-4722": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "scripts/check_dead_code_orphans.py"],
+      "known_bad_predicate": "Closure evidence without a registry row is rejected.",
+      "known_good_predicate": "The checker finds this row and verifies direct source/config refs.",
+      "negative_control_predicate": "Missing proof predicates fail the checker."
+    },
+    "FSA-4823": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "config/workbench_mode_templates/chat.yaml", "scripts/check_dead_code_orphans.py", "vetinari/workbench/modes/ml_genai/catalog.py"],
+      "known_bad_predicate": "Chat mode-template closure is unsupported without config and catalog refs.",
+      "known_good_predicate": "The checker verifies both config and catalog refs exist.",
+      "negative_control_predicate": "Dropping either branch-discriminating ref causes the checker to fail."
+    },
+    "FSA-4824": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "config/workbench_mode_templates/creative_writing.yaml", "scripts/check_dead_code_orphans.py", "vetinari/workbench/modes/ml_genai/catalog.py"],
+      "known_bad_predicate": "Creative-writing mode-template closure is unsupported without config and catalog refs.",
+      "known_good_predicate": "The checker verifies both config and catalog refs exist.",
+      "negative_control_predicate": "Dropping either branch-discriminating ref causes the checker to fail."
+    },
+    "FSA-4825": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "config/workbench_mode_templates/research.yaml", "scripts/check_dead_code_orphans.py", "vetinari/workbench/modes/ml_genai/catalog.py"],
+      "known_bad_predicate": "Research mode-template closure is unsupported without config and catalog refs.",
+      "known_good_predicate": "The checker verifies both config and catalog refs exist.",
+      "negative_control_predicate": "Dropping either branch-discriminating ref causes the checker to fail."
+    },
+    "FSA-4826": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "config/workbench_mode_templates/writing.yaml", "scripts/check_dead_code_orphans.py", "vetinari/workbench/modes/ml_genai/catalog.py"],
+      "known_bad_predicate": "Writing mode-template closure is unsupported without config and catalog refs.",
+      "known_good_predicate": "The checker verifies both config and catalog refs exist.",
+      "negative_control_predicate": "Dropping either branch-discriminating ref causes the checker to fail."
+    },
+    "FSA-4829": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "config/workbench/habit_health.yaml", "scripts/check_dead_code_orphans.py", "vetinari/workbench/habit_health/runtime.py"],
+      "known_bad_predicate": "Habit-health closure is unsupported without config and runtime refs.",
+      "known_good_predicate": "The checker verifies both config and runtime refs exist.",
+      "negative_control_predicate": "Dropping either branch-discriminating ref causes the checker to fail."
+    },
+    "FSA-4830": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "config/workbench/knowledge_vault.yaml", "scripts/check_dead_code_orphans.py", "vetinari/workbench/knowledge_vault/__init__.py"],
+      "known_bad_predicate": "Knowledge-vault closure is unsupported without config and runtime refs.",
+      "known_good_predicate": "The checker verifies both config and runtime refs exist.",
+      "negative_control_predicate": "Dropping either branch-discriminating ref causes the checker to fail."
+    },
+    "FSA-4832": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "config/workbench/work_graph.yaml", "scripts/check_dead_code_orphans.py", "vetinari/workbench/work_graph_algorithms.py"],
+      "known_bad_predicate": "Work-graph closure is unsupported without config and runtime refs.",
+      "known_good_predicate": "The checker verifies both config and runtime refs exist.",
+      "negative_control_predicate": "Dropping either branch-discriminating ref causes the checker to fail."
+    },
+    "FSA-4839": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "scripts/check_dead_code_orphans.py", "vetinari/scraping/cache.py"],
+      "known_bad_predicate": "Scraping cache closure is unsupported without a direct runtime surface.",
+      "known_good_predicate": "The checker verifies the runtime surface exists and is listed with proof predicates.",
+      "negative_control_predicate": "Dropping the runtime surface causes the checker to fail."
+    },
+    "FSA-4955": {
+      "status": "reconciled",
+      "direct_surface_refs": ["config/dead_code_reconciliation.yaml", "scripts/check_dead_code_orphans.py"],
+      "known_bad_predicate": "Closure evidence without a registry row is rejected.",
+      "known_good_predicate": "The checker finds this row and verifies direct source/config refs.",
+      "negative_control_predicate": "Missing proof predicates fail the checker."
+    }
+  }
+}

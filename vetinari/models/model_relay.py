@@ -12,19 +12,22 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 
+from vetinari.learning.atomic_writers import write_yaml_atomic
 from vetinari.models.dynamic_model_router import ModelStatus
 from vetinari.models.model_router_types import RouterTypePolicy
 from vetinari.utils.serialization import dataclass_to_dict
 
+logger = logging.getLogger(__name__)
+
+
 # Re-export RouterTypePolicy as RoutingPolicy for consistency with test patches
 RoutingPolicy = RouterTypePolicy
-
-logger = logging.getLogger(__name__)
 
 
 # =====================================================================
@@ -33,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class ModelEntry:  # noqa: VET114 — status mutated by ModelRelay.update_model_status() to reflect live availability
+class ModelEntry:
     """Catalog entry for a model."""
 
     model_id: str
@@ -94,7 +97,7 @@ class ModelEntry:  # noqa: VET114 — status mutated by ModelRelay.update_model_
 # =====================================================================
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class RelayModelSelection:
     """Lightweight selection result used by the relay / web_ui catalog API."""
 
@@ -133,6 +136,7 @@ class ModelRelay:
     """
 
     _instance = None
+    _instance_lock = threading.Lock()
 
     @classmethod
     def get_instance(cls, config_path: str | None = None) -> ModelRelay:
@@ -145,7 +149,10 @@ class ModelRelay:
             The ModelRelay singleton.
         """
         if cls._instance is None:
-            cls._instance = cls(config_path)
+            with cls._instance_lock:
+                if cls._instance is None:
+                    # Same lock-around-create invariant used by vetinari.events.
+                    cls._instance = cls(config_path)
         return cls._instance
 
     def __init__(self, config_path: str | None = None):
@@ -160,6 +167,7 @@ class ModelRelay:
         self.config_path = Path(config_path)
         self.models: dict[str, ModelEntry] = {}
         self.policy = RouterTypePolicy()
+        self.config_load_error = ""
         self._load_config()
 
     # ----- config I/O -----
@@ -170,20 +178,36 @@ class ModelRelay:
             try:
                 with open(self.config_path, encoding="utf-8") as f:
                     data = yaml.safe_load(f)
-                    if data:
-                        for model_data in data.get("models", []):
-                            model = ModelEntry.from_dict(model_data)
-                            self.models[model.model_id] = model
-                        if "policy" in data:
-                            self.policy = RouterTypePolicy.from_dict(data["policy"])
+                if not isinstance(data, dict):
+                    raise ValueError("model config must be a mapping")
+                model_rows = data.get("models", [])
+                if not isinstance(model_rows, list):
+                    raise ValueError("model config models must be a list")
+                for model_data in model_rows:
+                    if not isinstance(model_data, dict):
+                        raise ValueError("model config model rows must be mappings")
+                    model = ModelEntry.from_dict(model_data)
+                    self.models[model.model_id] = model
+                if "policy" in data:
+                    self.policy = RouterTypePolicy.from_dict(data["policy"])
             except Exception as e:
                 logger.error("Error loading model config: %s", e)
+                self.models.clear()
+                self.config_load_error = str(e)
+                return
 
-        if not self.models:
+        if not self.models and not self.config_path.exists():
             self._load_default_models()
 
+    # This hardcoded catalog does not synchronize with ModelRegistry; keep it
+    # as a fallback of last resort when no operator-managed config is present.
     def _load_default_models(self) -> None:
         """Populate catalog with built-in default models."""
+        logger.warning(
+            "Using hardcoded fallback model catalog (%s); supply a model relay config file to avoid "
+            "catalog drift from ModelRegistry.",
+            "qwen2.5-coder-7b, qwen2.5-72b, llama-3.3-70b, gpt-4o",
+        )
         default_models = [
             ModelEntry(
                 model_id="qwen2.5-coder-7b",
@@ -244,9 +268,7 @@ class ModelRelay:
             "models": [m.to_dict() for m in self.models.values()],
             "policy": self.policy.to_dict(),
         }
-        self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.config_path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, allow_unicode=True)
+        write_yaml_atomic(self.config_path, data)
 
     # ----- queries -----
 
@@ -322,6 +344,25 @@ class ModelRelay:
             candidates = [m for m in available if any(cap in m.capabilities for cap in required_caps)]
         if not candidates:
             candidates = available
+        if self.policy.max_cost_per_1k_tokens > 0:
+            candidates = [
+                m
+                for m in candidates
+                if m.cost_per_1k_tokens <= 0 or m.cost_per_1k_tokens <= self.policy.max_cost_per_1k_tokens
+            ]
+        if not candidates:
+            return RelayModelSelection(
+                model_id="",
+                provider="",
+                endpoint="",
+                reasoning="No model within configured cost cap",
+                confidence=0.0,
+                latency_estimate="unknown",
+            )
+        local_candidates = [m for m in candidates if m.provider == "local" or m.privacy_level == "local"]
+        local_first_applied = bool(self.policy.local_first and local_candidates)
+        if local_first_applied:
+            candidates = local_candidates
 
         scored = []
         for model in candidates:
@@ -344,7 +385,12 @@ class ModelRelay:
             model_id=best.model_id,
             provider=best.provider,
             endpoint=best.endpoint,
-            reasoning=self._get_selection_reason(best, task_type),
+            reasoning=self._get_selection_reason(
+                best,
+                task_type,
+                local_first_applied=local_first_applied,
+                local_available=bool(local_candidates),
+            ),
             confidence=0.9 if best.privacy_level == "local" else 0.7,
             latency_estimate=best.latency_hint,
         )
@@ -365,28 +411,27 @@ class ModelRelay:
             privacy * self.policy.privacy_weight + latency * self.policy.latency_weight + cost * self.policy.cost_weight
         )
 
-    def _get_selection_reason(self, model: ModelEntry, task_type: str | None = None) -> str:
+    def _get_selection_reason(
+        self,
+        model: ModelEntry,
+        task_type: str | None = None,
+        *,
+        local_first_applied: bool = False,
+        local_available: bool = False,
+    ) -> str:
         """Generate human-readable selection reasoning."""
         reasons = []
         if model.privacy_level == "local":
             reasons.append("local model selected")
-        if self.policy.local_first:
-            reasons.append("local_first policy")
+        if self.policy.local_first and local_first_applied:
+            reasons.append("local_first policy applied")
+        elif self.policy.local_first and not local_available:
+            reasons.append("local_first policy could not apply: no local candidate")
         if task_type:
             reasons.append(f"supports {task_type}")
         return ", ".join(reasons) if reasons else "best available model"
 
     # ----- mutations -----
-
-    def update_model_status(self, model_id: str, status: str) -> None:
-        """Update a model's status.
-
-        Args:
-            model_id: The model identifier.
-            status: New status value.
-        """
-        if model_id in self.models:
-            self.models[model_id].status = status
 
     def add_model(self, model: ModelEntry) -> None:
         """Add a model to the catalog and persist.
@@ -414,7 +459,7 @@ class ModelRelay:
 
 
 def get_model_relay() -> ModelRelay:
-    """Lazily return the singleton ModelRelay."""
+    """Lazily return the singleton ModelRelay with double-checked locking."""
     return ModelRelay.get_instance()
 
 

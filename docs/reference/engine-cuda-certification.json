@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "status": "blocked",
+  "source_commit": null,
+  "workflow_run_url": null,
+  "runner_labels": [],
+  "device": {
+    "name": null,
+    "uuid": null,
+    "driver_version": null
+  },
+  "offload": {
+    "asserted": false,
+    "model_sha256": null,
+    "device_memory_delta_bytes": null
+  }
+}

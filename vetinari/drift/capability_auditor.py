@@ -30,7 +30,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from vetinari.boundary_guards import require_nonempty
 from vetinari.constants import get_user_dir
+from vetinari.learning.atomic_writers import write_json_atomic
 from vetinari.types import AgentType
 from vetinari.utils.serialization import dataclass_to_dict
 
@@ -174,6 +176,7 @@ class CapabilityAuditor:
             with self._lock:
                 self._documented.clear()
                 self._baseline_error = f"missing baseline at {baseline_path}"
+            require_nonempty(str(baseline_path), field_name="capability_baseline_path")
             logger.info(
                 "No capability baseline at %s — capability drift detection has no governed source; "
                 "run save_baseline() after an intentional capability review",
@@ -213,8 +216,7 @@ class CapabilityAuditor:
             if caps is not None:
                 baseline[agent_name] = sorted(caps)
         path = _capability_baseline_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(baseline, indent=2, sort_keys=True), encoding="utf-8")
+        write_json_atomic(path, baseline)
         with self._lock:
             self._documented = {agent_name: set(caps) for agent_name, caps in baseline.items()}
             self._baseline_error = None
@@ -281,7 +283,16 @@ class CapabilityAuditor:
         """
         with self._lock:
             if self._baseline_error is not None and not self._documented:
-                return []
+                if not only_documented:
+                    return []
+                return [
+                    CapabilityFinding(
+                        agent_name="capability-baseline",
+                        extra_in_code=[],
+                        missing_in_code=[self._baseline_error],
+                        is_drift=True,
+                    )
+                ]
             names = list(self._documented.keys()) if only_documented else list(_AGENT_MODULES.keys())
 
         return [self.audit_agent(name) for name in sorted(names)]
@@ -303,10 +314,12 @@ class CapabilityAuditor:
             documented), and ``documented_agents`` (count with registered
             documentation).
         """
-        findings = self.audit_all(only_documented=False)
         with self._lock:
             baseline_error = self._baseline_error
             documented_agents = len(self._documented)
+        findings = (
+            [] if baseline_error is not None and documented_agents == 0 else self.audit_all(only_documented=False)
+        )
         return {
             "agents_audited": len(findings),
             "agents_with_drift": sum(1 for f in findings if f.is_drift),

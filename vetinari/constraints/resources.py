@@ -20,7 +20,7 @@ from vetinari.constants import MAX_TOKENS_FOREMAN, MAX_TOKENS_INSPECTOR, RESOURC
 from vetinari.types import AgentType
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ResourceConstraint:
     """Per-agent resource limits."""
 

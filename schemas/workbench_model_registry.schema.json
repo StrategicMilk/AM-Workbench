@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_model_registry.schema.json",
+  "title": "Workbench Model Registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["versions", "cards", "compatibility", "aliases", "transitions"],
+  "properties": {
+    "versions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/modelVersion" }
+    },
+    "cards": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/modelCard" }
+    },
+    "compatibility": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/compatibilityRecord" }
+    },
+    "aliases": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/aliasBinding" }
+    },
+    "transitions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/stageTransition" }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stringList": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "modelStage": {
+      "enum": ["candidate", "canary", "serving", "deprecated", "rolled_back"]
+    },
+    "deprecationState": {
+      "enum": ["active", "scheduled", "deprecated"]
+    },
+    "deploymentStatus": {
+      "enum": ["declared", "reachable", "unreachable", "retired"]
+    },
+    "reachabilityRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "checked_at_utc", "evidence_ids"],
+      "properties": {
+        "status": { "$ref": "#/$defs/deploymentStatus" },
+        "checked_at_utc": { "$ref": "#/$defs/nonEmptyString" },
+        "evidence_ids": { "$ref": "#/$defs/stringList" }
+      }
+    },
+    "modelCard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "card_id",
+        "model_id",
+        "display_name",
+        "provider",
+        "capabilities",
+        "provenance",
+        "evidence_ids",
+        "policy_ref",
+        "license_spdx",
+        "compatibility_ids",
+        "reachability"
+      ],
+      "properties": {
+        "card_id": { "$ref": "#/$defs/nonEmptyString" },
+        "model_id": { "$ref": "#/$defs/nonEmptyString" },
+        "display_name": { "$ref": "#/$defs/nonEmptyString" },
+        "provider": { "$ref": "#/$defs/nonEmptyString" },
+        "capabilities": { "$ref": "#/$defs/stringList" },
+        "provenance": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "type": "string" }
+        },
+        "evidence_ids": { "$ref": "#/$defs/stringList" },
+        "policy_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "license_spdx": { "$ref": "#/$defs/nonEmptyString" },
+        "artifact_sha256": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "compatibility_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "reachability": { "$ref": "#/$defs/reachabilityRecord" }
+      }
+    },
+    "compatibilityRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "compatibility_id",
+        "version_id",
+        "runtime_kind",
+        "backend",
+        "min_runtime_version",
+        "policy_ref",
+        "evidence_ids"
+      ],
+      "properties": {
+        "compatibility_id": { "$ref": "#/$defs/nonEmptyString" },
+        "version_id": { "$ref": "#/$defs/nonEmptyString" },
+        "runtime_kind": { "$ref": "#/$defs/nonEmptyString" },
+        "backend": { "$ref": "#/$defs/nonEmptyString" },
+        "min_runtime_version": { "$ref": "#/$defs/nonEmptyString" },
+        "policy_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "evidence_ids": { "$ref": "#/$defs/stringList" }
+      }
+    },
+    "modelVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version_id",
+        "model_id",
+        "artifact_ref",
+        "card_id",
+        "stage",
+        "created_at_utc",
+        "aliases",
+        "rollback_version_id",
+        "deprecation_state",
+        "deployment_status"
+      ],
+      "properties": {
+        "version_id": { "$ref": "#/$defs/nonEmptyString" },
+        "model_id": { "$ref": "#/$defs/nonEmptyString" },
+        "artifact_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "card_id": { "$ref": "#/$defs/nonEmptyString" },
+        "stage": { "$ref": "#/$defs/modelStage" },
+        "created_at_utc": { "$ref": "#/$defs/nonEmptyString" },
+        "aliases": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "rollback_version_id": {
+          "type": ["string", "null"]
+        },
+        "deprecation_state": { "$ref": "#/$defs/deprecationState" },
+        "deployment_status": { "$ref": "#/$defs/deploymentStatus" }
+      }
+    },
+    "aliasBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alias", "version_id", "evidence_ids", "updated_at_utc"],
+      "properties": {
+        "alias": { "$ref": "#/$defs/nonEmptyString" },
+        "version_id": { "$ref": "#/$defs/nonEmptyString" },
+        "evidence_ids": { "$ref": "#/$defs/stringList" },
+        "updated_at_utc": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "stageTransition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transition_id",
+        "version_id",
+        "from_stage",
+        "to_stage",
+        "proposal_id",
+        "evidence_ids",
+        "rollback_version_id",
+        "created_at_utc"
+      ],
+      "properties": {
+        "transition_id": { "$ref": "#/$defs/nonEmptyString" },
+        "version_id": { "$ref": "#/$defs/nonEmptyString" },
+        "from_stage": { "$ref": "#/$defs/modelStage" },
+        "to_stage": { "$ref": "#/$defs/modelStage" },
+        "proposal_id": { "$ref": "#/$defs/nonEmptyString" },
+        "evidence_ids": { "$ref": "#/$defs/stringList" },
+        "rollback_version_id": {
+          "type": ["string", "null"]
+        },
+        "created_at_utc": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    }
+  }
+}

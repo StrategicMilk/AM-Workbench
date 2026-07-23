@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_launcher.schema.json",
+  "title": "AM Workbench Launcher Lifecycle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runtime_modes",
+    "setup_steps",
+    "lifecycle_actions",
+    "health_gates",
+    "shutdown_protocol",
+    "support_bundle",
+    "crash_recovery"
+  ],
+  "properties": {
+    "runtime_modes": {
+      "description": "Selected launcher runtime mode visible to the user.",
+      "type": "string",
+      "enum": ["desktop_default", "browser_open", "background_only"]
+    },
+    "setup_steps": {
+      "description": "First-run setup steps with automation and consent boundaries.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "automated", "requires_consent", "dependency_pack", "editable_after"],
+        "properties": {
+          "id": {"type": "string", "description": "Stable setup step identifier."},
+          "kind": {"type": "string", "description": "Setup step kind or subsystem."},
+          "automated": {"type": "boolean", "description": "Whether the launcher may automate this step."},
+          "requires_consent": {"type": "boolean", "description": "Whether user consent is required before automation."},
+          "dependency_pack": {"type": "string", "description": "Owning upstream pack or dependency."},
+          "editable_after": {"type": "boolean", "description": "Whether the generated setting remains user-editable."},
+          "remediation": {"type": "string", "description": "User-visible repair guidance."}
+        }
+      }
+    },
+    "lifecycle_actions": {
+      "description": "Launcher lifecycle action requested by the UI, tray, or CLI.",
+      "type": "string",
+      "enum": [
+        "open",
+        "close_window",
+        "keep_in_background",
+        "stop",
+        "restart",
+        "quit_completely",
+        "force_quit",
+        "crash_recover",
+        "view_logs",
+        "run_doctor",
+        "check_update",
+        "support_bundle"
+      ]
+    },
+    "health_gates": {
+      "description": "Readiness gates aggregated from the upstream Workbench packs.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backend",
+        "model_registry",
+        "runtime_onboarding",
+        "capability_packs",
+        "resource_governor",
+        "cost_plan",
+        "concurrency_profile",
+        "private_ai_appliance"
+      ],
+      "properties": {
+        "backend": {"$ref": "#/$defs/health_gate"},
+        "model_registry": {"$ref": "#/$defs/health_gate"},
+        "runtime_onboarding": {"$ref": "#/$defs/health_gate"},
+        "capability_packs": {"$ref": "#/$defs/health_gate"},
+        "resource_governor": {"$ref": "#/$defs/health_gate"},
+        "cost_plan": {"$ref": "#/$defs/health_gate"},
+        "concurrency_profile": {"$ref": "#/$defs/health_gate"},
+        "private_ai_appliance": {"$ref": "#/$defs/health_gate"},
+        "crash_recovery": {"$ref": "#/$defs/health_gate"}
+      }
+    },
+    "shutdown_protocol": {
+      "description": "Graceful shutdown and force-quit escalation policy.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grace_window_seconds",
+        "checkpoint_active_runs",
+        "release_resources",
+        "force_after_seconds",
+        "record_receipt"
+      ],
+      "properties": {
+        "grace_window_seconds": {"type": "integer", "minimum": 0, "description": "Per-releaser grace window."},
+        "checkpoint_active_runs": {"type": "boolean", "description": "Whether active runs are checkpointed before release."},
+        "release_resources": {"type": "boolean", "description": "Whether registered resources are released."},
+        "force_after_seconds": {"type": "integer", "exclusiveMinimum": 0, "description": "Total time before force-quit escalation."},
+        "record_receipt": {"type": "boolean", "description": "Whether shutdown emits a WorkReceipt."}
+      }
+    },
+    "support_bundle": {
+      "description": "Support bundle destination, inclusions, redactions, and size limit.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["destination_path", "included_globs", "redacted_globs", "max_bytes"],
+      "properties": {
+        "destination_path": {"type": "string", "description": "Bundle zip output path."},
+        "included_globs": {"type": "array", "items": {"type": "string"}, "description": "Relative globs to include."},
+        "redacted_globs": {"type": "array", "items": {"type": "string"}, "description": "Relative globs that always win over inclusion."},
+        "max_bytes": {"type": "integer", "minimum": 1, "description": "Maximum aggregate bundle size."}
+      }
+    },
+    "crash_recovery": {
+      "description": "Crash recovery report shown on next launch.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["detected_at", "last_run_id", "recovered_state", "escalation_reason"],
+      "properties": {
+        "detected_at": {"type": "string", "format": "date-time", "description": "Recovery detection timestamp."},
+        "last_run_id": {"type": ["string", "null"], "description": "Last observed run identifier."},
+        "recovered_state": {"type": "string", "enum": ["clean_shutdown", "crash_detected", "partial"], "description": "Recovery classifier."},
+        "escalation_reason": {"type": ["string", "null"], "description": "Why recovery needs operator attention."}
+      }
+    }
+  },
+  "$defs": {
+    "health_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "last_checked_at", "blockers"],
+      "properties": {
+        "passed": {"type": "boolean", "description": "False until the probe proves readiness."},
+        "last_checked_at": {"type": "string", "format": "date-time", "description": "Probe timestamp."},
+        "blockers": {"type": "array", "items": {"type": "string"}, "description": "Concrete blockers preventing readiness."},
+        "remediation": {"type": "string", "description": "User-visible repair action."}
+      }
+    }
+  }
+}

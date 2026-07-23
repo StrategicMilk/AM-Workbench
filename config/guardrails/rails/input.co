@@ -1,21 +1,11 @@
 # Input Rails — Colang flow definitions for input validation
 #
-# WARNING: The execute check_jailbreak, execute check_toxic, and
-# execute check_prompt_injection actions below are NOT currently registered in
-# vetinari/safety/nemo_provider.py.  These flows will raise a NeMo runtime
-# error if the rails section in config.yml references this file.
-#
-# To activate: register each action via rails.register_action() in
-# NeMoGuardrailsProvider.__init__() and implement the corresponding Python
-# functions, OR remove these flows from the rails block in config.yml and rely
-# solely on jailbreak.co / output_safety.co pattern matching.
-#
-# config.yml currently routes to jailbreak.co / output_safety.co flows only
-# (check jailbreak, check prompt injection, check output safety, check harmful
-# content) which do not use execute actions and are safe to enable.
+# The Colang action handlers below are registered by
+# NeMoGuardrailsProvider._register_actions() in vetinari/safety/nemo_provider.py.
 
 define flow check jailbreak
   """Detect prompt injection and jailbreak attempts."""
+  # registered-handler: vetinari.safety.nemo_provider.NeMoGuardrailsProvider._register_actions
   $is_jailbreak = execute check_jailbreak(user_input=$user_message)
   if $is_jailbreak
     bot refuse to respond
@@ -23,6 +13,7 @@ define flow check jailbreak
 
 define flow check toxic language
   """Detect harmful or offensive content in user input."""
+  # registered-handler: vetinari.safety.nemo_provider.NeMoGuardrailsProvider._register_actions
   $is_toxic = execute check_toxic(text=$user_message)
   if $is_toxic
     bot refuse to respond
@@ -30,6 +21,7 @@ define flow check toxic language
 
 define flow check prompt injection
   """Detect attempts to manipulate agent behavior."""
+  # registered-handler: vetinari.safety.nemo_provider.NeMoGuardrailsProvider._register_actions
   $is_injection = execute check_prompt_injection(user_input=$user_message)
   if $is_injection
     bot refuse to respond

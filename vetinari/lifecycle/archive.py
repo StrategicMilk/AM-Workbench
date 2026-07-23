@@ -18,24 +18,23 @@ has elapsed.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Literal
 
+from vetinari.lifecycle.policies import ArchiveEntityThresholds as PolicyArchiveEntityThresholds
 from vetinari.lifecycle.policies import ArchivePolicy
 from vetinari.lifecycle.store import LifecycleRecord, LifecycleStore
 from vetinari.safety.safety_defaults import load_safety_defaults  # runtime — used in ArchiveStore.__init__
 
-if TYPE_CHECKING:
-    pass
-
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ArchiveCandidate:
     """Descriptor for a path that the sweep job should consider archiving.
 
@@ -45,6 +44,7 @@ class ArchiveCandidate:
         cooldown_hours: How long to wait after completion before archiving.
         reason: Human-readable reason (written into the manifest).
         work_receipt_id: Optional receipt identifier to record in the manifest.
+        entity_type: Optional type key used for archive tier overrides.
     """
 
     path: Path
@@ -52,6 +52,7 @@ class ArchiveCandidate:
     cooldown_hours: float
     reason: str
     work_receipt_id: str | None = None
+    entity_type: str | None = None
 
     def __repr__(self) -> str:
         """Show path and reason for debugging."""
@@ -77,6 +78,7 @@ class ArchiveStore:
         cooling_days: Records younger than this (but > recent) are
             ``"cooling"``; older records are ``"cold"``.  Defaults to the
             value from ``safety_defaults.yaml`` (30).
+        entity_thresholds: Per-entity-type view-tier threshold overrides.
     """
 
     def __init__(
@@ -85,6 +87,7 @@ class ArchiveStore:
         *,
         recent_days: int | None = None,
         cooling_days: int | None = None,
+        entity_thresholds: dict[str, PolicyArchiveEntityThresholds] | None = None,
     ) -> None:
         """Initialise the store, reading defaults from safety_defaults.yaml when args are omitted.
 
@@ -96,17 +99,32 @@ class ArchiveStore:
             cooling_days: Age threshold (days) for the ``"cooling"`` tier;
                 records older than this fall into ``"cold"``.  If ``None``,
                 reads ``archive_policy.cooling_days`` from the YAML.
+            entity_thresholds: Per-entity-type tier threshold overrides.  If
+                ``None``, reads ``archive_policy.entity_thresholds`` from YAML.
         """
-        if root is None or recent_days is None or cooling_days is None:
+        if root is None or recent_days is None or cooling_days is None or entity_thresholds is None:
             defaults = load_safety_defaults()
             effective_root = root if root is not None else defaults.archive_root
             effective_recent = recent_days if recent_days is not None else defaults.recent_days
             effective_cooling = cooling_days if cooling_days is not None else defaults.cooling_days
+            effective_entity_thresholds = (
+                entity_thresholds
+                if entity_thresholds is not None
+                else {
+                    key: PolicyArchiveEntityThresholds(value.recent_days, value.cooling_days)
+                    for key, value in defaults.entity_thresholds.items()
+                }
+            )
         else:
             effective_root = root
             effective_recent = recent_days
             effective_cooling = cooling_days
-        policy = ArchivePolicy(recent_days=effective_recent, cooling_days=effective_cooling)
+            effective_entity_thresholds = entity_thresholds
+        policy = ArchivePolicy(
+            recent_days=effective_recent,
+            cooling_days=effective_cooling,
+            entity_thresholds=effective_entity_thresholds,
+        )
         self._store = LifecycleStore(root=effective_root, policy=policy)
         self._policy = policy
 
@@ -119,6 +137,7 @@ class ArchiveStore:
         path: Path,
         reason: str,
         work_receipt_id: str | None = None,
+        entity_type: str | None = None,
     ) -> LifecycleRecord:
         """Move ``path`` into the archive store and record a manifest.
 
@@ -127,6 +146,7 @@ class ArchiveStore:
             reason: Human-readable reason for archiving.
             work_receipt_id: Optional work receipt identifier to embed in the
                 manifest for audit linkage.
+            entity_type: Optional type key used for archive tier overrides.
 
         Returns:
             A ``LifecycleRecord`` describing the archived entity.
@@ -135,7 +155,7 @@ class ArchiveStore:
             FileNotFoundError: If ``path`` does not exist.
             OSError: If the move or manifest write fails.
         """
-        return self._store.retire(path, reason=reason, work_receipt_id=work_receipt_id)
+        return self._store.retire(path, reason=reason, work_receipt_id=work_receipt_id, entity_type=entity_type)
 
     def unarchive(self, record_id: str) -> None:
         """Restore an archived entity to its original path.
@@ -151,7 +171,7 @@ class ArchiveStore:
 
     def list_by_tier(
         self,
-        tier: str,
+        tier: Literal["recent", "cooling", "cold"],
     ) -> list[LifecycleRecord]:
         """Return all records in the given view tier.
 
@@ -169,9 +189,10 @@ class ArchiveStore:
     def search(self, query: str) -> list[LifecycleRecord]:
         """Find records by case-insensitive substring match.
 
-        Matches against ``original_path``, ``reason``, and
-        ``work_receipt_id``.  Slow path is acceptable per design (archive
-        queries are infrequent).
+        Matches substrings against ``original_path`` and ``reason``. Receipt
+        IDs are stored redacted, so receipt lookup matches the exact query via
+        the persisted SHA-256 digest. Slow path is acceptable per design
+        (archive queries are infrequent).
 
         Args:
             query: Substring to search for (case-insensitive).
@@ -180,6 +201,7 @@ class ArchiveStore:
             List of matching ``LifecycleRecord`` objects.
         """
         q = query.lower()
+        receipt_query_sha256 = hashlib.sha256(query.encode("utf-8", errors="replace")).hexdigest()
         return [
             record
             for record in self._store.list()
@@ -187,6 +209,7 @@ class ArchiveStore:
                 q in record.original_path.lower()
                 or q in record.reason.lower()
                 or (record.work_receipt_id is not None and q in record.work_receipt_id.lower())
+                or (record.work_receipt_id_sha256 is not None and receipt_query_sha256 == record.work_receipt_id_sha256)
             )
         ]
 
@@ -225,6 +248,7 @@ class ArchiveStore:
                     candidate.path,
                     reason=candidate.reason,
                     work_receipt_id=candidate.work_receipt_id,
+                    entity_type=candidate.entity_type,
                 )
                 archived.append(record)
                 logger.info(
@@ -245,21 +269,70 @@ class ArchiveStore:
     # Protected hard-delete (only reachable via @protected_mutation)
     # ------------------------------------------------------------------
 
-    def _purge_archive_record(self, record_id: str) -> None:
-        """Hard-delete an archive record.  Only callable via @protected_mutation.
+    def purge_record_with_intent(self, record_id: str, *, intent: object = None) -> None:
+        """Permanently delete an archive record after confirmed intent.
 
-        This method is intentionally private (underscore-prefixed).  Callers
-        must wrap it with ``@protected_mutation(DestructiveAction.PURGE_ARCHIVE)``
-        to ensure a confirmed intent is present.
+        This is the only public hard-delete path on ``ArchiveStore``.  The
+        method validates intent, emits a ``DESTRUCTIVE_OP`` ``WorkReceipt``,
+        and then calls ``LifecycleStore.purge(record_id, force=True)`` to
+        bypass the policy default-deny.
+
+        Implemented inline (rather than wrapped with ``@protected_mutation``)
+        to avoid a load-time circular import: the lifecycle package is in
+        the import chain that brings up ``vetinari.safety.protected_mutation``,
+        so applying the decorator at module load fails before
+        ``DestructiveAction`` is bound.  The contract — intent validation,
+        receipt emission, fail-closed on missing intent — is identical.
 
         Args:
             record_id: UUID hex of the record to permanently delete.
+            intent: A ``ConfirmedIntent`` carrying ``confirmed_by`` and
+                ``reason``.  Required.
 
         Raises:
-            PermissionError: Always — ArchivePolicy.allows_hard_delete is False.
+            UnconfirmedDestructiveAction: If ``intent`` is missing or not a
+                ``ConfirmedIntent`` instance.
+            KeyError: If no record with this ID exists.
         """
-        # LifecycleStore.purge() enforces policy.allows_hard_delete check.
-        self._store.purge(record_id)
+        # Lazy import — protected_mutation is loaded by now if anyone is
+        # actually calling this method (it cannot be the case during module
+        # bring-up because the call requires an instance).
+        from vetinari.safety.protected_mutation import (
+            ConfirmedIntent,
+            DestructiveAction,
+            UnconfirmedDestructiveAction,
+            emit_destructive_op_receipt,
+        )
+
+        if intent is None:
+            raise UnconfirmedDestructiveAction(
+                "Missing required 'intent: ConfirmedIntent' argument. "
+                "Archive purge requires an explicit confirmed intent with "
+                "confirmed_by and reason fields.",
+            )
+        if not isinstance(intent, ConfirmedIntent):
+            raise UnconfirmedDestructiveAction(
+                f"'intent' must be a ConfirmedIntent instance, got {type(intent).__name__}.",
+            )
+
+        success = False
+        error_msg = ""
+        try:
+            self._store.purge(record_id, force=True)
+            success = True
+        except Exception as exc:
+            error_msg = str(exc)
+            raise
+        finally:
+            emit_destructive_op_receipt(
+                action=DestructiveAction.PURGE_ARCHIVE,
+                intent=intent,
+                project_id="archive",
+                target_path=record_id,
+                recycle_record_id=None,
+                success=success,
+                error_msg=error_msg,
+            )
 
 
 __all__ = [

@@ -84,7 +84,7 @@ def _utc_now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class AGUIEvent:
     """A single AG-UI protocol event ready for SSE transport.
 
@@ -280,6 +280,32 @@ class AGUIEventEmitter:
             {"callId": call_id},
         )
         return [start_sse, args_sse, end_sse]
+
+    # -- State, raw, and custom helpers ----------------------------------------
+
+    def emit_state_snapshot(self, state: dict[str, Any]) -> str:
+        """Emit a STATE_SNAPSHOT event with a complete state payload."""
+        return self.emit(AGUIEventType.STATE_SNAPSHOT, {"state": state})
+
+    def emit_state_delta(self, delta: dict[str, Any]) -> str:
+        """Emit a STATE_DELTA event with an incremental state payload."""
+        return self.emit(AGUIEventType.STATE_DELTA, {"delta": delta})
+
+    def emit_messages_snapshot(self, messages: list[dict[str, Any]]) -> str:
+        """Emit a MESSAGES_SNAPSHOT event with the current message list."""
+        return self.emit(AGUIEventType.MESSAGES_SNAPSHOT, {"messages": messages})
+
+    def emit_raw(self, payload: dict[str, Any]) -> str:
+        """Emit a RAW event with an unwrapped AG-UI payload."""
+        return self.emit(AGUIEventType.RAW, payload)
+
+    def emit_custom(self, name: str, value: Any) -> str:
+        """Emit a CUSTOM event with a name and arbitrary value."""
+        return self.emit(AGUIEventType.CUSTOM, {"name": name, "value": value})
+
+    def emit_metadata(self, metadata: dict[str, Any]) -> str:
+        """Emit a METADATA event with caller-provided metadata."""
+        return self.emit(AGUIEventType.METADATA, {"metadata": metadata})
 
     # ── Step helpers ──────────────────────────────────────────────────────────
 

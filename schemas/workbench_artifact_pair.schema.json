@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_artifact_pair.schema.json",
+  "title": "Workbench Artifact Pair Miner Before After Learning Case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pairs"],
+  "properties": {
+    "pairs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/pair" }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stringRefs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "authorityLevel": {
+      "enum": ["observed", "suggested", "proposed", "approved", "executed", "promoted"]
+    },
+    "sourceKind": {
+      "enum": [
+        "failing_test_fix",
+        "pr_comment_patch",
+        "audit_finding_remediation",
+        "plan_correction",
+        "rejected_output_approved_output"
+      ]
+    },
+    "consumer": {
+      "enum": ["eval_case", "training_candidate", "governance_review"]
+    },
+    "reviewStatus": {
+      "enum": ["unreviewed", "approved_for_eval", "approved_for_training", "rejected"]
+    },
+    "taint": {
+      "enum": [
+        "sensitive_data",
+        "license_restricted",
+        "user_private",
+        "contamination_risk",
+        "safety_relevant",
+        "low_confidence",
+        "untrusted_provenance"
+      ]
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "kind",
+        "content_ref",
+        "summary",
+        "captured_at_utc",
+        "evidence_refs",
+        "provenance_refs",
+        "persisted_ref",
+        "authority_level",
+        "confidence",
+        "safety_classification",
+        "budget_ref"
+      ],
+      "properties": {
+        "artifact_id": { "$ref": "#/$defs/nonEmptyString" },
+        "kind": { "$ref": "#/$defs/nonEmptyString" },
+        "content_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "summary": { "$ref": "#/$defs/nonEmptyString" },
+        "captured_at_utc": { "$ref": "#/$defs/nonEmptyString" },
+        "evidence_refs": { "$ref": "#/$defs/stringRefs" },
+        "provenance_refs": { "$ref": "#/$defs/stringRefs" },
+        "persisted_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "authority_level": { "$ref": "#/$defs/authorityLevel" },
+        "confidence": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "safety_classification": {
+          "$ref": "#/$defs/nonEmptyString",
+          "not": { "const": "unknown" }
+        },
+        "budget_ref": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "pair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pair_id",
+        "source_kind",
+        "before",
+        "after",
+        "after_won_reason",
+        "reviewer_status",
+        "reviewer_ref",
+        "allowed_consumers",
+        "taints",
+        "model_version",
+        "task_shape",
+        "created_at_utc"
+      ],
+      "properties": {
+        "pair_id": { "$ref": "#/$defs/nonEmptyString" },
+        "source_kind": { "$ref": "#/$defs/sourceKind" },
+        "before": { "$ref": "#/$defs/snapshot" },
+        "after": { "$ref": "#/$defs/snapshot" },
+        "after_won_reason": { "$ref": "#/$defs/nonEmptyString" },
+        "reviewer_status": { "$ref": "#/$defs/reviewStatus" },
+        "reviewer_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "allowed_consumers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/consumer" }
+        },
+        "taints": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/taint" }
+        },
+        "model_version": { "$ref": "#/$defs/nonEmptyString" },
+        "task_shape": { "$ref": "#/$defs/nonEmptyString" },
+        "created_at_utc": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    }
+  }
+}

@@ -22,6 +22,9 @@ from typing import Any
 
 from vetinari.types import ActionTier
 
+logger = logging.getLogger(__name__)
+
+
 # Actions that are always safe: read-only, non-destructive, no side effects.
 # Any action in this set proceeds without human review.
 ALLOW_ACTIONS: frozenset[str] = frozenset({
@@ -57,8 +60,6 @@ FOREMAN_REVIEW_ACTIONS: frozenset[str] = frozenset({
     "modify_compliance_config",
     "publish_external",
 })
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +151,126 @@ class ActionClassifier:
 
     # -- internal ----------------------------------------------------------------
 
+    @staticmethod
+    def _deny_classification(action_type: str, agent_type: str) -> ActionClassification:
+        """Build the absolute-deny classification for prohibited actions."""
+        logger.warning(
+            "Action %r denied for agent %s — action is in the absolute deny list",
+            action_type,
+            agent_type,
+        )
+        return ActionClassification(
+            tier=ActionTier.DENY,
+            action_type=action_type,
+            rationale=(
+                f"Action '{action_type}' is in the absolute deny list and may never "
+                "be executed regardless of context or overrides. It falls outside "
+                "all authorized agent scopes."
+            ),
+            requires_foreman_review=False,
+        )
+
+    @staticmethod
+    def _override_classification(
+        action_type: str,
+        agent_type: str,
+        normalised: str,
+        overrides: dict[str, ActionTier] | None,
+    ) -> ActionClassification | None:
+        """Return a caller override classification when one applies."""
+        if not overrides:
+            return None
+
+        override_tier = overrides.get(normalised) or overrides.get(action_type)
+        if override_tier is None:
+            return None
+
+        requires_foreman = normalised in FOREMAN_REVIEW_ACTIONS
+        if requires_foreman and override_tier is ActionTier.ALLOW:
+            logger.warning(
+                "Action %r for agent %s attempted unsafe override to ALLOW; preserving Foreman review",
+                action_type,
+                agent_type,
+            )
+            return ActionClassification(
+                tier=ActionTier.REQUIRE_APPROVAL,
+                action_type=action_type,
+                rationale=(
+                    f"Action '{action_type}' requires Foreman review and cannot be downgraded "
+                    "to ALLOW by the caller-supplied override map."
+                ),
+                requires_foreman_review=True,
+            )
+
+        logger.info(
+            "Action %r for agent %s overridden to tier %s",
+            action_type,
+            agent_type,
+            override_tier.value,
+        )
+        return ActionClassification(
+            tier=override_tier,
+            action_type=action_type,
+            rationale=(
+                f"Action '{action_type}' was overridden to tier "
+                f"'{override_tier.value}' by the caller-supplied override map."
+            ),
+            requires_foreman_review=requires_foreman,
+        )
+
+    @staticmethod
+    def _allow_classification(action_type: str, agent_type: str) -> ActionClassification:
+        """Build the allow-list classification for safe read-only actions."""
+        logger.debug(
+            "Action %r for agent %s classified as ALLOW (read-only allow list)",
+            action_type,
+            agent_type,
+        )
+        return ActionClassification(
+            tier=ActionTier.ALLOW,
+            action_type=action_type,
+            rationale=f"Action '{action_type}' is a read-only or safe operation that does not require human review.",
+            requires_foreman_review=False,
+        )
+
+    @staticmethod
+    def _foreman_review_classification(action_type: str, agent_type: str) -> ActionClassification:
+        """Build the classification for actions that need Foreman review."""
+        logger.info(
+            "Action %r for agent %s classified as REQUIRE_APPROVAL with Foreman review",
+            action_type,
+            agent_type,
+        )
+        return ActionClassification(
+            tier=ActionTier.REQUIRE_APPROVAL,
+            action_type=action_type,
+            rationale=(
+                f"Action '{action_type}' crosses organizational or compliance "
+                "boundaries and requires both human approval and Foreman review "
+                "before execution."
+            ),
+            requires_foreman_review=True,
+        )
+
+    @staticmethod
+    def _default_classification(action_type: str, agent_type: str) -> ActionClassification:
+        """Build the fail-closed classification for unknown actions."""
+        logger.info(
+            "Action %r for agent %s classified as REQUIRE_APPROVAL (default for unknown action)",
+            action_type,
+            agent_type,
+        )
+        return ActionClassification(
+            tier=ActionTier.REQUIRE_APPROVAL,
+            action_type=action_type,
+            rationale=(
+                f"Action '{action_type}' is not in the allow or deny lists. "
+                "Unknown actions default to REQUIRE_APPROVAL to ensure a human "
+                "reviews the intent before execution proceeds."
+            ),
+            requires_foreman_review=False,
+        )
+
     def _classify_internal(
         self,
         action_type: str,
@@ -178,95 +299,20 @@ class ActionClassifier:
         """
         normalised = action_type.strip().lower()
 
-        # Step 1: absolute deny — cannot be overridden under any circumstances
         if normalised in DENY_ACTIONS:
-            logger.warning(
-                "Action %r denied for agent %s — action is in the absolute deny list",
-                action_type,
-                agent_type,
-            )
-            return ActionClassification(
-                tier=ActionTier.DENY,
-                action_type=action_type,
-                rationale=(
-                    f"Action '{action_type}' is in the absolute deny list and may never "
-                    "be executed regardless of context or overrides. It falls outside "
-                    "all authorized agent scopes."
-                ),
-                requires_foreman_review=False,
-            )
+            return self._deny_classification(action_type, agent_type)
 
-        # Step 2: caller-supplied overrides (DENY set excluded above)
-        if overrides:
-            override_tier = overrides.get(normalised) or overrides.get(action_type)
-            if override_tier is not None:
-                requires_foreman = normalised in FOREMAN_REVIEW_ACTIONS
-                logger.info(
-                    "Action %r for agent %s overridden to tier %s",
-                    action_type,
-                    agent_type,
-                    override_tier.value,
-                )
-                return ActionClassification(
-                    tier=override_tier,
-                    action_type=action_type,
-                    rationale=(
-                        f"Action '{action_type}' was overridden to tier "
-                        f"'{override_tier.value}' by the caller-supplied override map."
-                    ),
-                    requires_foreman_review=requires_foreman,
-                )
+        override = self._override_classification(action_type, agent_type, normalised, overrides)
+        if override is not None:
+            return override
 
-        # Step 3: safe allow-list
         if normalised in ALLOW_ACTIONS:
-            logger.debug(
-                "Action %r for agent %s classified as ALLOW (read-only allow list)",
-                action_type,
-                agent_type,
-            )
-            return ActionClassification(
-                tier=ActionTier.ALLOW,
-                action_type=action_type,
-                rationale=(
-                    f"Action '{action_type}' is a read-only or safe operation that does not require human review."
-                ),
-                requires_foreman_review=False,
-            )
+            return self._allow_classification(action_type, agent_type)
 
-        # Step 4: actions that require Foreman sign-off in addition to human approval
         if normalised in FOREMAN_REVIEW_ACTIONS:
-            logger.info(
-                "Action %r for agent %s classified as REQUIRE_APPROVAL with Foreman review",
-                action_type,
-                agent_type,
-            )
-            return ActionClassification(
-                tier=ActionTier.REQUIRE_APPROVAL,
-                action_type=action_type,
-                rationale=(
-                    f"Action '{action_type}' crosses organizational or compliance "
-                    "boundaries and requires both human approval and Foreman review "
-                    "before execution."
-                ),
-                requires_foreman_review=True,
-            )
+            return self._foreman_review_classification(action_type, agent_type)
 
-        # Step 5: default — anything unknown is treated as requiring approval
-        logger.info(
-            "Action %r for agent %s classified as REQUIRE_APPROVAL (default for unknown action)",
-            action_type,
-            agent_type,
-        )
-        return ActionClassification(
-            tier=ActionTier.REQUIRE_APPROVAL,
-            action_type=action_type,
-            rationale=(
-                f"Action '{action_type}' is not in the allow or deny lists. "
-                "Unknown actions default to REQUIRE_APPROVAL to ensure a human "
-                "reviews the intent before execution proceeds."
-            ),
-            requires_foreman_review=False,
-        )
+        return self._default_classification(action_type, agent_type)
 
 
 # -- Singleton -----------------------------------------------------------------

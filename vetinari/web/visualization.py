@@ -1,8 +1,9 @@
 """Plan execution visualization — DAG structures and real-time SSE state.
 
 Provides DAG rendering, cost accumulation, quality gate indicators,
-and SSE event infrastructure for plan execution monitoring.
-Route handlers live in litestar_visualization.py.
+and SSE event infrastructure for plan execution monitoring. This module
+contains compatibility data structures and queue state, not current route
+handlers.
 """
 
 from __future__ import annotations
@@ -12,13 +13,38 @@ import logging
 import queue
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
+from typing import TypeVar
 
+from vetinari.boundary_guards import account_evidence_drop
 from vetinari.constants import SSE_VISUALIZATION_QUEUE_SIZE
 from vetinari.types import StatusEnum
 from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+MAX_DAG_NODES = 10_000
+MAX_DAG_EDGES = 50_000
+MAX_WAVE_TASK_IDS = 10_000
+MAX_VISUALIZATION_STREAMS = 1_000
+MAX_PENDING_GATES = 1_000
+
+
+def _append_with_limit(items: list[T], item: T, *, maxlen: int, label: str) -> None:
+    if len(items) >= maxlen:
+        raise ValueError(f"{label} exceeded maximum of {maxlen}")
+    items.append(item)
+
+
+def _evict_oldest_if_full(mapping: dict[str, dict] | dict[str, queue.Queue], *, maxsize: int, label: str) -> None:
+    if len(mapping) < maxsize:
+        return
+    oldest_key = next(iter(mapping), None)
+    if oldest_key is not None:
+        logger.warning("%s reached maxsize=%d; evicting oldest key %s", label, maxsize, oldest_key)
+        mapping.pop(oldest_key, None)
 
 
 # ── Data structures ──────────────────────────────────────────────────────────
@@ -46,7 +72,7 @@ class DAGNode:
         return dataclass_to_dict(self)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class DAGEdge:
     """An edge in the plan execution DAG representing a dependency."""
 
@@ -59,7 +85,7 @@ class DAGEdge:
         return dataclass_to_dict(self)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class DAGSummary:
     """Summary statistics for the plan execution DAG."""
 
@@ -112,6 +138,56 @@ class PlanDAG:
 # ── Builder ──────────────────────────────────────────────────────────────────
 
 
+def _plan_task_id(task) -> str:
+    return task.task_id if hasattr(task, "task_id") else task.id
+
+
+def _quality_gate_counts(quality_score: float | None) -> tuple[int, int]:
+    if quality_score is None:
+        return 0, 0
+    return (1, 0) if quality_score >= 0.7 else (0, 1)
+
+
+def _add_plan_task_node(dag: PlanDAG, task, wave) -> tuple[str, float, bool, int, int]:
+    task_cost = getattr(task, "cost_usd", 0.0) or 0.0
+    quality_score = getattr(task, "quality_score", None)
+    passed, failed = _quality_gate_counts(quality_score)
+    node = DAGNode(
+        task_id=_plan_task_id(task),
+        agent_type=getattr(task, "agent_type", "unknown"),
+        status=task.status,
+        cost_usd=task_cost,
+        duration_ms=getattr(task, "duration_ms", 0.0) or 0.0,
+        quality_score=quality_score,
+        wave_id=wave.wave_id,
+        description=getattr(task, "description", ""),
+    )
+    _append_with_limit(dag.nodes, node, maxlen=MAX_DAG_NODES, label="plan DAG nodes")
+    for dep in getattr(task, "dependencies", []) or []:
+        _append_with_limit(
+            dag.edges,
+            DAGEdge(from_task=dep, to_task=node.task_id, edge_type="dependency"),
+            maxlen=MAX_DAG_EDGES,
+            label="plan DAG edges",
+        )
+    return node.task_id, task_cost, task.status == StatusEnum.COMPLETED.value, passed, failed
+
+
+def _add_wave_order_edges(dag: PlanDAG, prev_wave_task_ids: list[str], current_wave_task_ids: list[str]) -> None:
+    if not prev_wave_task_ids or not current_wave_task_ids:
+        return
+    for prev_id in prev_wave_task_ids:
+        for curr_id in current_wave_task_ids:
+            has_explicit = any(e.from_task == prev_id and e.to_task == curr_id for e in dag.edges)
+            if not has_explicit:
+                _append_with_limit(
+                    dag.edges,
+                    DAGEdge(from_task=prev_id, to_task=curr_id, edge_type="wave_order"),
+                    maxlen=MAX_DAG_EDGES,
+                    label="plan DAG edges",
+                )
+
+
 class PlanVisualizationBuilder:
     """Converts plan/wave/task data into a DAG JSON structure for visualization.
 
@@ -122,11 +198,8 @@ class PlanVisualizationBuilder:
     def build_from_plan(self, plan) -> PlanDAG:
         """Build a DAG from a planning.Plan object with waves and tasks.
 
-        Args:
-            plan: A vetinari.planning.planning.Plan instance.
-
         Returns:
-            PlanDAG with nodes, edges, and summary.
+            Value produced for the caller.
         """
         dag = PlanDAG(plan_id=plan.plan_id)
         cost_total = 0.0
@@ -134,68 +207,24 @@ class PlanVisualizationBuilder:
         tasks_total = 0
         quality_gates_passed = 0
         quality_gates_failed = 0
-
         prev_wave_task_ids: list[str] = []
 
         for wave in plan.waves:
             current_wave_task_ids: list[str] = []
-
             for task in wave.tasks:
                 tasks_total += 1
-                is_complete = task.status == StatusEnum.COMPLETED.value
-                if is_complete:
-                    tasks_complete += 1
-
-                # Extract cost from task metadata if available
-                task_cost = getattr(task, "cost_usd", 0.0) or 0.0
+                task_id, task_cost, is_complete, passed, failed = _add_plan_task_node(dag, task, wave)
                 cost_total += task_cost
-
-                quality_score = getattr(task, "quality_score", None)
-                if quality_score is not None:
-                    if quality_score >= 0.7:  # 70% threshold for quality gate pass
-                        quality_gates_passed += 1
-                    else:
-                        quality_gates_failed += 1
-
-                node = DAGNode(
-                    task_id=task.task_id if hasattr(task, "task_id") else task.id,
-                    agent_type=getattr(task, "agent_type", "unknown"),
-                    status=task.status,
-                    cost_usd=task_cost,
-                    duration_ms=getattr(task, "duration_ms", 0.0) or 0.0,
-                    quality_score=quality_score,
-                    wave_id=wave.wave_id,
-                    description=getattr(task, "description", ""),
+                tasks_complete += int(is_complete)
+                quality_gates_passed += passed
+                quality_gates_failed += failed
+                _append_with_limit(
+                    current_wave_task_ids,
+                    task_id,
+                    maxlen=MAX_WAVE_TASK_IDS,
+                    label="wave task ids",
                 )
-                dag.nodes.append(node)
-                current_wave_task_ids.append(node.task_id)
-
-                # Intra-task dependencies
-                deps = getattr(task, "dependencies", []) or []
-                for dep in deps:
-                    dag.edges.append(
-                        DAGEdge(
-                            from_task=dep,
-                            to_task=node.task_id,
-                            edge_type="dependency",
-                        ),
-                    )
-
-            # Inter-wave edges: previous wave tasks → current wave tasks
-            if prev_wave_task_ids and current_wave_task_ids:
-                for prev_id in prev_wave_task_ids:
-                    for curr_id in current_wave_task_ids:
-                        # Only add wave edges if no explicit dependency exists
-                        has_explicit = any(e.from_task == prev_id and e.to_task == curr_id for e in dag.edges)
-                        if not has_explicit:
-                            dag.edges.append(
-                                DAGEdge(
-                                    from_task=prev_id,
-                                    to_task=curr_id,
-                                    edge_type="wave_order",
-                                ),
-                            )
-
+            _add_wave_order_edges(dag, prev_wave_task_ids, current_wave_task_ids)
             prev_wave_task_ids = current_wave_task_ids
 
         dag.summary = DAGSummary(
@@ -206,7 +235,6 @@ class PlanVisualizationBuilder:
             quality_gates_passed=quality_gates_passed,
             quality_gates_failed=quality_gates_failed,
         )
-
         return dag
 
     def build_from_dict(self, plan_dict: dict) -> PlanDAG:
@@ -249,16 +277,24 @@ class PlanVisualizationBuilder:
                     wave_id=wave_data.get("wave_id", ""),
                     description=task_data.get("description", ""),
                 )
-                dag.nodes.append(node)
-                current_wave_task_ids.append(task_id)
+                _append_with_limit(dag.nodes, node, maxlen=MAX_DAG_NODES, label="plan DAG nodes")
+                _append_with_limit(
+                    current_wave_task_ids,
+                    task_id,
+                    maxlen=MAX_WAVE_TASK_IDS,
+                    label="wave task ids",
+                )
 
                 for dep in task_data.get("dependencies", []):
-                    dag.edges.append(
+                    _append_with_limit(
+                        dag.edges,
                         DAGEdge(
                             from_task=dep,
                             to_task=task_id,
                             edge_type="dependency",
                         ),
+                        maxlen=MAX_DAG_EDGES,
+                        label="plan DAG edges",
                     )
 
             if prev_wave_task_ids and current_wave_task_ids:
@@ -266,12 +302,15 @@ class PlanVisualizationBuilder:
                     for curr_id in current_wave_task_ids:
                         has_explicit = any(e.from_task == prev_id and e.to_task == curr_id for e in dag.edges)
                         if not has_explicit:
-                            dag.edges.append(
+                            _append_with_limit(
+                                dag.edges,
                                 DAGEdge(
                                     from_task=prev_id,
                                     to_task=curr_id,
                                     edge_type="wave_order",
                                 ),
+                                maxlen=MAX_DAG_EDGES,
+                                label="plan DAG edges",
                             )
 
             prev_wave_task_ids = current_wave_task_ids
@@ -322,6 +361,11 @@ def _get_viz_queue(plan_id: str) -> queue.Queue:
     """
     with _viz_streams_lock:
         if plan_id not in _viz_streams:
+            _evict_oldest_if_full(
+                _viz_streams,
+                maxsize=MAX_VISUALIZATION_STREAMS,
+                label="visualization stream registry",
+            )
             _viz_streams[plan_id] = queue.Queue(maxsize=SSE_VISUALIZATION_QUEUE_SIZE)
         return _viz_streams[plan_id]
 
@@ -332,6 +376,29 @@ def _remove_viz_queue(plan_id: str, q: queue.Queue | None = None) -> None:
         current = _viz_streams.get(plan_id)
         if q is None or current is q:
             _viz_streams.pop(plan_id, None)
+
+
+def iter_visualization_events(plan_id: str, *, timeout: float = 30.0) -> Iterator[dict]:
+    """Yield visualization events and remove the stream queue on close.
+
+    Raises:
+        Exception: Re-raises queue cleanup failures after evidence-drop
+            accounting.
+    """
+    q = _get_viz_queue(plan_id)
+    try:
+        while True:
+            yield q.get(timeout=timeout)
+    finally:
+        try:
+            _remove_viz_queue(plan_id, q)
+        except Exception:
+            account_evidence_drop(
+                logger=logger,
+                evidence_ref=f"visualization_stream:{plan_id}",
+                reason="visualization_queue_cleanup_failure",
+            )
+            raise
 
 
 # ── Gate approval state ──────────────────────────────────────────────────────
@@ -349,6 +416,7 @@ def register_quality_gate(plan_id: str, task_id: str, details: dict) -> None:
         details: Gate details (score, findings, etc.).
     """
     with _pending_gates_lock:
+        _evict_oldest_if_full(_pending_gates, maxsize=MAX_PENDING_GATES, label="pending quality gates")
         _pending_gates[plan_id] = {
             "task_id": task_id,
             "details": details,
@@ -363,3 +431,8 @@ def register_quality_gate(plan_id: str, task_id: str, details: dict) -> None:
             "details": details,
         },
     )
+
+
+def _visualization_event_stream(plan_id: str, *, timeout: float = 30.0) -> Iterator[dict]:
+    """Return the public visualization event iterator for route adapters."""
+    return iter_visualization_events(plan_id, timeout=timeout)

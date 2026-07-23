@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -124,7 +125,7 @@ class SSEStreamHandler(StreamHandler):
         Args:
             full_response: Full concatenated response text.
         """
-        payload = json.dumps({"full_response": full_response})
+        payload = json.dumps({"full_response": _redact_stream_content(full_response)})
         self.events.append(f"event: complete\ndata: {payload}\n\n")
 
     async def on_error(self, error: Exception) -> None:
@@ -133,9 +134,40 @@ class SSEStreamHandler(StreamHandler):
         Args:
             error: The exception that terminated the stream.
         """
-        payload = json.dumps({"error": str(error)})
+        payload = json.dumps({"error": _redact_stream_content(str(error))})
         self.events.append(f"event: error\ndata: {payload}\n\n")
-        logger.error("SSE stream error: %s", error)
+        logger.error("SSE stream error: %s", _redact_stream_content(str(error)))
+
+
+class RedactingSSEStreamHandler(SSEStreamHandler):
+    """SSE handler that minimizes secret-bearing chunks before queuing."""
+
+    def __init__(self, *, max_event_bytes: int = 4096) -> None:
+        super().__init__()
+        self.max_event_bytes = max_event_bytes
+
+    async def on_chunk(self, chunk: StreamChunk) -> None:
+        """Redact and bound an SSE chunk before it enters the event queue."""
+        content = _redact_stream_content(chunk.content)
+        if len(content.encode("utf-8")) > self.max_event_bytes:
+            await self.on_error(ValueError("stream event exceeds size limit"))
+            return
+        await super().on_chunk(
+            StreamChunk(
+                content=content,
+                chunk_index=chunk.chunk_index,
+                is_final=chunk.is_final,
+                metadata={k: _redact_stream_content(str(v)) for k, v in chunk.metadata.items()},
+            )
+        )
+
+    async def on_complete(self, full_response: str) -> None:
+        """Redact the terminal aggregate before it enters SSE replay state."""
+        content = _redact_stream_content(full_response)
+        if len(content.encode("utf-8")) > self.max_event_bytes:
+            await self.on_error(ValueError("stream event exceeds size limit"))
+            return
+        await super().on_complete(content)
 
 
 class LoggingStreamHandler(StreamHandler):
@@ -158,7 +190,7 @@ class LoggingStreamHandler(StreamHandler):
             "chunk[%d] final=%s content=%r",
             chunk.chunk_index,
             chunk.is_final,
-            chunk.content,
+            _redact_stream_content(chunk.content),
         )
 
     async def on_complete(self, full_response: str) -> None:
@@ -175,7 +207,7 @@ class LoggingStreamHandler(StreamHandler):
         Args:
             error: The exception that terminated the stream.
         """
-        self._log.error("Stream error: %s", error, exc_info=True)
+        self._log.error("Stream error: %s", _redact_stream_content(str(error)), exc_info=True)
 
 
 class BufferedStreamHandler(StreamHandler):
@@ -224,7 +256,7 @@ class BufferedStreamHandler(StreamHandler):
         """
         self.error = error
         self.buffer = "".join(self._chunks)  # partial result
-        logger.error("Buffered stream error: %s", error)
+        logger.error("Buffered stream error: %s", _redact_stream_content(str(error)))
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +348,7 @@ class StreamRouter:
 
 
 async def stream_tokens(
-    token_source: object,
+    token_source: AsyncIterable[str],
     router: StreamRouter,
 ) -> str:
     """Drive a token-by-token async iterator through a :class:`StreamRouter`.
@@ -341,7 +373,7 @@ async def stream_tokens(
     parts: list[str] = []
     index = 0
     try:
-        async for token in token_source:  # type: ignore[union-attr]
+        async for token in token_source:
             chunk = StreamChunk(content=token, chunk_index=index, is_final=False)
             await router.route_chunk(chunk)
             parts.append(token)
@@ -361,3 +393,10 @@ async def stream_tokens(
         )
         await router.route_error(exc)
         raise
+
+
+def _redact_stream_content(value: str) -> str:
+    lowered = value.lower()
+    if any(marker in lowered for marker in ("secret", "token", "api_key", "password")):
+        return "[redacted]"
+    return value

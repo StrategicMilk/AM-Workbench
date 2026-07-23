@@ -12,36 +12,56 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
+from importlib import import_module
+from importlib.util import find_spec
 from typing import TYPE_CHECKING, Any
 
+from vetinari.security.redaction import redact_text
+
 logger = logging.getLogger(__name__)
+
 
 # Optional dependency detection
 _HAS_DESKTOP_NOTIFIER = False
 _HAS_PYSTRAY = False
 _HAS_PILLOW = False
+_NativeNotifier: Any = None
 
-try:
-    from desktop_notifier import DesktopNotifier as _NativeNotifier  # noqa: VET070 — optional dep [notifications]
+
+def _module_is_available(module_name: str) -> bool:
+    """Return True when a desktop optional dependency is discoverable."""
+    if module_name in sys.modules:
+        return sys.modules[module_name] is not None
+    try:
+        return find_spec(module_name) is not None
+    except (ModuleNotFoundError, ValueError):
+        logger.warning("Exception handled by  module is available fallback", exc_info=True)
+        return False
+
+
+if _module_is_available("desktop_notifier"):
+    _desktop_notifier_module: Any = import_module("desktop_notifier")
+    _NativeNotifier = _desktop_notifier_module.DesktopNotifier
 
     _HAS_DESKTOP_NOTIFIER = True
-except ImportError:
+else:
     logger.debug("desktop-notifier not available — desktop notifications disabled")
 
-try:
-    import pystray  # noqa: VET070 — optional dep [notifications]
+if _module_is_available("pystray"):
+    import pystray
 
     _HAS_PYSTRAY = True
-except ImportError:
+else:
     logger.debug("pystray not available — system tray icon disabled")
 
-try:
-    from PIL import Image as _PillowImage  # noqa: VET070 — optional dep [notifications]
+if _module_is_available("PIL"):
+    from PIL import Image as _PillowImage
 
     _HAS_PILLOW = True
-except ImportError:
-    logger.debug("Pillow not available — tray icon will use placeholder")
+else:
+    logger.debug("Pillow not available — system tray icon disabled")
 
 if TYPE_CHECKING:
     from vetinari.notifications.manager import Notification
@@ -67,6 +87,7 @@ class DesktopNotificationChannel:
 
     def __init__(self) -> None:
         self._notifier: Any = None
+        self._tray: SystemTrayIcon | None = None
         self._available = False
         self._warned = False
         if _HAS_DESKTOP_NOTIFIER:
@@ -82,7 +103,7 @@ class DesktopNotificationChannel:
         else:
             logger.info(
                 "desktop-notifier not installed — desktop notifications disabled. "
-                "Install with: pip install vetinari[notifications]"  # noqa: VET301 — user guidance string
+                "Install with: pip install vetinari[notifications]"
             )
 
     def deliver(self, notifications: list[Notification]) -> None:
@@ -102,8 +123,8 @@ class DesktopNotificationChannel:
                 # desktop-notifier's sync API (async version available but
                 # we use sync for simplicity in the notification handler)
                 self._notifier.send_sync(
-                    title=notification.title,
-                    message=notification.body,
+                    title=redact_text(str(notification.title)),
+                    message=redact_text(str(notification.body)),
                 )
             except Exception:
                 logger.warning(
@@ -113,8 +134,20 @@ class DesktopNotificationChannel:
 
     @property
     def is_available(self) -> bool:
-        """Whether the desktop notification backend is available."""
-        return getattr(self, "_available", _HAS_DESKTOP_NOTIFIER) and self._notifier is not None
+        """Whether the desktop notification backend is available.
+
+        Reads ``_HAS_DESKTOP_NOTIFIER`` from the live module in ``sys.modules``
+        rather than the function-bound global so that test isolation that
+        restores ``vetinari.notifications.desktop`` between collection and
+        execution does not produce dual-module-identity false negatives.
+        """
+        live_module = sys.modules.get(__name__)
+        flag = (
+            getattr(live_module, "_HAS_DESKTOP_NOTIFIER", _HAS_DESKTOP_NOTIFIER)
+            if live_module
+            else _HAS_DESKTOP_NOTIFIER
+        )
+        return getattr(self, "_available", flag) and self._notifier is not None
 
 
 class SystemTrayIcon:
@@ -167,13 +200,14 @@ class SystemTrayIcon:
         if not self._available:
             logger.info(
                 "System tray icon disabled — requires both pystray and Pillow. "
-                "Install with: pip install vetinari[notifications]"  # noqa: VET301 — user guidance string
+                "Install with: pip install vetinari[notifications]"
             )
             return
 
         self._icon = self._build_icon()
 
-    def _make_icon_image(self, status: str) -> Any:
+    @staticmethod
+    def _make_icon_image(status: str) -> Any:
         """Create a 64x64 coloured PIL image for the given status.
 
         Args:
@@ -369,7 +403,7 @@ def create_desktop_channel() -> DesktopNotificationChannel | None:
 
     # Store the tray on the channel so callers can update its status icon.
     if tray is not None:
-        channel._tray = tray  # type: ignore[attr-defined]
+        channel._tray = tray
 
     try:
         from vetinari.notifications.manager import get_notification_manager

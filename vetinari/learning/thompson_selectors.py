@@ -22,15 +22,16 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from vetinari.exceptions import ConfigurationError
 
+logger = logging.getLogger(__name__)
+
+
 if TYPE_CHECKING:
     from vetinari.learning.thompson_arms import ThompsonBetaArm
 
-logger = logging.getLogger(__name__)
 
 _MODEL_ARM_KEY_PREFIX = "model-json:"
 _STRUCTURED_ARM_PREFIXES = ("strategy:", "mode_", "tier_", "ctx_")
@@ -377,7 +378,8 @@ def update_strategy(
 ) -> None:
     """Update a strategy arm after observing an outcome.
 
-    A quality_score above 0.5 increments alpha; at or below 0.5 increments beta.
+    Delegates to ``ThompsonBetaArm.update()`` so strategy arms use the same
+    quality-weighted Beta update contract as model, tier, and mode arms.
 
     Args:
         arms: The shared arms dict.
@@ -403,12 +405,7 @@ def update_strategy(
     arm_id = f"strategy:{agent_type}:{mode}:{strategy_key}:{value}"
     arm = _get_or_create_arm(arms, arm_id, "strategy", max_arms, get_prior)
     success = quality_score > 0.5
-    if success:
-        arm.alpha += 1.0
-    else:
-        arm.beta += 1.0
-    arm.total_pulls += 1
-    arm.last_updated = datetime.now(timezone.utc).isoformat()
+    arm.update(quality_score, success)
     logger.info(
         "[Thompson] Strategy update: %s/%s %s=%s quality=%.2f success=%s",
         agent_type,

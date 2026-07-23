@@ -1,0 +1,28 @@
+schema_version: 1
+dependency_defaults:
+  mailbox_channel: agent_queue
+  route_ledger_ref: route-ledger:managed-agent
+  watcher_policy_ref: watcher-policy:managed-agent
+  automation_recipe_refs:
+    - automation-recipe:managed-agent-default
+  conversation_ref: conversation
+  promotion_targets:
+    - plan
+    - evidence
+    - dataset
+    - prompt
+    - automation
+    - durable_memory
+  memory_policy_ref: memory-scope-policy
+  monitoring_signal_ref: monitoring-signal:managed-agent
+  trace_eval_ref: trace-eval:managed-agent
+workspace_defaults:
+  state_policy: fail_closed
+  unknown_dependency_policy: degraded
+  required_policy_receipt_for_memory_change: true
+  pause_blocks_new_runs: true
+  retire_blocks_new_runs: true
+cost_ceilings:
+  resource-governor:default-prosumer:
+    max_cost_usd: 1.0
+    estimated_cost_per_run_usd: 0.05

@@ -6,7 +6,7 @@
 // — the empty state ("No attention required") and a populated state with
 // real ``awaiting_reason`` strings.
 //
-// All API calls are mocked via ``page.route()`` so no Litestar backend is
+// All API calls are mocked via ``page.route()`` so no live backend is
 // required.
 
 import { test, expect } from '@playwright/test';
@@ -17,6 +17,9 @@ import { test, expect } from '@playwright/test';
  * layer their own ``page.route()`` overrides on top.
  */
 async function installFallbacks(page) {
+  await page.route('**/health', async (route) => {
+    await route.fulfill({ json: { status: 'ok' } });
+  });
   await page.route('**/api/**', async (route) => {
     const url = route.request().url();
 
@@ -56,6 +59,8 @@ test.describe('AttentionTrack', () => {
     await expect(page.getByText('No attention required')).toBeVisible();
     // The header is still rendered.
     await expect(page.getByRole('heading', { name: /Attention required/i })).toBeVisible();
+    await expect(page.getByText(/^updated /)).toHaveAttribute('aria-hidden', 'true');
+    await expect(page.getByText('No attention required')).toHaveAttribute('role', 'status');
     // The list itself must be empty.
     await expect(page.locator('.attention-list')).toHaveCount(0);
   });

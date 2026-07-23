@@ -1,0 +1,32 @@
+kind: refactor
+version: "1.0"
+grading_criteria:
+  - id: named_invariant_stated
+    name: Named invariant stated
+    required: true
+    description: Refactor names the invariant it preserves.
+    evidence_type: criterion_field
+    evidence_key: named_invariant
+    rejection_reason: Refactor is missing a named invariant.
+  - id: pre_regression_test_set_present
+    name: Pre-regression test set present
+    required: true
+    description: Refactor records the regression tests run before the change.
+    evidence_type: test_set
+    evidence_key: pre_regression_tests
+    rejection_reason: Refactor is missing the pre-change regression test set.
+  - id: post_regression_test_set_passes
+    name: Post-regression test set passes
+    required: true
+    description: Refactor records the regression tests that passed after the change.
+    evidence_type: test_set
+    evidence_key: post_regression_tests
+    rejection_reason: Refactor is missing the post-change regression test set.
+  - id: behavior_equivalence_claimed
+    name: Behavior equivalence claimed
+    required: true
+    description: Refactor states how behavior equivalence was checked.
+    evidence_type: criterion_field
+    evidence_key: behavior_equivalence
+    rejection_reason: Refactor is missing behavior equivalence evidence.
+rejection_policy: all_required

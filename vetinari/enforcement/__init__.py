@@ -34,24 +34,47 @@ Usage::
 from __future__ import annotations
 
 import logging
-from typing import Any  # noqa: VET123 - barrel export preserves public import compatibility
+from typing import Any
 
 from vetinari.enforcement.capabilities import AgentCapabilityEnforcer
 from vetinari.enforcement.depth import DelegationDepthValidator
 from vetinari.enforcement.jurisdiction import FileJurisdictionEnforcer
 from vetinari.enforcement.quality import QualityGateEnforcer
+from vetinari.envs import EnvTierUnavailable
 from vetinari.exceptions import CompositeEnforcementError
+from vetinari.security.fail_closed import (
+    FailClosedError,
+    PathTraversalError,
+    SandboxUnavailableError,
+    SchemaOpenError,
+    UntrustedInputError,
+    assert_closed_schema,
+    confine_to_root,
+    require_sandbox_or_raise,
+    sanitize_untrusted_text,
+)
 from vetinari.types import AgentType
 
 logger = logging.getLogger(__name__)
+
 
 __all__ = [
     "AgentCapabilityEnforcer",
     "CompositeEnforcementError",
     "DelegationDepthValidator",
+    "EnvTierUnavailable",
+    "FailClosedError",
     "FileJurisdictionEnforcer",
+    "PathTraversalError",
     "QualityGateEnforcer",
+    "SandboxUnavailableError",
+    "SchemaOpenError",
+    "UntrustedInputError",
+    "assert_closed_schema",
+    "confine_to_root",
     "enforce_all",
+    "require_sandbox_or_raise",
+    "sanitize_untrusted_text",
 ]
 
 # Module-level singleton instances — callers may use these directly or

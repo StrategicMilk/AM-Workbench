@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_improvement_engine.schema.json",
+  "title": "Workbench Improvement Engine Candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "candidate_id",
+    "target",
+    "lifecycle",
+    "source_signals",
+    "baseline_evidence",
+    "candidate_evidence",
+    "regression_checks",
+    "negative_results",
+    "impacted_assets",
+    "risk",
+    "rollback_target_ref",
+    "expires_at_utc",
+    "post_promotion_monitoring_refs",
+    "dependency_refs"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "candidate_id": { "$ref": "#/$defs/nonEmptyString" },
+    "target": {
+      "enum": [
+        "memory_profile_card",
+        "prompt",
+        "route",
+        "retrieval_rule",
+        "tool_policy",
+        "scheduler_default",
+        "ui_default",
+        "eval_case",
+        "model_adapter",
+        "training_recipe"
+      ]
+    },
+    "lifecycle": { "enum": ["shadow", "canary", "default"] },
+    "source_signals": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/ImprovementSignal" }
+    },
+    "baseline_evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/EvidenceRef" },
+      "contains": {
+        "type": "object",
+        "properties": { "role": { "const": "baseline" } },
+        "required": ["role"]
+      }
+    },
+    "candidate_evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/EvidenceRef" },
+      "contains": {
+        "type": "object",
+        "properties": { "role": { "const": "candidate" } },
+        "required": ["role"]
+      }
+    },
+    "regression_checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/EvidenceRef" },
+      "contains": {
+        "type": "object",
+        "properties": { "role": { "const": "regression_check" } },
+        "required": ["role"]
+      }
+    },
+    "negative_results": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/EvidenceRef" },
+      "contains": {
+        "type": "object",
+        "properties": { "role": { "const": "negative_result" } },
+        "required": ["role"]
+      }
+    },
+    "impacted_assets": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "risk": { "enum": ["low", "medium", "high", "critical"] },
+    "rollback_target_ref": { "$ref": "#/$defs/nonEmptyString" },
+    "expires_at_utc": { "$ref": "#/$defs/dateTimeString" },
+    "post_promotion_monitoring_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "dependency_refs": { "$ref": "#/$defs/DependencyContractRefs" }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "dateTimeString": { "type": "string", "format": "date-time", "minLength": 1 },
+    "ImprovementSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signal_id", "kind", "summary", "source_ref", "captured_at_utc", "suggested_target"],
+      "properties": {
+        "signal_id": { "$ref": "#/$defs/nonEmptyString" },
+        "kind": {
+          "enum": [
+            "trace",
+            "user_feedback",
+            "user_correction",
+            "inspector_finding",
+            "route_outcome",
+            "cost_observation",
+            "latency_observation",
+            "runtime_observation",
+            "retrieval_observation",
+            "tool_policy_observation",
+            "model_eval"
+          ]
+        },
+        "summary": { "$ref": "#/$defs/nonEmptyString" },
+        "source_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "captured_at_utc": { "$ref": "#/$defs/dateTimeString" },
+        "suggested_target": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "enum": [
+                "memory_profile_card",
+                "prompt",
+                "route",
+                "retrieval_rule",
+                "tool_policy",
+                "scheduler_default",
+                "ui_default",
+                "eval_case",
+                "model_adapter",
+                "training_recipe"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "EvidenceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_id",
+        "role",
+        "kind",
+        "summary",
+        "source_ref",
+        "captured_at_utc",
+        "confidence",
+        "provenance_ref"
+      ],
+      "properties": {
+        "evidence_id": { "$ref": "#/$defs/nonEmptyString" },
+        "role": { "enum": ["baseline", "candidate", "regression_check", "negative_result", "observation"] },
+        "kind": { "$ref": "#/$defs/nonEmptyString" },
+        "summary": { "$ref": "#/$defs/nonEmptyString" },
+        "source_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "captured_at_utc": { "$ref": "#/$defs/dateTimeString" },
+        "confidence": { "type": "number", "exclusiveMinimum": 0.0, "maximum": 1.0 },
+        "provenance_ref": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "DependencyContractRefs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "self_improvement_proposal_ref",
+        "trace_eval_case_ref",
+        "sweep_experiment_ref",
+        "model_foundry_ref",
+        "tuning_data_source_ref",
+        "agent_run_harness_ref"
+      ],
+      "properties": {
+        "self_improvement_proposal_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "trace_eval_case_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "sweep_experiment_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "model_foundry_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "tuning_data_source_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "agent_run_harness_ref": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    }
+  }
+}

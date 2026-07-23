@@ -17,6 +17,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 INCONCLUSIVE_LOW = 0.4  # Below this = likely fail
 INCONCLUSIVE_HIGH = 0.7  # Above this = likely pass
 
@@ -84,7 +85,7 @@ class QualityPreScreener:
         Returns:
             PreScreenResult with tier used, score, and skip_llm_judge flag.
         """
-        metadata = metadata or {}  # noqa: VET112 - empty fallback preserves optional request metadata contract
+        metadata = metadata or {}
 
         # Tier 1: Rule-based checks (deterministic, free, instant)
         tier1_result = self._tier1_rules(code)
@@ -117,12 +118,19 @@ class QualityPreScreener:
             # print() usage, the code has known problems and the LLM judge
             # must still run to produce a human-readable verdict.
             has_tier1_issues = bool(tier1_result.issues)
+            has_acceptance_evidence = bool(
+                metadata.get("deterministic_acceptance_ref") or metadata.get("allow_heuristic_pass")
+            )
             return PreScreenResult(
                 tier_used=2,
                 score=tier2_result.score,
-                skip_llm_judge=not has_tier1_issues,
+                skip_llm_judge=not has_tier1_issues and has_acceptance_evidence,
                 issues=tier1_result.issues + tier2_result.issues,
-                details={"tier": "features", "decision": "pass" if not has_tier1_issues else "pass-with-warnings"},
+                details={
+                    "tier": "features",
+                    "decision": "pass" if not has_tier1_issues else "pass-with-warnings",
+                    "acceptance_evidence": has_acceptance_evidence,
+                },
             )
 
         # Inconclusive — needs LLM judge
@@ -134,7 +142,8 @@ class QualityPreScreener:
             details={"tier": "features", "decision": "inconclusive"},
         )
 
-    def _tier1_rules(self, code: str) -> PreScreenResult:
+    @staticmethod
+    def _tier1_rules(code: str) -> PreScreenResult:
         """Tier 1: Deterministic rule-based checks.
 
         Checks:
@@ -182,7 +191,8 @@ class QualityPreScreener:
         score = 1.0 if not issues else 0.5
         return PreScreenResult(tier_used=1, score=score, issues=issues)
 
-    def _tier2_features(self, code: str, metadata: dict[str, Any]) -> PreScreenResult:
+    @staticmethod
+    def _tier2_features(code: str, metadata: dict[str, Any]) -> PreScreenResult:
         """Tier 2: Feature-based heuristic scoring.
 
         Scores based on code quality metrics:
@@ -211,8 +221,7 @@ class QualityPreScreener:
         # Feature 1: Function/class count (structure exists)
         functions = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
         classes = [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]
-        has_structure = len(functions) + len(classes) > 0
-        score_components.append(0.8 if has_structure else 0.3)
+        score_components.append(0.8 if (functions or classes) else 0.3)
 
         # Feature 2: Type annotation ratio
         annotated = sum(1 for f in functions if f.returns is not None or any(a.annotation for a in f.args.args))

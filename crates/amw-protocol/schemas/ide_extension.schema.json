@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/ide_extension.schema.json",
+  "title": "IDE Extension Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["extension_id", "schema_version", "signature", "permissions"],
+  "properties": {
+    "extension_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schema_version": {
+      "const": "ide-extension.v1"
+    },
+    "signature": {
+      "type": "string",
+      "minLength": 1
+    },
+    "permissions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "retention_days": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

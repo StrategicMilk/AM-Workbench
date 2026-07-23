@@ -18,9 +18,9 @@ class NelsonRuleDetector:
     """Detect violations of the eight Nelson SPC rules.
 
     The detector maintains a rolling window of observations and checks all
-    eight Nelson rules on each new data point.  At least 15 observations must
-    be present before any violation is reported, preventing false positives
-    during the warm-up phase.
+    eight Nelson rules on each new data point.  Rule 1 is evaluated
+    immediately because a single point outside 3 sigma is critical on its own;
+    the remaining multi-point rules require enough warm-up history.
 
     Usage::
 
@@ -76,26 +76,14 @@ class NelsonRuleDetector:
     # -- main interface -----------------------------------------------------
 
     def check_all_rules(self, observation: float) -> list[NelsonViolation]:
-        """Append *observation* and return any Nelson violations detected.
-
-        Returns an empty list when the window contains fewer than 15 points
-        because the Nelson rules require sufficient history to be meaningful.
-
-        Args:
-            observation: The latest process measurement.
+        """Append an observation and return detected Nelson-rule violations.
 
         Returns:
-            A list of :class:`NelsonViolation` instances, one per violated
-            rule.  May be empty if the process is in control.
+            Value produced for the caller.
         """
         self._window.append(observation)
-        if len(self._window) < 15:
-            return []
-
         violations: list[NelsonViolation] = []
         pts = list(self._window)
-
-        # Rule 1: one point beyond 3 sigma
         if self._check_rule1(pts):
             violations.append(
                 NelsonViolation(
@@ -104,8 +92,8 @@ class NelsonRuleDetector:
                     description="One point beyond 3 sigma control limits",
                 ),
             )
-
-        # Rule 2: nine consecutive points on same side of center
+        if len(self._window) < 15:
+            return violations
         if self._check_rule2(pts):
             violations.append(
                 NelsonViolation(
@@ -114,8 +102,6 @@ class NelsonRuleDetector:
                     description="Nine consecutive points on the same side of the center line",
                 ),
             )
-
-        # Rule 3: six consecutive points steadily increasing or decreasing
         if self._check_rule3(pts):
             violations.append(
                 NelsonViolation(
@@ -124,8 +110,6 @@ class NelsonRuleDetector:
                     description="Six consecutive points steadily increasing or decreasing",
                 ),
             )
-
-        # Rule 4: fourteen consecutive alternating up/down
         if self._check_rule4(pts):
             violations.append(
                 NelsonViolation(
@@ -134,8 +118,6 @@ class NelsonRuleDetector:
                     description="Fourteen consecutive points alternating up and down",
                 ),
             )
-
-        # Rule 5: two of three consecutive points beyond 2 sigma on same side
         if self._check_rule5(pts):
             violations.append(
                 NelsonViolation(
@@ -144,8 +126,6 @@ class NelsonRuleDetector:
                     description="Two of three consecutive points beyond 2 sigma on the same side",
                 ),
             )
-
-        # Rule 6: four of five consecutive points beyond 1 sigma on same side
         if self._check_rule6(pts):
             violations.append(
                 NelsonViolation(
@@ -154,8 +134,6 @@ class NelsonRuleDetector:
                     description="Four of five consecutive points beyond 1 sigma on the same side",
                 ),
             )
-
-        # Rule 7: fifteen consecutive points within 1 sigma of center
         if self._check_rule7(pts):
             violations.append(
                 NelsonViolation(
@@ -164,8 +142,6 @@ class NelsonRuleDetector:
                     description="Fifteen consecutive points within 1 sigma of the center line",
                 ),
             )
-
-        # Rule 8: eight consecutive points beyond 1 sigma on either side
         if self._check_rule8(pts):
             violations.append(
                 NelsonViolation(
@@ -174,7 +150,6 @@ class NelsonRuleDetector:
                     description="Eight consecutive points beyond 1 sigma on either side of center",
                 ),
             )
-
         return violations
 
     # -- individual rule checks ---------------------------------------------
@@ -193,7 +168,8 @@ class NelsonRuleDetector:
         below = all(p < self._mean for p in tail)
         return above or below
 
-    def _check_rule3(self, pts: list[float]) -> bool:
+    @staticmethod
+    def _check_rule3(pts: list[float]) -> bool:
         """Six consecutive points steadily increasing or decreasing."""
         tail = pts[-6:]
         if len(tail) < 6:
@@ -202,20 +178,16 @@ class NelsonRuleDetector:
         decreasing = all(tail[i] > tail[i + 1] for i in range(5))
         return increasing or decreasing
 
-    def _check_rule4(self, pts: list[float]) -> bool:
+    @staticmethod
+    def _check_rule4(pts: list[float]) -> bool:
         """Fourteen consecutive points alternating up and down."""
         tail = pts[-14:]
         if len(tail) < 14:
             return False
-        for i in range(len(tail) - 1):
-            if i % 2 == 0:
-                # Even indices: expect next to be higher
-                if tail[i] >= tail[i + 1]:
-                    return False
-            # Odd indices: expect next to be lower
-            elif tail[i] <= tail[i + 1]:
-                return False
-        return True
+        diffs = [tail[i + 1] - tail[i] for i in range(len(tail) - 1)]
+        if any(diff == 0 for diff in diffs):
+            return False
+        return all((diffs[i] > 0) != (diffs[i + 1] > 0) for i in range(len(diffs) - 1))
 
     def _check_rule5(self, pts: list[float]) -> bool:
         """Two of three consecutive points beyond 2 sigma on the same side."""

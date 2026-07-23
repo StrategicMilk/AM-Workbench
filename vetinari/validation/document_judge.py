@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from vetinari.constants import TRUNCATE_CONTENT_ANALYSIS
+from vetinari.security.redaction import redact_text
 from vetinari.validation.document_quality import (
     QualityReport,
     evaluate_document,
@@ -34,7 +35,7 @@ from vetinari.validation.document_types import (
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class JudgeConfig:
     """Configuration for the LLM-as-judge evaluator.
 
@@ -179,7 +180,9 @@ class DocumentJudge:
             Formatted prompt string.
         """
         dims = ", ".join(self._config.dimensions_for_llm)
-        ctx_section = f"\nAdditional context: {context}" if context else ""
+        safe_text = redact_text(text[:TRUNCATE_CONTENT_ANALYSIS])
+        safe_context = redact_text(context)
+        ctx_section = f"\nAdditional context: {safe_context}" if safe_context else ""
 
         return (
             f"You are a document quality evaluator. Score the following "
@@ -188,7 +191,7 @@ class DocumentJudge:
             f"brief explanation.\n\n"
             f"Respond in this exact format for each dimension:\n"
             f"DIMENSION: score | explanation\n\n"
-            f"Document to evaluate:\n---\n{text[:TRUNCATE_CONTENT_ANALYSIS]}\n---"
+            f"Document to evaluate:\n---\n{safe_text}\n---"
             f"{ctx_section}"
         )
 
@@ -218,8 +221,8 @@ class DocumentJudge:
 
         return scores
 
+    @staticmethod
     def _merge_scores(
-        self,
         heuristic_report: QualityReport,
         llm_scores: dict[str, float],
         profile: DocumentProfile,

@@ -39,9 +39,12 @@ from vetinari.agents.handlers.creative_writing_handler import CreativeWritingHan
 from vetinari.agents.handlers.documentation_handler import DocumentationHandler
 from vetinari.agents.multi_mode_agent import MultiModeAgent
 from vetinari.exceptions import CapabilityNotAvailable
+from vetinari.security import AgentAction, AgentPermissions, sanitize_prompt
 from vetinari.types import AgentType
+from vetinari.workers.sandbox.worker_execution import execute_worker_code_in_configured_sandbox
 
 logger = logging.getLogger(__name__)
+
 
 # ── Lazy getter for ADRSystem (avoids circular import at module level) ──
 _ADRSystem = None
@@ -71,6 +74,12 @@ def _get_mcp_tools_fn():
 
         _get_available_mcp_tools = get_available_mcp_tools
     return _get_available_mcp_tools
+
+
+def _authorize_worker_action(action: AgentAction) -> None:
+    """Raise when the worker permission policy denies a dispatch action."""
+    if not AgentPermissions().is_allowed(AgentType.WORKER, action):
+        raise PermissionError(f"agent action denied: {action}")
 
 
 # ── Mode-to-group mapping for constraint enforcement ─────────────────
@@ -113,6 +122,17 @@ _WORKER_FROZEN_ATTRS: frozenset[str] = frozenset({
     "MODE_KEYWORDS",
 })
 _READ_ONLY_MODE_GROUPS: frozenset[str] = frozenset({"research", "architecture"})
+_WORKER_BASE_SYSTEM_PROMPT = (
+    "You are Vetinari's Worker — the unified execution engine of the "
+    "factory pipeline. You have 24 operational modes across 4 groups: "
+    "Research (code discovery, domain analysis, API lookup, lateral "
+    "thinking, UI design, database, DevOps, git workflow), "
+    "Architecture (decisions, risk assessment, ontological analysis, "
+    "contrarian review), Build (code scaffolding, image generation), "
+    "and Operations (documentation, creative writing, cost analysis, "
+    "experiments, error recovery, synthesis, improvement, monitoring). "
+    "You execute with full context — no handoff losses between modes."
+)
 
 
 class WorkerAgent(MultiModeAgent):
@@ -174,7 +194,16 @@ class WorkerAgent(MultiModeAgent):
             "explore",
             "search code",
         ],
-        "domain_research": ["research", "feasib", "competit", "market", "domain", "analys"],
+        "domain_research": [
+            "research",
+            "feasib",
+            "competit",
+            "market",
+            "domain",
+            "analys",
+            "consult",
+            "advise",
+        ],
         "api_lookup": ["api", "library", "framework", "package", "documentation", "docs", "dependency"],
         "lateral_thinking": ["lateral", "creative", "alternative", "novel", "brainstorm", "unconventional"],
         "ui_design": [
@@ -265,23 +294,21 @@ class WorkerAgent(MultiModeAgent):
         from vetinari.agents.builder_agent import BuilderAgent
         from vetinari.agents.consolidated.operations_agent import OperationsAgent
         from vetinari.agents.consolidated.oracle_agent import ConsolidatedOracleAgent
-        from vetinari.agents.consolidated.researcher_agent import (
-            ConsolidatedResearcherAgent,
-        )
 
         # Initialize MultiModeAgent with WORKER type
         super().__init__(AgentType.WORKER, config)
 
         # Create internal delegates with optional per-group config
-        cfg = config or {}  # noqa: VET112 - empty fallback preserves optional request metadata contract
-        self._researcher = ConsolidatedResearcherAgent(cfg.get("research_config"))
+        cfg = config or {}
+        self._researcher = None
+        self._research_config = cfg.get("research_config")
         self._oracle = ConsolidatedOracleAgent(cfg.get("oracle_config"))
         self._builder = BuilderAgent(cfg.get("builder_config"))
         self._operations = OperationsAgent(cfg.get("operations_config"))
 
         # Map mode groups to delegates for constraint lookup
-        self._group_delegates: dict[str, MultiModeAgent] = {
-            "research": self._researcher,
+        self._group_delegates: dict[str, MultiModeAgent | None] = {
+            "research": None,
             "architecture": self._oracle,
             "build": self._builder,
             "operations": self._operations,
@@ -293,9 +320,20 @@ class WorkerAgent(MultiModeAgent):
         self._handler_router.register(CreativeWritingHandler())
         self._handler_router.register(CostAnalysisHandler())
 
+        self._system_prompt_cache: dict[str | None, str] = {}
+
         # Freeze structural attributes after init — Worker must not modify its own
         # agent identity or mode registry at runtime (ADR-0061 scope enforcement).
         self._config_frozen = True
+
+    def _get_researcher(self) -> MultiModeAgent:
+        """Return the internal researcher delegate, creating it on first use."""
+        if self._researcher is None:
+            from vetinari.agents.consolidated.researcher_agent import ConsolidatedResearcherAgent
+
+            self._researcher = ConsolidatedResearcherAgent(self._research_config)
+            self._group_delegates["research"] = self._researcher
+        return self._researcher
 
     def __setattr__(self, name: str, value: object) -> None:
         """Prevent modification of frozen structural attributes after __init__.
@@ -324,9 +362,12 @@ class WorkerAgent(MultiModeAgent):
         Returns:
             Result from the Researcher agent's mode handler.
         """
+        _authorize_worker_action(AgentAction.WEB_SEARCH)
+        task.prompt = sanitize_prompt(task.prompt)
         mode = self._current_mode
-        handler_name = self._researcher.MODES[mode]
-        handler = getattr(self._researcher, handler_name)
+        researcher = self._get_researcher()
+        handler_name = researcher.MODES[mode]
+        handler = getattr(researcher, handler_name)
         return handler(task)
 
     def _dispatch_oracle(self, task: AgentTask) -> AgentResult:
@@ -341,6 +382,8 @@ class WorkerAgent(MultiModeAgent):
         Returns:
             Result from the Oracle agent's mode handler.
         """
+        _authorize_worker_action(AgentAction.READ_MEMORY)
+        task.prompt = sanitize_prompt(task.prompt)
         # Wire WO-10: inject prior ADR decisions so Oracle has architectural context
         try:
             _prior_adrs = _get_adr_system_class().get_instance().list_adrs(limit=20)
@@ -377,6 +420,12 @@ class WorkerAgent(MultiModeAgent):
         Returns:
             Result from the Builder agent's mode handler.
         """
+        _authorize_worker_action(AgentAction.WRITE_FILE)
+        task.prompt = sanitize_prompt(task.prompt)
+        sandbox_result = execute_worker_code_in_configured_sandbox(task)
+        if sandbox_result is not None:
+            return sandbox_result
+
         mode = self._current_mode
         handler_name = self._builder.MODES[mode]
         handler = getattr(self._builder, handler_name)
@@ -395,6 +444,8 @@ class WorkerAgent(MultiModeAgent):
         Returns:
             Result from the handler or the Operations agent's mode handler.
         """
+        _authorize_worker_action(AgentAction.EXECUTE_CODE)
+        task.prompt = sanitize_prompt(task.prompt)
         mode = self._current_mode
         handler = self._handler_router.get_handler(mode)
         if handler is not None:
@@ -407,17 +458,7 @@ class WorkerAgent(MultiModeAgent):
     # ── System prompt generation ─────────────────────────────────────
 
     def _get_base_system_prompt(self) -> str:
-        return (
-            "You are Vetinari's Worker — the unified execution engine of the "
-            "factory pipeline. You have 24 operational modes across 4 groups: "
-            "Research (code discovery, domain analysis, API lookup, lateral "
-            "thinking, UI design, database, DevOps, git workflow), "
-            "Architecture (decisions, risk assessment, ontological analysis, "
-            "contrarian review), Build (code scaffolding, image generation), "
-            "and Operations (documentation, creative writing, cost analysis, "
-            "experiments, error recovery, synthesis, improvement, monitoring). "
-            "You execute with full context — no handoff losses between modes."
-        )
+        return _WORKER_BASE_SYSTEM_PROMPT
 
     def _get_mode_system_prompt(self, mode: str) -> str:
         """Return a mode-specific prompt by delegating to the internal agent.
@@ -429,7 +470,7 @@ class WorkerAgent(MultiModeAgent):
             Mode-specific system prompt from the appropriate delegate.
         """
         group = MODE_GROUPS.get(mode, "build")
-        delegate = self._group_delegates.get(group)
+        delegate = self._get_researcher() if group == "research" else self._group_delegates.get(group)
         if delegate and hasattr(delegate, "_get_mode_system_prompt"):
             return delegate._get_mode_system_prompt(mode)
         return ""
@@ -444,11 +485,20 @@ class WorkerAgent(MultiModeAgent):
         Returns:
             Combined system prompt for the current execution context.
         """
+        mode = self._current_mode
+        prompt_cache = getattr(self, "_system_prompt_cache", None)
+        if prompt_cache is None:
+            prompt_cache = {}
+            self._system_prompt_cache = prompt_cache
+        cached_prompt = prompt_cache.get(mode)
+        if cached_prompt is not None:
+            return cached_prompt
+
         base = self._get_base_system_prompt()
         parts = [base]
 
-        if self._current_mode:
-            mode_prompt = self._get_mode_system_prompt(self._current_mode)
+        if mode:
+            mode_prompt = self._get_mode_system_prompt(mode)
             if mode_prompt:
                 parts.append(mode_prompt)
 
@@ -460,10 +510,12 @@ class WorkerAgent(MultiModeAgent):
             if mcp_tools:
                 tool_lines = "\n".join(f"  - {t['name']}: {t.get('description', '')}" for t in mcp_tools)
                 parts.append(f"External MCP tools available (invoke via invoke_mcp_tool):\n{tool_lines}")
-        except Exception:  # noqa: VET023 — MCP bridge is optional; unavailability is not a failure
-            logger.debug("MCP tool injection skipped — bridge unavailable", exc_info=True)
+        except Exception:
+            logger.info("MCP tool injection skipped — bridge unavailable", exc_info=True)
 
-        return "\n\n".join(parts)
+        prompt = "\n\n".join(parts)
+        prompt_cache[mode] = prompt
+        return prompt
 
     def verify(self, output: Any) -> VerificationResult:
         """Verify Worker output by delegating to the mode group's verifier.
@@ -476,7 +528,7 @@ class WorkerAgent(MultiModeAgent):
         """
         mode = self._current_mode or self.DEFAULT_MODE
         group = MODE_GROUPS.get(mode, "build")
-        delegate = self._group_delegates.get(group)
+        delegate = self._get_researcher() if group == "research" else self._group_delegates.get(group)
         if delegate:
             return delegate.verify(output)
         return VerificationResult(

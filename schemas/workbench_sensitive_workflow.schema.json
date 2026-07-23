@@ -1,0 +1,334 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_sensitive_workflow.schema.json",
+  "title": "Workbench Sensitive Workflow",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/SensitiveWorkflowRequest"
+    },
+    {
+      "$ref": "#/$defs/SensitiveWorkflowDecision"
+    }
+  ],
+  "$defs": {
+    "StringList": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "SensitiveDomainKind": {
+      "type": "string",
+      "enum": [
+        "tax",
+        "finance",
+        "legal",
+        "medical",
+        "employment",
+        "housing",
+        "safety",
+        "household_planning",
+        "document_organization",
+        "meeting_prep",
+        "purchase_decision",
+        "appointment",
+        "general_professional"
+      ]
+    },
+    "WorkflowOutcomeKind": {
+      "type": "string",
+      "enum": [
+        "checklist",
+        "document_packet",
+        "professional_memo",
+        "source_backed_note",
+        "reminder",
+        "evidence_notebook_entry",
+        "questions_for_professional",
+        "organize_documents",
+        "explain_concept"
+      ]
+    },
+    "WorkflowDecisionKind": {
+      "type": "string",
+      "enum": [
+        "allowed",
+        "denied_missing_context",
+        "denied_authority_required",
+        "denied_evidence_required",
+        "denied_freshness_failed",
+        "denied_unknown_jurisdiction",
+        "denied_promotion_blocked",
+        "degraded_unreadable_policy"
+      ]
+    },
+    "PrivacyGovernance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "privacy_class",
+        "subject_ref",
+        "consent_ref",
+        "retention_ref",
+        "redaction_ref",
+        "erasure_ref"
+      ],
+      "properties": {
+        "privacy_class": {
+          "type": "string",
+          "enum": ["public", "operational", "subject_data", "secret"]
+        },
+        "subject_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "consent_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retention_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "redaction_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "erasure_ref": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "SensitiveWorkflowRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_kind",
+        "project_id",
+        "lens_id",
+        "sensitive_domain_kind",
+        "workflow_outcome_kind",
+        "requested_by",
+        "requested_at_utc",
+        "privacy_governance"
+      ],
+      "properties": {
+        "record_kind": {
+          "const": "request"
+        },
+        "project_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
+        "lens_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sensitive_domain_kind": {
+          "$ref": "#/$defs/SensitiveDomainKind"
+        },
+        "workflow_outcome_kind": {
+          "$ref": "#/$defs/WorkflowOutcomeKind"
+        },
+        "requested_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requested_at_utc": {
+          "type": "string",
+          "minLength": 1
+        },
+        "jurisdiction": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 64
+        },
+        "tax_year": {
+          "type": "integer",
+          "minimum": 1900,
+          "maximum": 2100
+        },
+        "document_refs": {
+          "$ref": "#/$defs/StringList"
+        },
+        "authority_ref": {
+          "type": "string"
+        },
+        "evidence_refs": {
+          "$ref": "#/$defs/StringList"
+        },
+        "claim_kind": {
+          "type": "string"
+        },
+        "policy_profile_id": {
+          "type": "string"
+        },
+        "correlation_id": {
+          "type": "string"
+        },
+        "notes_text": {
+          "type": "string"
+        },
+        "privacy_governance": {
+          "$ref": "#/$defs/PrivacyGovernance"
+        }
+      }
+    },
+    "SensitiveWorkflowDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_kind",
+        "decision_id",
+        "request_correlation_id",
+        "allowed",
+        "decision_kind",
+        "reasons",
+        "denial_reasons",
+        "missing_context",
+        "degraded",
+        "rigor_required",
+        "mode_lens_id",
+        "policy_explanation_ref",
+        "decided_at_utc",
+        "privacy_governance"
+      ],
+      "properties": {
+        "record_kind": {
+          "const": "decision"
+        },
+        "decision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allowed": {
+          "type": "boolean"
+        },
+        "decision_kind": {
+          "$ref": "#/$defs/WorkflowDecisionKind"
+        },
+        "reasons": {
+          "$ref": "#/$defs/StringList"
+        },
+        "denial_reasons": {
+          "$ref": "#/$defs/StringList"
+        },
+        "missing_context": {
+          "$ref": "#/$defs/StringList"
+        },
+        "degraded": {
+          "type": "boolean"
+        },
+        "rigor_required": {
+          "type": "string",
+          "enum": [
+            "just_talk",
+            "help_me_think",
+            "make_something",
+            "check_it_carefully",
+            "make_it_reusable"
+          ]
+        },
+        "mode_lens_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policy_explanation_ref": {
+          "type": "string"
+        },
+        "decided_at_utc": {
+          "type": "string",
+          "minLength": 1
+        },
+        "promoted_artifact_kind": {
+          "type": "string"
+        },
+        "promoted_artifact_id": {
+          "type": "string"
+        },
+        "staleness_action": {
+          "type": "string"
+        },
+        "project_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
+        "workflow_outcome_kind": {
+          "$ref": "#/$defs/WorkflowOutcomeKind"
+        },
+        "requested_by": {
+          "type": "string"
+        },
+        "authority_ref": {
+          "type": "string"
+        },
+        "evidence_refs": {
+          "$ref": "#/$defs/StringList"
+        },
+        "privacy_governance": {
+          "$ref": "#/$defs/PrivacyGovernance"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "allowed": {
+                "const": true
+              }
+            },
+            "required": [
+              "allowed"
+            ]
+          },
+          "then": {
+            "properties": {
+              "denial_reasons": {
+                "maxItems": 0
+              },
+              "missing_context": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "allowed": {
+                "const": false
+              }
+            },
+            "required": [
+              "allowed"
+            ]
+          },
+          "then": {
+            "anyOf": [
+              {
+                "properties": {
+                  "denial_reasons": {
+                    "minItems": 1
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "missing_context": {
+                    "minItems": 1
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

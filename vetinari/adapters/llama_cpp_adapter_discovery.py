@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
+from typing import Any
 
 from vetinari.adapters.base import ModelInfo
 from vetinari.adapters.llama_cpp_model_info import (
@@ -17,8 +19,14 @@ from vetinari.adapters.llama_cpp_model_info import (
 logger = logging.getLogger(__name__)
 
 
-class _LlamaCppDiscoveryMixin:
+class _LlamaCppDiscoverySupport:
     """Discovery, capability, and model-path methods for llama.cpp adapters."""
+
+    _discovered_models: list[ModelInfo]
+    _loaded_models: dict[str, Any]
+    _models_dir: Path
+    _registry_lock: threading.Lock
+    models: list[ModelInfo]
 
     def discover_models(self) -> list[ModelInfo]:
         """Scan models directory for .gguf files and build model info list.

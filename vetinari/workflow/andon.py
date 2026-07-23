@@ -37,7 +37,7 @@ class AndonSignal:
         )
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class NelsonViolation:
     """A violation of one of the eight Nelson SPC rules.
 
@@ -141,7 +141,7 @@ class AndonSystem:
             source=source,
             severity=severity,
             message=message,
-            affected_tasks=affected_tasks or [],  # noqa: VET112 - empty fallback preserves optional request metadata contract
+            affected_tasks=affected_tasks or [],
         )
         self._signals.append(signal)
 
@@ -162,7 +162,7 @@ class AndonSystem:
                 severity.upper(),
                 source,
                 message,
-                affected_tasks or [],  # noqa: VET112 - empty fallback preserves optional request metadata contract
+                affected_tasks or [],
             )
         else:
             logger.warning(

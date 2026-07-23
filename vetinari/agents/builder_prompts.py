@@ -92,10 +92,13 @@ _BUILD_PROMPT = (
     "- tests array must have at least one file with at least 3 test functions\n"
     "- artifacts must include README.md with usage instructions\n"
     "- implementation_notes must explain at least one non-obvious design decision\n\n"
+    "PROMPT-SPECIFIC EVAL CONTRACT:\n"
+    "- Builder prompt changes require a prompt-specific regression test or eval fixture\n"
+    "- Do not claim generation quality from unrelated smoke tests\n\n"
     "MICRO-RULES for output stability:\n"
     "- scaffold_code must be a string (complete file content, not a snippet)\n"
     "- test filenames must follow the pattern test_{feature_name}.py\n"
-    "- dependencies must list exact package names (pip install names)\n"  # noqa: VET301 — user guidance string
+    "- dependencies must list exact package names (pip install names)\n"
     "- known_limitations must be present and be an array (use [] if none)"
 )
 
@@ -175,6 +178,9 @@ _IMAGE_GENERATION_PROMPT = (
     "- negative_prompt must be at least 10 words\n"
     "- svg_fallback must be valid XML starting with <svg and ending with </svg>\n"
     "- color_palette must include all three keys: primary, secondary, background\n\n"
+    "PROMPT-SPECIFIC EVAL CONTRACT:\n"
+    "- Image-generation prompt changes require a prompt-specific regression test or eval fixture\n"
+    "- Do not claim visual-output quality from unrelated smoke tests\n\n"
     "MICRO-RULES for output stability:\n"
     "- style_preset must be one of: logo, icon, ui_mockup, diagram, banner, background\n"
     "- width and height must be positive integers\n"

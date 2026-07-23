@@ -8,14 +8,16 @@ implementation.
 
 from __future__ import annotations
 
+import importlib
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from vetinari.constants import OPERATOR_MODELS_CACHE_DIR
 
 logger = logging.getLogger(__name__)
+
 
 # CLI-local path constants honor the canonical operator model cache root.
 DEFAULT_USER_MODELS_DIR: Path = Path(OPERATOR_MODELS_CACHE_DIR)
@@ -80,9 +82,53 @@ _MODEL_TIERS: list[dict[str, Any]] = [
     },
     {
         "min_vram_gb": 16,
-        "max_vram_gb": 999,
-        "label": "16+ GB VRAM",
+        "max_vram_gb": 24,
+        "label": "16-24 GB VRAM",
         "models": [
+            {
+                "name": "Qwen 2.5 14B Q4_K_M",
+                "repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
+                "filename": "qwen2.5-14b-instruct-q4_k_m.gguf",
+                "url": "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF",
+            },
+            {
+                "name": "Codestral 22B Q4_K_M",
+                "repo": "bartowski/Codestral-22B-v0.1-GGUF",
+                "filename": "Codestral-22B-v0.1-Q4_K_M.gguf",
+                "url": "https://huggingface.co/bartowski/Codestral-22B-v0.1-GGUF",
+            },
+        ],
+    },
+    {
+        "min_vram_gb": 24,
+        "max_vram_gb": 31,
+        "label": "24-32 GB VRAM",
+        "models": [
+            {
+                "name": "Qwen 2.5 14B Q6_K",
+                "repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
+                "filename": "qwen2.5-14b-instruct-q6_k.gguf",
+                "url": "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF",
+            },
+            {
+                "name": "Qwen 2.5 32B Q4_K_M",
+                "repo": "Qwen/Qwen2.5-32B-Instruct-GGUF",
+                "filename": "qwen2.5-32b-instruct-q4_k_m.gguf",
+                "url": "https://huggingface.co/Qwen/Qwen2.5-32B-Instruct-GGUF",
+            },
+        ],
+    },
+    {
+        "min_vram_gb": 31,
+        "max_vram_gb": 999,
+        "label": "32 GB-class VRAM",
+        "models": [
+            {
+                "name": "Qwen 2.5 32B Q4_K_M",
+                "repo": "Qwen/Qwen2.5-32B-Instruct-GGUF",
+                "filename": "qwen2.5-32b-instruct-q4_k_m.gguf",
+                "url": "https://huggingface.co/Qwen/Qwen2.5-32B-Instruct-GGUF",
+            },
             {
                 "name": "Llama 3.1 8B F16",
                 "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
@@ -99,14 +145,23 @@ _MODEL_TIERS: list[dict[str, Any]] = [
     },
 ]
 
-try:
-    from rich.console import Console as _Console
+_RICH_AVAILABLE: bool | None = None
+_console: Any | None = None
 
-    _RICH_AVAILABLE = True
-    _console = _Console()
-except ImportError:
-    _RICH_AVAILABLE = False
-    _console = None  # type: ignore[assignment]
+
+def _get_console() -> tuple[bool, Any | None]:
+    global _RICH_AVAILABLE, _console
+    if _RICH_AVAILABLE is None:
+        try:
+            from rich.console import Console as _Console
+
+            _console = _Console()
+            _RICH_AVAILABLE = True
+        except ImportError:
+            _console = None
+            _RICH_AVAILABLE = False
+    return bool(_RICH_AVAILABLE), _console
+
 
 _CHECK_PASS = "PASS"
 _CHECK_FAIL = "FAIL"
@@ -116,8 +171,9 @@ _CHECK_INFO = "INFO"
 
 def _print_header(title: str) -> None:
     """Print a section header with consistent formatting."""
-    if _RICH_AVAILABLE and _console is not None:
-        _console.rule(f"[bold cyan]{title}[/bold cyan]")
+    rich_available, console = _get_console()
+    if rich_available and console is not None:
+        console.rule(f"[bold cyan]{title}[/bold cyan]")
     else:
         width = 60
         print(f"\n{'=' * width}")
@@ -141,9 +197,10 @@ def _print_check(label: str, status: str, detail: str = "") -> None:
     }
     symbol = symbol_map.get(status, "[?]")
     suffix = f"  {detail}" if detail else ""
-    if _RICH_AVAILABLE and _console is not None:
+    rich_available, console = _get_console()
+    if rich_available and console is not None:
         colour = colour_map.get(status, "white")
-        _console.print(f"  [{colour}]{symbol:<8}[/{colour}] {label}{suffix}")
+        console.print(f"  [{colour}]{symbol:<8}[/{colour}] {label}{suffix}")
     else:
         print(f"  {symbol:<8} {label}{suffix}")
 
@@ -166,7 +223,7 @@ def _detect_hardware() -> dict[str, Any]:
         logger.debug("psutil not available; RAM detection skipped")
 
     try:
-        import pynvml  # type: ignore[import-untyped]
+        pynvml: Any = importlib.import_module("pynvml")
 
         pynvml.nvmlInit()
         handle = pynvml.nvmlDeviceGetHandleByIndex(0)
@@ -220,8 +277,8 @@ def _get_recommended_models(vram_gb: float) -> list[dict[str, Any]]:
 
     for tier in _MODEL_TIERS:
         if tier["min_vram_gb"] <= vram_gb < tier["max_vram_gb"]:
-            return list(tier["models"])  # type: ignore[return-value]
-    return list(_MODEL_TIERS[0]["models"])  # type: ignore[return-value]
+            return list(cast(list[dict[str, Any]], tier["models"]))
+    return list(cast(list[dict[str, Any]], _MODEL_TIERS[0]["models"]))
 
 
 def cmd_init(args: Any) -> int:
@@ -230,6 +287,38 @@ def cmd_init(args: Any) -> int:
     Returns:
         Exit code from the setup wizard result.
     """
+    if getattr(args, "dry_run", False):
+        if getattr(args, "modality", ""):
+            from vetinari.cli_packaging_models import _models_recommend_modality
+
+            for modality in str(getattr(args, "modality", "")).split(","):
+                if modality.strip():
+                    _models_recommend_modality(modality.strip(), "rtx_5090_32gb")
+        else:
+            hardware = _detect_hardware()
+            recommendations = _get_recommended_models(float(hardware.get("vram_gb") or 0.0))
+            print("AM Workbench init dry run")
+            print(f"  CPU cores: {hardware.get('cpu_count')}")
+            print(f"  RAM: {hardware.get('ram_gb')} GB")
+            print(f"  GPU: {hardware.get('gpu_name') or 'not detected'}")
+            print(f"  VRAM: {hardware.get('vram_gb')} GB")
+            print("  Recommended setup actions:")
+            print("    - Install optional dependency groups for your workflow before first run.")
+            print("    - Run `vetinari doctor --json` after installation to verify the environment.")
+            for model in recommendations[:3]:
+                repo = model.get("repo", "")
+                filename = model.get("filename", "")
+                backend = model.get("backend", "local")
+                if repo and filename:
+                    print(
+                        f"    - {model.get('name', filename)} ({backend}): "
+                        f"vetinari models download --repo {repo} --filename {filename}"
+                    )
+                elif repo:
+                    print(f"    - {model.get('name', repo)} ({backend}): vetinari models files --repo {repo}")
+            logger.info("init dry-run requested; setup wizard and file writes were skipped")
+        return 0
+
     from vetinari.setup.init_wizard import run_wizard
 
     result = run_wizard(skip_download=bool(getattr(args, "skip_download", False)))

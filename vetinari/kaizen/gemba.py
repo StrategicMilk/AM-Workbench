@@ -19,13 +19,14 @@ from vetinari.kaizen.improvement_log import ImprovementLog
 
 logger = logging.getLogger(__name__)
 
+
 REWORK_RATE_THRESHOLD = 0.20  # >20% rework rate is concerning
 VALUE_ADD_RATIO_THRESHOLD = 0.50  # <50% value-adding time is wasteful
 DOMINANT_CAUSE_THRESHOLD = 0.40  # >40% defects from one cause is systemic
 RECURRING_FAILURE_MIN = 3  # Minimum occurrences to count as recurring
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class GembaFinding:
     """A single finding from the gemba walk.
 
@@ -167,8 +168,8 @@ class AutoGembaWalk:
 
     # ── Private analysis methods ───────────────────────────────────────
 
+    @staticmethod
     def _check_failure_patterns(
-        self,
         patterns: list[dict],
     ) -> list[GembaFinding]:
         """Identify recurring failure patterns.
@@ -199,7 +200,8 @@ class AutoGembaWalk:
                 )
         return findings
 
-    def _check_rework_rate(self, stats: dict) -> GembaFinding | None:
+    @staticmethod
+    def _check_rework_rate(stats: dict) -> GembaFinding | None:
         """Check if rework rate exceeds threshold.
 
         Args:
@@ -223,7 +225,8 @@ class AutoGembaWalk:
             )
         return None
 
-    def _check_value_add_ratio(self, stats: dict) -> GembaFinding | None:
+    @staticmethod
+    def _check_value_add_ratio(stats: dict) -> GembaFinding | None:
         """Check if value-add ratio is too low.
 
         Args:
@@ -246,7 +249,8 @@ class AutoGembaWalk:
             )
         return None
 
-    def _check_dominant_cause(self, distribution: dict) -> GembaFinding | None:
+    @staticmethod
+    def _check_dominant_cause(distribution: dict) -> GembaFinding | None:
         """Check if one defect category dominates.
 
         Args:

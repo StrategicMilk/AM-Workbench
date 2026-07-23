@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_channel.schema.json",
+  "title": "Workbench Channel Hub",
+  "type": "object",
+  "required": ["schema_version", "channels"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "channels": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/channel_definition" }
+    }
+  },
+  "$defs": {
+    "channel_definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "channel_id",
+        "channel_type",
+        "display_name",
+        "lifecycle_state",
+        "health_state",
+        "capabilities",
+        "default_target",
+        "approval_policy",
+        "command_authorization_policy"
+      ],
+      "properties": {
+        "channel_id": { "type": "string", "minLength": 1 },
+        "channel_type": {
+          "type": "string",
+          "enum": ["desktop", "browser", "mobile_companion", "cli", "slack", "discord", "sms", "push", "webhook"]
+        },
+        "display_name": { "type": "string", "minLength": 1 },
+        "lifecycle_state": {
+          "type": "string",
+          "enum": ["enabled", "disabled", "maintenance", "deprecated"]
+        },
+        "health_state": {
+          "type": "string",
+          "enum": ["healthy", "degraded", "unhealthy", "unknown"]
+        },
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": ["delivery", "approval", "command", "media", "activity", "notification"]
+          }
+        },
+        "default_target": { "type": "string", "minLength": 1 },
+        "redaction_policy": { "$ref": "#/$defs/redaction_policy" },
+        "approval_policy": {
+          "type": "string",
+          "enum": ["none", "required", "optional"]
+        },
+        "command_authorization_policy": {
+          "type": "string",
+          "enum": ["none", "local_only", "remote_intent_required", "approval_chain_required", "remote_intent_and_approval_chain"]
+        },
+        "health_detail": { "type": "string" },
+        "metadata": { "type": "object" }
+      }
+    },
+    "redaction_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["redact_secret_values", "redact_binary_values", "redact_local_paths", "allowed_attachment_fields"],
+      "properties": {
+        "redact_secret_values": { "type": "boolean" },
+        "redact_binary_values": { "type": "boolean" },
+        "redact_local_paths": { "type": "boolean" },
+        "allowed_attachment_fields": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "delivery_request": {
+      "type": "object",
+      "required": ["channel_id", "run_id", "actor_id", "action_id", "action_type", "summary"],
+      "properties": {
+        "channel_id": { "type": "string", "minLength": 1 },
+        "run_id": { "type": "string", "minLength": 1 },
+        "actor_id": { "type": "string", "minLength": 1 },
+        "action_id": { "type": "string", "minLength": 1 },
+        "action_type": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "payload": { "type": "object" },
+        "media": { "type": "array" },
+        "approval_decision_id": { "type": "string" },
+        "action_fingerprint": { "type": "string" }
+      }
+    },
+    "delivery_result": {
+      "type": "object",
+      "required": ["schema_version", "channel_id", "state", "delivered", "redaction_applied", "envelope"],
+      "properties": {
+        "schema_version": { "const": "1.0" },
+        "channel_id": { "type": "string", "minLength": 1 },
+        "state": {
+          "type": "string",
+          "enum": ["delivered", "blocked", "degraded", "approval_required", "redacted"]
+        },
+        "delivered": { "type": "boolean" },
+        "blocked_reason": {
+          "type": ["string", "null"],
+          "enum": [
+            null,
+            "config_missing",
+            "config_unreadable",
+            "channel_unknown",
+            "channel_disabled",
+            "channel_unhealthy",
+            "channel_degraded",
+            "delivery_unauthorized",
+            "approval_required",
+            "approval_denied",
+            "approval_unavailable",
+            "remote_intent_missing",
+            "remote_intent_denied",
+            "invalid_request"
+          ]
+        },
+        "redaction_applied": {
+          "type": "string",
+          "enum": ["none", "applied"]
+        },
+        "envelope": { "type": "object" },
+        "activity": { "type": "object" },
+        "ordered_trace": { "type": "array" },
+        "matched_step": { "type": "string" },
+        "fallback_rule": { "type": "string" }
+      }
+    }
+  }
+}

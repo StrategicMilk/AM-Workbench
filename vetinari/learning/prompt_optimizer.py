@@ -21,6 +21,16 @@ from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
+_MAX_QUALITY_SCORES_PER_EXPERIMENT = 100
+_INSTRUCTION_QUALITY_BASELINE: dict[str, float] = {
+    "min_length": 0.1,
+    "substantive_length": 0.05,
+    "step": 0.05,
+    "format": 0.05,
+    "verify": 0.05,
+    "example": 0.05,
+}
+_VERY_LONG_INSTRUCTION_PENALTY = 0.1
 
 
 @dataclass
@@ -31,7 +41,7 @@ class PromptExperiment:
     agent_type: str
     instruction: str
     few_shot_examples: list[dict[str, str]] = field(default_factory=list)
-    quality_scores: list[float] = field(default_factory=list)  # noqa: VET220 — capped to 100 at append site; list kept for json.dump(asdict()) compatibility
+    quality_scores: list[float] = field(default_factory=list)
     trace_diagnosis: str = ""
     status: str = "pending"  # pending, running, completed, promoted
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -47,8 +57,14 @@ class PromptExperiment:
         """Mean quality score across recorded trials."""
         return sum(self.quality_scores) / max(len(self.quality_scores), 1)
 
+    def record_quality_score(self, score: float) -> None:
+        """Record a quality observation while preserving bounded JSON state."""
+        self.quality_scores.append(score)
+        if len(self.quality_scores) > _MAX_QUALITY_SCORES_PER_EXPERIMENT:
+            self.quality_scores = self.quality_scores[-_MAX_QUALITY_SCORES_PER_EXPERIMENT:]
 
-@dataclass
+
+@dataclass(frozen=True, slots=True)
 class TraceAnalysis:
     """Result of analyzing an execution trace to diagnose prompt failures."""
 
@@ -98,6 +114,7 @@ class PromptOptimizer:
         baseline_instruction: str,
         few_shot_pool: list[dict[str, str]] | None = None,
         time_budget_seconds: float = _DEFAULT_TIME_BUDGET_SECONDS,
+        evaluator: Any | None = None,
     ) -> PromptExperiment | None:
         """Run MIPROv2-style search for better instruction + few-shot combinations.
 
@@ -109,10 +126,17 @@ class PromptOptimizer:
             baseline_instruction: Current instruction text.
             few_shot_pool: Optional pool of few-shot examples to sample from.
             time_budget_seconds: Maximum time for this optimization cycle.
+            evaluator: External evaluator used to score prompt variants.
 
         Returns:
             Best experiment found, or None if no improvement over baseline.
         """
+        if evaluator is None:
+            logger.warning(
+                "[PromptOptimizer] Search mode requires an external evaluator; heuristic-only scoring is not used"
+            )
+            return None
+
         deadline = time.monotonic() + time_budget_seconds
         experiments: list[PromptExperiment] = []
 
@@ -126,12 +150,12 @@ class PromptOptimizer:
                 experiment_id=exp_id,
                 agent_type=agent_type,
                 instruction=variant_instruction,
-                few_shot_examples=(few_shot_pool or [])[:3],  # noqa: VET112 — Optional per func param
+                few_shot_examples=(few_shot_pool or [])[:3],
                 status="completed",
             )
 
-            score = self._evaluate_instruction(variant_instruction, agent_type)
-            exp.quality_scores.append(score)
+            score = float(evaluator(variant_instruction, agent_type, exp.few_shot_examples))
+            exp.record_quality_score(score)
             experiments.append(exp)
 
         if not experiments:
@@ -189,7 +213,7 @@ class PromptOptimizer:
         )
 
         score = self._evaluate_instruction(fixed_instruction, agent_type)
-        exp.quality_scores.append(score)
+        exp.record_quality_score(score)
 
         with self._lock:
             self._experiments[exp.experiment_id] = exp
@@ -202,7 +226,8 @@ class PromptOptimizer:
         )
         return exp
 
-    def _diagnose_trace(self, trace: dict[str, Any]) -> TraceAnalysis | None:
+    @staticmethod
+    def _diagnose_trace(trace: dict[str, Any]) -> TraceAnalysis | None:
         """Analyze a failed execution trace to identify root cause.
 
         Applies heuristic rules to classify the failure without requiring LLM
@@ -283,8 +308,8 @@ class PromptOptimizer:
     def _evaluate_instruction(instruction: str, agent_type: str) -> float:
         """Evaluate an instruction variant using heuristic scoring.
 
-        Scores instruction quality based on structural features without
-        requiring LLM inference (fast evaluation for search).
+        Scores instruction quality against a fixed module-level rubric instead
+        of deriving the oracle from the candidate instruction itself.
 
         Args:
             instruction: The instruction text to evaluate.
@@ -293,23 +318,24 @@ class PromptOptimizer:
         Returns:
             Quality estimate in range [0.0, 1.0].
         """
-        score = 0.5  # Baseline
+        del agent_type
+        score = 0.5
+        normalized = instruction.lower()
 
         if len(instruction) > 50:
-            score += 0.1
+            score += _INSTRUCTION_QUALITY_BASELINE["min_length"]
         if len(instruction) > 200:
-            score += 0.05
-        if "step" in instruction.lower():
-            score += 0.05
-        if "format" in instruction.lower() or "structure" in instruction.lower():
-            score += 0.05
-        if "verify" in instruction.lower() or "check" in instruction.lower():
-            score += 0.05
-        if "example" in instruction.lower():
-            score += 0.05
-        # Very long instructions can confuse the model — apply a small penalty
+            score += _INSTRUCTION_QUALITY_BASELINE["substantive_length"]
+        if "step" in normalized:
+            score += _INSTRUCTION_QUALITY_BASELINE["step"]
+        if "format" in normalized or "structure" in normalized:
+            score += _INSTRUCTION_QUALITY_BASELINE["format"]
+        if "verify" in normalized or "check" in normalized:
+            score += _INSTRUCTION_QUALITY_BASELINE["verify"]
+        if "example" in normalized:
+            score += _INSTRUCTION_QUALITY_BASELINE["example"]
         if len(instruction) > 1000:
-            score -= 0.1
+            score -= _VERY_LONG_INSTRUCTION_PENALTY
 
         return min(1.0, max(0.0, score))
 

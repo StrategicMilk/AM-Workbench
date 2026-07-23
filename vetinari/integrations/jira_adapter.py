@@ -26,6 +26,7 @@ from vetinari.integrations.issue_tracker import (
 
 logger = logging.getLogger(__name__)
 
+
 # -- Constants ----------------------------------------------------------------
 
 _REQUEST_TIMEOUT = 10  # seconds
@@ -241,6 +242,8 @@ class JiraIssueTracker(IssueTracker):
                 "labels": request.labels,
             }
         }
+        if request.assignee:
+            payload["fields"]["assignee"] = {"accountId": request.assignee}
 
         try:
             resp = self._session.post(

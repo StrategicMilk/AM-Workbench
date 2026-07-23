@@ -26,16 +26,23 @@ from pathlib import Path
 from typing import Any
 
 from vetinari.constants import AUDIT_LOG_DIR
+from vetinari.privacy import PRIVACY_ENVELOPE_KEY, privacy_receipt
+from vetinari.security.redaction import redact_text, redact_value
 
 logger = logging.getLogger(__name__)
+
 
 # Default audit log directory — resolved via constants to avoid relative path coupling.
 DEFAULT_AUDIT_DIR: str = str(AUDIT_LOG_DIR)
 # Default audit log file name — JSONL format for easy streaming and parsing.
 DEFAULT_AUDIT_FILE = "vetinari_audit.jsonl"
+DEFAULT_AUDIT_MAX_BYTES = 10 * 1024 * 1024
+DEFAULT_AUDIT_BACKUP_COUNT = 5
+AUDIT_LOG_PRIVACY_RETENTION_DAYS = 30
+AUDIT_LOG_PRIVACY_CLASS = "operational"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class AuditEntry:
     """Represents a single audit log entry.
 
@@ -67,6 +74,10 @@ class AuditEntry:
             f"AuditEntry(event_type={self.event_type!r}, agent_type={self.agent_type!r}, "
             f"task_id={self.task_id!r}, action={self.action!r}, outcome={self.outcome!r})"
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-safe dictionary representation."""
+        return _make_json_safe(asdict(self))
 
 
 def _make_json_safe(obj: Any) -> Any:
@@ -106,9 +117,13 @@ class AuditLogger:
         self,
         audit_dir: str = DEFAULT_AUDIT_DIR,
         audit_file: str = DEFAULT_AUDIT_FILE,
+        max_bytes: int = DEFAULT_AUDIT_MAX_BYTES,
+        backup_count: int = DEFAULT_AUDIT_BACKUP_COUNT,
     ) -> None:
         self._audit_dir = Path(audit_dir).resolve()
         self._audit_file = audit_file
+        self._max_bytes = max_bytes
+        self._backup_count = backup_count
         self._lock = threading.Lock()
         self.file_path = self._audit_dir / self._audit_file
         self._ensure_dir()
@@ -148,9 +163,17 @@ class AuditLogger:
             agent_type=agent_type,
             task_id=task_id,
             action=action,
-            resource=resource,
+            resource=redact_text(resource),
             outcome=outcome,
-            details=details or {},  # noqa: VET112 - empty fallback preserves optional request metadata contract
+            details={
+                **redact_value(details or {}),
+                PRIVACY_ENVELOPE_KEY: privacy_receipt(
+                    privacy_class=AUDIT_LOG_PRIVACY_CLASS,
+                    source=f"audit:{event_type}",
+                    retention_days=AUDIT_LOG_PRIVACY_RETENTION_DAYS,
+                    redaction_applied=True,
+                ),
+            },
             trace_id=trace_id,
         )
         self._write_entry(entry)
@@ -206,7 +229,7 @@ class AuditLogger:
             outcome=outcome,
             agent_type=agent_type,
             task_id=task_id,
-            details={"violations": violations or []},  # noqa: VET112 - empty fallback preserves optional request metadata contract
+            details={"violations": violations or []},
             trace_id=trace_id,
         )
 
@@ -244,8 +267,8 @@ class AuditLogger:
                 "decision_type": decision_type,
                 "choice": choice,
                 "reasoning": reasoning,
-                "alternatives": alternatives or [],  # noqa: VET112 - empty fallback preserves optional request metadata contract
-                "context": context or {},  # noqa: VET112 - empty fallback preserves optional request metadata contract
+                "alternatives": alternatives or [],
+                "context": context or {},
             },
         )
 
@@ -301,8 +324,25 @@ class AuditLogger:
         # valid JSON and deterministic.
         raw = _make_json_safe(raw)
         line = json.dumps(raw) + "\n"
-        with self._lock, Path(self.file_path).open("a", encoding="utf-8") as f:
-            f.write(line)
+        encoded_size = len(line.encode("utf-8"))
+        with self._lock:
+            self._rotate_if_needed(encoded_size)
+            with Path(self.file_path).open("a", encoding="utf-8") as f:
+                f.write(line)
+
+    def _rotate_if_needed(self, incoming_bytes: int) -> None:
+        if self._max_bytes <= 0 or self._backup_count <= 0 or not self.file_path.exists():
+            return
+        if self.file_path.stat().st_size + incoming_bytes <= self._max_bytes:
+            return
+        oldest = self.file_path.with_name(f"{self.file_path.name}.{self._backup_count}")
+        if oldest.exists():
+            oldest.unlink()
+        for index in range(self._backup_count - 1, 0, -1):
+            source = self.file_path.with_name(f"{self.file_path.name}.{index}")
+            if source.exists():
+                source.replace(self.file_path.with_name(f"{self.file_path.name}.{index + 1}"))
+        self.file_path.replace(self.file_path.with_name(f"{self.file_path.name}.1"))
 
     def read_decisions(
         self,

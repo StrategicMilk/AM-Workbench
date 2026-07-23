@@ -7,6 +7,7 @@ the Decomposition Lab API endpoints.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 
@@ -24,6 +25,7 @@ from vetinari.constants import (
 
 logger = logging.getLogger(__name__)
 
+
 # Recursion control knobs
 RECURSION_KNOBS = {
     "breadth_first_weight": DECOMP_BREADTH_FIRST_WEIGHT,  # Prefer breadth over depth
@@ -37,6 +39,11 @@ SEED_MIX = DECOMP_SEED_MIX
 DEFAULT_MAX_DEPTH = DECOMP_DEFAULT_MAX_DEPTH
 MIN_MAX_DEPTH = DECOMP_MIN_MAX_DEPTH
 MAX_MAX_DEPTH = DECOMP_MAX_MAX_DEPTH
+
+
+def _prompt_ref(prompt: str) -> str:
+    digest = hashlib.sha256(prompt.encode("utf-8", errors="replace")).hexdigest()
+    return f"[REDACTED_PROMPT sha256={digest}]"
 
 
 class DecompositionAgent:
@@ -56,8 +63,8 @@ class DecompositionAgent:
 
         Returns:
             Dictionary with keys ``status`` (``"ok"`` or ``"error"``),
-            ``plan_id``, ``prompt``, ``subtasks`` (list), ``subtask_count``,
-            and ``knobs``.  On failure, contains only ``status`` and
+            ``plan_id``, ``prompt_ref``, ``subtasks`` (list),
+            ``subtask_count``, and ``knobs``.  On failure, contains only ``status`` and
             ``error``.
         """
         try:
@@ -73,7 +80,7 @@ class DecompositionAgent:
             return {
                 "status": "ok",
                 "plan_id": getattr(plan, "plan_id", "unknown"),
-                "prompt": prompt,
+                "prompt_ref": _prompt_ref(prompt),
                 "subtasks": subtasks,
                 "subtask_count": len(subtasks),
                 "knobs": RECURSION_KNOBS,

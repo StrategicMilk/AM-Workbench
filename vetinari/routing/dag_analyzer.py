@@ -17,6 +17,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 # Thresholds for topology suggestions
 _MIN_PARALLEL_TASKS = 3  # minimum independent tasks to suggest parallel topology
 _MIN_DEPTH_FOR_SEQUENTIAL = 3  # minimum depth before sequential is preferred over express
@@ -24,7 +25,7 @@ _HIGH_FAN_OUT = 4  # fan-out >= this suggests scatter-gather
 _HIGH_FAN_IN = 4  # fan-in >= this suggests gather step present
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class DAGShape:
     """Structural properties of a task dependency graph.
 
@@ -83,44 +84,22 @@ class DAGShape:
 def analyze_dag(
     tasks: list[dict[str, Any]],
 ) -> DAGShape:
-    """Analyse the structural shape of a task DAG.
-
-    Each task dict must have ``"id"`` and optionally ``"dependencies"``
-    (list of upstream task IDs).
-
-    Uses BFS from root tasks (no dependencies) to compute depths, then
-    scans adjacency lists for fan-out/fan-in statistics.  Connected
-    components are identified via union-find.
-
-    Args:
-        tasks: List of task dicts with ``"id"`` and ``"dependencies"`` keys.
+    """Analyze the structural shape of a task DAG.
 
     Returns:
-        DAGShape with all structural metrics populated.
+        Value produced for the caller.
     """
     if not tasks:
         return DAGShape()
-
     task_ids = {t["id"] for t in tasks}
     deps_map: dict[str, list[str]] = {}
     for t in tasks:
         raw_deps = t.get("dependencies", []) or []
         deps_map[t["id"]] = [d for d in raw_deps if d in task_ids]
-
-    # Successors map (reverse of deps_map) for fan-out analysis
-    successors: dict[str, list[str]] = {tid: [] for tid in task_ids}
-    for tid, deps in deps_map.items():
-        for dep in deps:
-            successors[dep].append(tid)
-
-    # Fan-out and fan-in stats
+    successors = _successor_map(task_ids, deps_map)
     max_fan_out = max((len(succs) for succs in successors.values()), default=0)
     max_fan_in = max((len(deps) for deps in deps_map.values()), default=0)
-
-    # Independent tasks (no dependencies)
     independent = [tid for tid, deps in deps_map.items() if not deps]
-
-    # BFS depth from each root task
     depths: dict[str, int] = dict.fromkeys(task_ids, 0)
     queue: deque[str] = deque(independent)
     while queue:
@@ -130,56 +109,11 @@ def analyze_dag(
             if new_depth > depths[succ]:
                 depths[succ] = new_depth
                 queue.append(succ)
-
     max_depth = max(depths.values(), default=0)
     avg_depth = sum(depths.values()) / len(depths) if depths else 0.0
-
-    # Connected components via union-find
-    parent = {tid: tid for tid in task_ids}
-
-    def find(x: str) -> str:
-        """Return the root representative of the component containing task x (path-compressed).
-
-        Args:
-            x: Task ID to find the component root for.
-
-        Returns:
-            Task ID of the root representative for the component containing x.
-        """
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(x: str, y: str) -> None:
-        """Merge the components containing tasks x and y.
-
-        Args:
-            x: First task ID.
-            y: Second task ID; its component root becomes the combined root.
-        """
-        parent[find(x)] = find(y)
-
-    for tid, deps in deps_map.items():
-        for dep in deps:
-            union(tid, dep)
-
-    components = len({find(tid) for tid in task_ids})
-
-    # Bottleneck: a task is a bottleneck if it has both high fan-out and
-    # non-trivial depth (blocks a large fraction of the graph)
-    bottleneck_task_id = ""
-    has_bottleneck = False
-    if max_fan_out >= _HIGH_FAN_OUT:
-        for tid, succs in successors.items():
-            if len(succs) >= _HIGH_FAN_OUT:
-                has_bottleneck = True
-                bottleneck_task_id = tid
-                break
-
-    # Parallelism potential: fraction of tasks at depth 0 (independently runnable)
+    components = _connected_component_count(task_ids, deps_map)
+    has_bottleneck, bottleneck_task_id = _bottleneck(successors, max_fan_out)
     parallelism_potential = len(independent) / len(task_ids) if task_ids else 0.0
-
     logger.debug(
         "[DAGAnalyzer] tasks=%d depth=%d independent=%d components=%d fan_out=%d",
         len(tasks),
@@ -188,7 +122,6 @@ def analyze_dag(
         components,
         max_fan_out,
     )
-
     return DAGShape(
         task_count=len(tasks),
         max_depth=max_depth,
@@ -201,6 +134,38 @@ def analyze_dag(
         bottleneck_task_id=bottleneck_task_id,
         parallelism_potential=parallelism_potential,
     )
+
+
+def _successor_map(task_ids: set[str], deps_map: dict[str, list[str]]) -> dict[str, list[str]]:
+    successors: dict[str, list[str]] = {tid: [] for tid in task_ids}
+    for tid, deps in deps_map.items():
+        for dep in deps:
+            successors[dep].append(tid)
+    return successors
+
+
+def _connected_component_count(task_ids: set[str], deps_map: dict[str, list[str]]) -> int:
+    parent = {tid: tid for tid in task_ids}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for tid, deps in deps_map.items():
+        for dep in deps:
+            parent[find(tid)] = find(dep)
+    return len({find(tid) for tid in task_ids})
+
+
+def _bottleneck(successors: dict[str, list[str]], max_fan_out: int) -> tuple[bool, str]:
+    if max_fan_out < _HIGH_FAN_OUT:
+        return False, ""
+    for tid, succs in successors.items():
+        if len(succs) >= _HIGH_FAN_OUT:
+            return True, tid
+    return False, ""
 
 
 def suggest_topology(shape: DAGShape) -> str:

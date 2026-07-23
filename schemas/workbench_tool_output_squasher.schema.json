@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_tool_output_squasher.schema.json",
+  "title": "Workbench Tool Output Squasher",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "source_kind",
+    "preview",
+    "hazards",
+    "outcomes",
+    "evidence_refs",
+    "raw_refs",
+    "metrics",
+    "authoritative"
+  ],
+  "properties": {
+    "status": { "enum": ["clean", "degraded", "blocked"] },
+    "source_kind": { "enum": ["terminal", "ci", "watcher", "eval", "automation"] },
+    "command": { "type": "string" },
+    "run_id": { "type": "string" },
+    "preview": { "type": "string" },
+    "hazards": { "type": "array", "items": { "$ref": "#/$defs/hazard" } },
+    "outcomes": { "type": "array", "items": { "$ref": "#/$defs/outcome" } },
+    "evidence_refs": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "raw_refs": { "type": "array", "items": { "$ref": "#/$defs/raw_ref" } },
+    "metrics": { "$ref": "#/$defs/metrics" },
+    "reasons": { "type": "array", "items": { "type": "string" } },
+    "authoritative": { "const": false }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "enum": ["degraded", "blocked"] } } },
+      "then": {
+        "required": ["reasons"],
+        "properties": {
+          "hazards": { "minItems": 1 },
+          "evidence_refs": { "minItems": 1 }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "blocked" } } },
+      "then": { "properties": { "raw_refs": { "maxItems": 0 } } }
+    }
+  ],
+  "$defs": {
+    "hazard": {
+      "type": "object",
+      "required": ["kind", "text", "evidence_ref"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "evidence_ref": { "type": "string", "minLength": 1 }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["kind", "text", "evidence_ref"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "evidence_ref": { "type": "string", "minLength": 1 }
+      }
+    },
+    "raw_ref": {
+      "type": "object",
+      "required": ["ref", "kind", "redacted", "guarded"],
+      "properties": {
+        "ref": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["artifact", "repro_capsule"] },
+        "redacted": { "const": true },
+        "guarded": { "const": true }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "required": [
+        "raw_bytes",
+        "squashed_bytes",
+        "estimated_raw_tokens",
+        "estimated_squashed_tokens",
+        "estimated_token_savings",
+        "compression_ratio",
+        "hazard_count",
+        "outcome_count"
+      ],
+      "properties": {
+        "raw_bytes": { "type": "integer", "minimum": 0 },
+        "squashed_bytes": { "type": "integer", "minimum": 0 },
+        "estimated_raw_tokens": { "type": "integer", "minimum": 0 },
+        "estimated_squashed_tokens": { "type": "integer", "minimum": 0 },
+        "estimated_token_savings": { "type": "integer", "minimum": 0 },
+        "compression_ratio": { "type": "number", "minimum": 0 },
+        "hazard_count": { "type": "integer", "minimum": 0 },
+        "outcome_count": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

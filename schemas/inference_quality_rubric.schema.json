@@ -1,0 +1,177 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "schemas/inference_quality_rubric.schema.json",
+  "title": "InferenceQualityRubric",
+  "description": "Defines per-axis scoring weights, pass thresholds, and aggregate pass policy for inference quality evaluation. Fixed by ADR-0153.",
+  "type": "object",
+  "required": [
+    "rubric_version",
+    "axes",
+    "aggregate_pass_policy"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "rubric_version": {
+      "type": "string",
+      "description": "Semantic version string for this rubric definition (e.g. '1.0.0')."
+    },
+    "axes": {
+      "type": "array",
+      "description": "Ordered list of scoring axes. Exactly three axes are required: correctness, format, latency.",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "description",
+          "weight",
+          "threshold",
+          "unit"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "correctness",
+              "format",
+              "latency"
+            ],
+            "description": "Axis identifier. One of: correctness (factual/semantic accuracy), format (schema/template compliance), latency (response time in ms)."
+          },
+          "description": {
+            "type": "string",
+            "minLength": 10,
+            "description": "Human-readable explanation of what this axis measures."
+          },
+          "weight": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Relative weight of this axis in the aggregate score. All axis weights MUST sum to 1.0."
+          },
+          "threshold": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per-axis pass threshold. For correctness and format: float 0.0-1.0. For latency: maximum acceptable milliseconds (integer-valued float)."
+          },
+          "unit": {
+            "type": "string",
+            "enum": [
+              "score",
+              "milliseconds"
+            ],
+            "description": "Unit of the threshold value. 'score' for 0.0-1.0 float axes; 'milliseconds' for latency."
+          }
+        }
+      },
+      "allOf": [
+        {
+          "contains": {
+            "properties": {
+              "name": {
+                "const": "correctness"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "name": {
+                "const": "format"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "name": {
+                "const": "latency"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        }
+      ]
+    },
+    "aggregate_pass_policy": {
+      "type": "object",
+      "description": "Policy for computing the aggregate pass/fail verdict from per-axis scores.",
+      "required": [
+        "mode",
+        "description"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "all_axes_must_pass",
+            "weighted_score_threshold"
+          ],
+          "description": "How per-axis results are combined. 'all_axes_must_pass': every axis must individually pass its threshold. 'weighted_score_threshold': weighted sum of scores must exceed aggregate_threshold. Least-restrictive any-axis pass policies are intentionally rejected."
+        },
+        "aggregate_threshold": {
+          "type": "number",
+          "minimum": 0.5,
+          "maximum": 1,
+          "description": "Required only when mode == 'weighted_score_threshold'. The weighted-sum score must exceed this value to pass."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 10,
+          "description": "Human-readable explanation of the aggregate pass policy choice and rationale. For weighted score mode, this must state that axis weights sum to 1.0 before the aggregate threshold is meaningful."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "weighted_score_threshold"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "required": [
+              "aggregate_threshold"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "all_axes_must_pass"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "aggregate_threshold"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -4,7 +4,7 @@ The express path bypasses planning entirely and routes simple goals directly
 to a Builder task, then closes spans and correlation contexts.  This is the
 Tier.EXPRESS fast lane from the intake classifier (Dept 4.1).
 
-The ``ExpressPathMixin`` class is designed to be mixed into
+The ``ExpressPathExecution`` class is designed to be mixed into
 ``TwoLayerOrchestrator`` only.  It accesses instance attributes such as
 ``self._make_default_handler()`` and ``self._express_metrics`` that are
 provided by that class.
@@ -15,14 +15,29 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol, cast
 
 from vetinari.types import StatusEnum
 
 logger = logging.getLogger(__name__)
 
 
-class ExpressPathMixin:
+class _ExpressOwner(Protocol):
+    """Host contract required by ExpressPathExecution."""
+
+    def _make_default_handler(self) -> Callable[[Any], Any]:
+        """Return the orchestrator's default task handler."""
+
+    def _review_outputs(
+        self,
+        exec_results: dict[str, Any],
+        goal: str,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run the Inspector review stage for Express output."""
+
+
+class ExpressPathExecution:
     """Express-path execution for simple goals (mixin for TwoLayerOrchestrator).
 
     Provides ``_execute_express`` and ``_record_express_metrics``.  Both
@@ -30,6 +45,91 @@ class ExpressPathMixin:
     ``TwoLayerOrchestrator``.  Python resolves the attribute at call time so
     no forward reference is needed.
     """
+
+    @staticmethod
+    def _run_express_handler(goal: str, start_time: float, handler: Callable) -> Any:
+        from vetinari.orchestration.execution_graph import ExecutionTaskNode
+
+        express_task = ExecutionTaskNode(id=f"express-{int(start_time)}", description=goal, task_type="implementation")
+        return handler(express_task)
+
+    @staticmethod
+    def _express_handler_success(result: Any) -> bool:
+        if isinstance(result, dict) and "success" in result:
+            return bool(result["success"])
+        return bool(result)
+
+    def _successful_express_result(
+        self,
+        goal: str,
+        context: dict[str, Any],
+        stages: dict[str, Any],
+        start_time: float,
+        result: Any,
+    ) -> dict[str, Any]:
+        owner = cast(_ExpressOwner, self)
+        review = owner._review_outputs({"task_results": {"express_task": result}}, goal, context)
+        express_success = self._express_handler_success(result)
+        inspector_passed = bool(review.get("passed", False))
+        pipeline_success = express_success and inspector_passed
+        stages["express_execution"] = {"success": express_success}
+        stages["express_inspection"] = {
+            "success": inspector_passed,
+            "verdict": review.get("verdict", "inconclusive"),
+            "quality_score": review.get("quality_score"),
+            "summary": review.get("summary", ""),
+        }
+        self._record_express_metrics(pipeline_success, start_time)
+        return {
+            "plan_id": f"express-{int(start_time)}",
+            "goal": goal,
+            "backend": "express",
+            "tier": "express",
+            StatusEnum.COMPLETED.value: 1 if pipeline_success else 0,
+            StatusEnum.FAILED.value: 0 if pipeline_success else 1,
+            "outputs": {"express_task": result},
+            "final_output": result,
+            "review": review,
+            "stages": stages,
+            "total_time_ms": int((time.time() - start_time) * 1000),
+        }
+
+    def _failed_express_result(
+        self,
+        goal: str,
+        stages: dict[str, Any],
+        start_time: float,
+        error: Exception,
+    ) -> dict[str, Any]:
+        logger.warning("[Pipeline] Express execution failed: %s", error)
+        stages["express_execution"] = {"success": False, "error": str(error)}
+        self._record_express_metrics(False, start_time)
+        return {
+            "plan_id": f"express-{int(start_time)}",
+            "goal": goal,
+            "backend": "express",
+            "tier": "express",
+            StatusEnum.COMPLETED.value: 0,
+            StatusEnum.FAILED.value: 1,
+            "error": str(error),
+            "stages": stages,
+            "total_time_ms": int((time.time() - start_time) * 1000),
+        }
+
+    @staticmethod
+    def _close_express_context(corr_ctx: Any | None, pipeline_span: Any | None) -> None:
+        if pipeline_span is not None:
+            try:
+                from vetinari.observability.otel_genai import get_genai_tracer
+
+                get_genai_tracer().end_agent_span(pipeline_span, status="ok")
+            except (ImportError, AttributeError):
+                logger.warning("Failed to close GenAI span", exc_info=True)
+        if corr_ctx is not None:
+            import contextlib as _cl
+
+            with _cl.suppress(Exception):
+                corr_ctx.__exit__(None, None, None)
 
     def _execute_express(
         self,
@@ -63,69 +163,16 @@ class ExpressPathMixin:
             ``tier``, ``completed``, ``failed``, ``outputs``, ``final_output``,
             ``stages``, and ``total_time_ms``.
         """
-        handler = task_handler or self._make_default_handler()  # type: ignore[attr-defined]
+        owner = cast(_ExpressOwner, self)
+        handler = task_handler or owner._make_default_handler()
         try:
-            # Single Builder task, no planning decomposition.
-            # Create a synthetic TaskNode so the handler signature is satisfied.
-            from vetinari.orchestration.execution_graph import ExecutionTaskNode
-
-            express_task = ExecutionTaskNode(
-                id=f"express-{int(start_time)}", description=goal, task_type="implementation"
-            )
-            result = handler(express_task)
-            # A handler can signal failure via a structured dict {"success": False, ...}.
-            # Checking bool(result) alone would treat that truthy dict as success, so
-            # we inspect the "success" key explicitly when it is present (fail-closed).
-            if isinstance(result, dict) and "success" in result:
-                express_success = bool(result["success"])
-            else:
-                express_success = bool(result)
-            stages["express_execution"] = {"success": express_success}
-
-            # Track express lane metrics for Dept 4.1
-            self._record_express_metrics(express_success, start_time)
-
-            return {
-                "plan_id": f"express-{int(start_time)}",
-                "goal": goal,
-                "backend": "express",
-                "tier": "express",
-                StatusEnum.COMPLETED.value: 1 if express_success else 0,
-                StatusEnum.FAILED.value: 0 if express_success else 1,
-                "outputs": {"express_task": result},
-                "final_output": result,
-                "stages": stages,
-                "total_time_ms": int((time.time() - start_time) * 1000),
-            }
+            result = self._run_express_handler(goal, start_time, handler)
+            return self._successful_express_result(goal, context, stages, start_time, result)
         except Exception as e:  # Broad: task handler is user-supplied; any failure mode is possible
-            logger.warning("[Pipeline] Express execution failed: %s", e)
-            stages["express_execution"] = {"success": False, "error": str(e)}
-            # Track express lane failure
-            self._record_express_metrics(False, start_time)
-            return {
-                "plan_id": f"express-{int(start_time)}",
-                "goal": goal,
-                "backend": "express",
-                "tier": "express",
-                StatusEnum.COMPLETED.value: 0,
-                StatusEnum.FAILED.value: 1,
-                "error": str(e),
-                "stages": stages,
-                "total_time_ms": int((time.time() - start_time) * 1000),
-            }
+            logger.warning("Exception handled by  execute express fallback", exc_info=True)
+            return self._failed_express_result(goal, stages, start_time, e)
         finally:
-            if pipeline_span is not None:
-                try:
-                    from vetinari.observability.otel_genai import get_genai_tracer
-
-                    get_genai_tracer().end_agent_span(pipeline_span, status="ok")
-                except (ImportError, AttributeError):
-                    logger.warning("Failed to close GenAI span", exc_info=True)
-            if corr_ctx is not None:
-                import contextlib as _cl
-
-                with _cl.suppress(Exception):
-                    corr_ctx.__exit__(None, None, None)
+            self._close_express_context(corr_ctx, pipeline_span)
 
     def _record_express_metrics(self, success: bool, start_time: float) -> None:
         """Record express lane metrics for success rate tracking.

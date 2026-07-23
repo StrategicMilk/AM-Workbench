@@ -3,20 +3,42 @@ Test Template: New Skill / Tool
 
 Copy alongside new_skill_template.py and replace:
     MySkill       → YourSkillName
-    my_skill      → your_skill_name
+    sample_skill  → your_skill_name
     my-skill      → your-skill-name
 
-Save to: tests/test_your_skill_name.py
+Save to: tests/test_your_skill_name.py.
+The import path below is illustrative; replace it before executing the
+generated test file.
 """
 
 import unittest
+from importlib import import_module
 from unittest.mock import MagicMock, patch
 
-# TODO: update this import
-from vetinari.skills.my_skill import (
-    MySkill, MySkillInput, MySkillOutput, MySkillCapability,
-)
-from vetinari.skills.my_skill import MySkillTool
+# TODO: update this import before running generated tests.
+MODULE_UNDER_TEST = "vetinari.skills.your_skill_name"
+_TEMPLATE_SKIP: str | None = None
+
+if "your_skill_name" in MODULE_UNDER_TEST:
+    _TEMPLATE_SKIP = "Replace MODULE_UNDER_TEST before executing generated skill tests."
+    MySkill = MySkillInput = MySkillOutput = MySkillCapability = MySkillTool = None
+else:
+    try:
+        _skill_module = import_module(MODULE_UNDER_TEST)
+    except ModuleNotFoundError as exc:
+        _TEMPLATE_SKIP = f"Skill module {MODULE_UNDER_TEST!r} is not importable: {exc}"
+        MySkill = MySkillInput = MySkillOutput = MySkillCapability = MySkillTool = None
+    else:
+        MySkill = _skill_module.MySkill
+        MySkillInput = _skill_module.MySkillInput
+        MySkillOutput = _skill_module.MySkillOutput
+        MySkillCapability = _skill_module.MySkillCapability
+        MySkillTool = _skill_module.MySkillTool
+
+
+def setUpModule():
+    if _TEMPLATE_SKIP:
+        raise unittest.SkipTest(_TEMPLATE_SKIP)
 
 
 class TestMySkillInput(unittest.TestCase):
@@ -95,7 +117,7 @@ class TestMySkillTool(unittest.TestCase):
 
     # TODO: add mock tests for external calls
     # Example:
-    # @patch("vetinari.skills.my_skill.some_external_call")
+    # @patch("vetinari.skills.your_skill_name.some_external_call")
     # def test_external_call_mock(self, mock_call):
     #     mock_call.return_value = "mocked"
     #     result = self.tool.execute(target="x")

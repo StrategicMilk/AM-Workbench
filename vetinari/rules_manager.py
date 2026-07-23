@@ -14,40 +14,124 @@ from __future__ import annotations
 
 import logging
 import threading
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from vetinari.rules_manager_learning import RulesManagerLearningMixin
+from vetinari.security.fail_closed import (
+    SchemaOpenError,
+    UntrustedInputError,
+    assert_closed_schema,
+    sanitize_untrusted_text,
+)
+
 logger = logging.getLogger(__name__)
+
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 # Rules file location
 _DEFAULT_RULES_FILE = _PROJECT_ROOT / "vetinari" / "config" / "rules.yaml"
+_RULES_TOP_LEVEL_KEYS = {
+    "global",
+    "projects",
+    "models",
+    "combo",
+    "agents",
+    "proposed",
+    "global_system_prompt",
+}
+
+
+def _sanitize_identifier(value: str, *, label: str) -> str:
+    try:
+        return sanitize_untrusted_text(value, max_length=200)
+    except UntrustedInputError as exc:
+        raise UntrustedInputError(f"{label} is not safe rules-manager input") from exc
+
+
+def _sanitize_rule_text(value: object) -> str:
+    try:
+        return sanitize_untrusted_text(str(value), max_length=4_000)
+    except UntrustedInputError as exc:
+        raise UntrustedInputError("rule text is not safe for prompt injection") from exc
+
+
+def _sanitize_rule_list(values: object) -> list[str]:
+    if values is None:
+        return []
+    if not isinstance(values, list):
+        raise SchemaOpenError("rules entries must be lists of strings")
+    sanitized: list[str] = []
+    for item in values:
+        raw_text = str(item).strip()
+        if not raw_text:
+            continue
+        sanitized.append(_sanitize_rule_text(raw_text).strip())
+    return sanitized
+
+
+def _sanitize_scoped_rules(values: object) -> dict[str, list[str]]:
+    if values is None:
+        return {}
+    if not isinstance(values, dict):
+        raise SchemaOpenError("scoped rules must be a mapping")
+    return {
+        _sanitize_identifier(str(key), label="rules scope"): _sanitize_rule_list(rule_list)
+        for key, rule_list in values.items()
+    }
+
+
+def _sanitize_rules_data(data: dict[str, Any]) -> dict[str, Any]:
+    assert_closed_schema(data, allowed_keys=_RULES_TOP_LEVEL_KEYS)
+    raw_global_prompt = str(data.get("global_system_prompt", "") or "").strip()
+    sanitized: dict[str, Any] = {
+        "global": _sanitize_rule_list(data.get("global", [])),
+        "projects": _sanitize_scoped_rules(data.get("projects", {})),
+        "models": _sanitize_scoped_rules(data.get("models", {})),
+        "combo": _sanitize_scoped_rules(data.get("combo", {})),
+        "agents": _sanitize_scoped_rules(data.get("agents", {})),
+        "proposed": dict(data.get("proposed", {}) or {}),
+        "global_system_prompt": _sanitize_rule_text(raw_global_prompt) if raw_global_prompt else "",
+    }
+    return sanitized
 
 
 def _load_yaml_safe(path: Path) -> dict[str, Any]:
-    """Load a YAML file safely, returning empty dict on error."""
+    """Load a YAML file safely, failing closed on unreadable or open schema."""
+    if not path.exists():
+        return {}
     try:
         with Path(path).open(encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+            data = yaml.safe_load(f) or {}
     except Exception as e:
-        logger.warning("Could not load %s: %s", path, e)
-        return {}
+        logger.error("Could not load rules from %s: %s", path, e)
+        raise SchemaOpenError(f"rules file could not be loaded: {path}") from e
+    if not isinstance(data, dict):
+        raise SchemaOpenError(f"rules file {path} must contain a mapping")
+    return _sanitize_rules_data(data)
 
 
 def _save_yaml(path: Path, data: dict[str, Any]) -> None:
     """Save data to a YAML file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{threading.get_ident()}.tmp")
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with Path(path).open("w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+        with tmp_path.open("w", encoding="utf-8") as f:
+            yaml.safe_dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        tmp_path.replace(path)
     except Exception as e:
         logger.error("Failed to save rules to %s: %s", path, e)
+        with suppress(FileNotFoundError):
+            tmp_path.unlink()
+        raise
 
 
-class RulesManager:
+class RulesManager(RulesManagerLearningMixin):
     """Manages the hierarchical rules configuration for Vetinari.
 
     Scope hierarchy (later scopes override earlier):
@@ -100,7 +184,7 @@ class RulesManager:
     def set_global_rules(self, rules: list[str]) -> None:
         """Replace the global rules list."""
         with self._lock:
-            self._data["global"] = [r.strip() for r in rules if r.strip()]
+            self._data["global"] = _sanitize_rule_list(rules)
             self._save()
 
     def get_global_system_prompt(self) -> str:
@@ -119,7 +203,7 @@ class RulesManager:
             prompt: The new system prompt; leading/trailing whitespace is stripped before saving.
         """
         with self._lock:
-            self._data["global_system_prompt"] = prompt.strip()
+            self._data["global_system_prompt"] = _sanitize_rule_text(prompt.strip()) if prompt.strip() else ""
             self._save()
 
     # ─── Project rules ───────────────────────────────────────────────────────
@@ -143,7 +227,7 @@ class RulesManager:
         with self._lock:
             if "projects" not in self._data:
                 self._data["projects"] = {}
-            self._data["projects"][project_id] = [r.strip() for r in rules if r.strip()]
+            self._data["projects"][_sanitize_identifier(project_id, label="project_id")] = _sanitize_rule_list(rules)
             self._save()
 
     # ─── Model rules ─────────────────────────────────────────────────────────
@@ -167,7 +251,7 @@ class RulesManager:
         with self._lock:
             if "models" not in self._data:
                 self._data["models"] = {}
-            self._data["models"][model_id] = [r.strip() for r in rules if r.strip()]
+            self._data["models"][_sanitize_identifier(model_id, label="model_id")] = _sanitize_rule_list(rules)
             self._save()
 
     # ─── Combined rules ──────────────────────────────────────────────────────
@@ -270,7 +354,7 @@ class RulesManager:
         """
         with self._lock:
             agents = self._data.get("agents", {})
-            return list(agents.get(agent_type, []))
+            return list(agents.get(_sanitize_identifier(agent_type, label="agent_type"), []))
 
     def get_rules_for_context(
         self,
@@ -310,11 +394,11 @@ class RulesManager:
 
         # 3. Project rules
         if project_name:
-            _add(self.get_project_rules(project_name))
+            _add(self.get_project_rules(_sanitize_identifier(project_name, label="project_name")))
 
         # 4. Model rules
         if model_name:
-            _add(self.get_model_rules(model_name))
+            _add(self.get_model_rules(_sanitize_identifier(model_name, label="model_name")))
 
         # 5. Project+model combo
         if project_name and model_name:
@@ -347,95 +431,6 @@ class RulesManager:
         return "## Active Rules\n\n" + "\n".join(lines)
 
     # ─── Rule learning from Quality feedback ────────────────────────────────
-
-    def propose_rule_from_feedback(
-        self,
-        agent_type: str,
-        mode: str,
-        violation_description: str,
-        model_name: str | None = None,
-    ) -> bool:
-        """Propose a new rule based on Quality rejection feedback.
-
-        When Quality rejects output for a pattern not covered by existing
-        rules, this method creates a proposed rule. After 3 consistent
-        observations (tracked via ``_proposed_observations``), the rule is
-        auto-accepted into the appropriate scope.
-
-        Args:
-            agent_type: Agent type that produced the violation.
-            mode: Agent mode during the violation.
-            violation_description: Description of the violation pattern.
-            model_name: Optional model name for model-specific rules.
-
-        Returns:
-            True if a new rule was proposed or an existing one promoted.
-        """
-        with self._lock:
-            proposed = self._data.setdefault("proposed", {})
-            rule_key = f"{agent_type}:{mode}:{violation_description}"
-
-            if rule_key in proposed:
-                proposed[rule_key]["observations"] += 1
-                obs_count = proposed[rule_key]["observations"]
-                if obs_count >= 3:
-                    self._accept_proposed_rule(
-                        proposed[rule_key],
-                        agent_type,
-                        model_name,
-                    )
-                    del proposed[rule_key]
-                    logger.info(
-                        "Rule auto-accepted after %d observations: %s",
-                        obs_count,
-                        violation_description,
-                    )
-                    self._save()
-                    return True
-                self._save()
-                return False
-            proposed[rule_key] = {
-                "description": violation_description,
-                "agent_type": agent_type,
-                "mode": mode,
-                "model_name": model_name,
-                "observations": 1,
-                "status": "proposed",
-            }
-            logger.info(
-                "New rule proposed (1/3): %s for %s:%s",
-                violation_description,
-                agent_type,
-                mode,
-            )
-            self._save()
-            return False
-
-    def _accept_proposed_rule(
-        self,
-        proposed: dict[str, Any],
-        agent_type: str,
-        model_name: str | None,
-    ) -> None:
-        """Promote a proposed rule to the appropriate scope.
-
-        Args:
-            proposed: The proposed rule data.
-            agent_type: Agent type for agent-scoped rules.
-            model_name: If set, add as model-specific rule instead.
-        """
-        desc = proposed["description"]
-
-        if model_name:
-            models = self._data.setdefault("models", {})
-            model_rules = models.setdefault(model_name, [])
-            if desc not in model_rules:
-                model_rules.append(desc)
-        else:
-            agents = self._data.setdefault("agents", {})
-            agent_rules = agents.setdefault(agent_type, [])
-            if desc not in agent_rules:
-                agent_rules.append(desc)
 
     # ─── Rule learning from human corrections ────────────────────────────────
 
@@ -523,9 +518,10 @@ class RulesManager:
 
         Extracts the correction type and a generalised rule from the diff
         between ``original_output`` and ``corrected_output``, then feeds that
-        rule through the same three-observation promotion pipeline used by
-        :meth:`propose_rule_from_feedback`. The rule is accepted and persisted
-        after three consistent observations of the same pattern.
+        rule through the same evidence-backed promotion pipeline used by
+        :meth:`propose_rule_from_feedback`. Three consistent observations move
+        the proposal to review-required state unless the proposal also carries
+        an evidence reference and reviewer.
 
         When the outputs are identical no rule can be derived, so the method
         returns ``False`` immediately without creating a proposed entry.
@@ -543,9 +539,9 @@ class RulesManager:
                 model-specific rules instead of agent-scoped rules.
 
         Returns:
-            ``True`` when the third observation of the same pattern causes the
-            rule to be promoted and accepted; ``False`` for the first two
-            observations and for identical outputs.
+            ``True`` when the observation satisfies the evidence-backed
+            promotion gate; ``False`` for observations that remain proposed or
+            review-required, and for identical outputs.
         """
         correction = self.extract_correction(original_output, corrected_output, context)
 

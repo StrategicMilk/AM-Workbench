@@ -29,11 +29,12 @@ Example::
 
 from __future__ import annotations
 
-from vetinari.integrations.issue_tracker import (  # noqa: VET123 - barrel export preserves public import compatibility
+from vetinari.integrations.issue_tracker import (
     CreateIssueRequest,
     Issue,
     IssuePriority,
     IssueStatus,
+    IssueTracker,
     IssueTrackerError,
     create_issue_tracker,
 )
@@ -43,6 +44,7 @@ __all__ = [
     "Issue",
     "IssuePriority",
     "IssueStatus",
+    "IssueTracker",
     "IssueTrackerError",
     "create_issue_tracker",
 ]

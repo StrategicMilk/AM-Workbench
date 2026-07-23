@@ -14,17 +14,18 @@ from __future__ import annotations
 import logging
 import threading
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 DEFAULT_MAX_SIZE = 5  # Maximum live agents in the pool
 DEFAULT_IDLE_RECLAIM_THRESHOLD = 2  # Idle specialists to tolerate before reclaim
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class PooledAgent:
     """Wrapper around an agent instance tracked by the pool.
 
@@ -163,10 +164,11 @@ class AgentPool:
         with self._lock:
             for pa in list(self._idle):
                 if pa.agent_type_value == agent_type_value and not pa.is_claimed:
-                    pa.is_claimed = True
                     self._idle.remove(pa)
-                    logger.debug("[AgentPool] Claimed %s for type %s", pa.agent_id, agent_type_value)
-                    return pa
+                    claimed = replace(pa, is_claimed=True)
+                    self._all[claimed.agent_id] = claimed
+                    logger.debug("[AgentPool] Claimed %s for type %s", claimed.agent_id, agent_type_value)
+                    return claimed
             return None
 
     def release_worker(self, agent_id: str) -> None:
@@ -185,16 +187,20 @@ class AgentPool:
                 logger.warning("[AgentPool] release_worker called with unknown id=%s", agent_id)
                 return
 
-            pa.is_claimed = False
-            pa.tasks_completed += 1
-            pa.idle_since = datetime.now(timezone.utc).isoformat()
+            released = replace(
+                pa,
+                is_claimed=False,
+                tasks_completed=pa.tasks_completed + 1,
+                idle_since=datetime.now(timezone.utc).isoformat(),
+            )
 
             if pa.is_specialist:
                 # Specialists reclaimed immediately — not returned to idle deque
                 del self._all[agent_id]
                 logger.debug("[AgentPool] Specialist %s reclaimed after release", agent_id)
             else:
-                self._idle.append(pa)
+                self._all[agent_id] = released
+                self._idle.append(released)
                 logger.debug(
                     "[AgentPool] Released %s back to idle (pool_idle=%d)",
                     agent_id,
@@ -247,14 +253,21 @@ class AgentPool:
             Number of specialists reclaimed.
         """
         with self._lock:
-            idle_specialists = [pa for pa in self._idle if pa.is_specialist]
+            idle_specialist_count = sum(1 for pa in self._idle if pa.is_specialist)
+            reclaim_target = max(0, idle_specialist_count - self._idle_reclaim_threshold)
+            if reclaim_target == 0:
+                return 0
+
             reclaimed = 0
-            while len(idle_specialists) > self._idle_reclaim_threshold:
-                oldest = idle_specialists.pop(0)
-                self._idle.remove(oldest)
-                del self._all[oldest.agent_id]
-                reclaimed += 1
-                logger.debug("[AgentPool] Reclaimed idle specialist %s", oldest.agent_id)
+            retained_idle: deque[PooledAgent] = deque()
+            for pooled_agent in self._idle:
+                if pooled_agent.is_specialist and reclaimed < reclaim_target:
+                    del self._all[pooled_agent.agent_id]
+                    reclaimed += 1
+                    logger.debug("[AgentPool] Reclaimed idle specialist %s", pooled_agent.agent_id)
+                    continue
+                retained_idle.append(pooled_agent)
+            self._idle = retained_idle
             if reclaimed:
                 logger.info("[AgentPool] Reclaimed %d idle specialists", reclaimed)
             return reclaimed

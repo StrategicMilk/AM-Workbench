@@ -197,7 +197,7 @@ class ArchitectSkillTool(Tool):
                 ToolParameter(
                     name="thinking_mode",
                     type=str,
-                    description="Design depth (low/medium/high/xhigh)",
+                    description="Design depth (none/low/medium/high/xhigh/max)",
                     required=False,
                     default="medium",
                     allowed_values=[m.value for m in ThinkingMode],
@@ -314,7 +314,8 @@ class ArchitectSkillTool(Tool):
             return self._design_api(request)
         return ArchitectResult(success=False, summary=f"Unknown mode: {mode.value}")
 
-    def _apply_thinking_depth(self, request: ArchitectRequest, result: ArchitectResult) -> ArchitectResult:
+    @staticmethod
+    def _apply_thinking_depth(request: ArchitectRequest, result: ArchitectResult) -> ArchitectResult:
         """Make thinking budget materially affect the produced design."""
         if request.thinking_mode not in (ThinkingMode.HIGH, ThinkingMode.XHIGH):
             return result
@@ -358,7 +359,8 @@ class ArchitectSkillTool(Tool):
 
         return result
 
-    def _design_ui(self, request: ArchitectRequest) -> ArchitectResult:
+    @staticmethod
+    def _design_ui(request: ArchitectRequest) -> ArchitectResult:
         """Design UI/UX architecture."""
         logger.info("Designing UI: %s", request.design_request)
         return ArchitectResult(
@@ -384,7 +386,8 @@ class ArchitectSkillTool(Tool):
             ],
         )
 
-    def _design_database(self, request: ArchitectRequest) -> ArchitectResult:
+    @staticmethod
+    def _design_database(request: ArchitectRequest) -> ArchitectResult:
         """Design database schema."""
         logger.info("Designing database: %s", request.design_request)
         return ArchitectResult(
@@ -411,7 +414,8 @@ class ArchitectSkillTool(Tool):
             warnings=["Review migration path for potential data loss on column type changes"],
         )
 
-    def _design_devops(self, request: ArchitectRequest) -> ArchitectResult:
+    @staticmethod
+    def _design_devops(request: ArchitectRequest) -> ArchitectResult:
         """Design DevOps pipeline."""
         logger.info("Designing DevOps: %s", request.design_request)
         return ArchitectResult(
@@ -450,7 +454,8 @@ class ArchitectSkillTool(Tool):
             ],
         )
 
-    def _design_git_workflow(self, request: ArchitectRequest) -> ArchitectResult:
+    @staticmethod
+    def _design_git_workflow(request: ArchitectRequest) -> ArchitectResult:
         """Design git workflow strategy."""
         logger.info("Designing git workflow: %s", request.design_request)
         return ArchitectResult(
@@ -476,7 +481,8 @@ class ArchitectSkillTool(Tool):
             ],
         )
 
-    def _design_system(self, request: ArchitectRequest) -> ArchitectResult:
+    @staticmethod
+    def _design_system(request: ArchitectRequest) -> ArchitectResult:
         """Design overall system architecture."""
         logger.info("Designing system: %s", request.design_request)
         return ArchitectResult(
@@ -509,7 +515,8 @@ class ArchitectSkillTool(Tool):
             ],
         )
 
-    def _design_api(self, request: ArchitectRequest) -> ArchitectResult:
+    @staticmethod
+    def _design_api(request: ArchitectRequest) -> ArchitectResult:
         """Design API architecture."""
         logger.info("Designing API: %s", request.design_request)
         return ArchitectResult(

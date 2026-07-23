@@ -14,11 +14,32 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import os
+import re
 import threading
 from collections import deque
+from pathlib import Path
+from typing import Any
+
+from vetinari.security.fail_closed import sanitize_untrusted_text
 
 logger = logging.getLogger(__name__)
+
+_TAG_SAFE_RE = re.compile(r"[^a-zA-Z0-9_.:-]+")
+_SNAPSHOT_KEYS = frozenset({"schema_version", "counters", "histograms"})
+
+
+def _stable_metric_tag(value: object, *, high_cardinality: bool = False) -> str:
+    """Return a bounded metric tag that avoids raw high-cardinality values."""
+    raw_value = str(value or "unknown")
+    raw = sanitize_untrusted_text(raw_value, max_length=512)
+    if high_cardinality:
+        return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:16]
+    normalized = _TAG_SAFE_RE.sub("_", raw.strip().lower())[:64].strip("_")
+    return normalized or "unknown"
 
 
 class MetricsCollector:
@@ -29,11 +50,15 @@ class MetricsCollector:
     multiple threads simultaneously.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, persistence_path: str | Path | None = None) -> None:
         """Initialise empty counter and histogram stores."""
         self._counters: dict[str, int] = {}
         self._histograms: dict[str, deque[float]] = {}
         self._lock = threading.Lock()
+        self._snapshot_version = 0
+        configured_path = persistence_path or os.environ.get("VETINARI_METRICS_SNAPSHOT_PATH")
+        self._persistence_path = Path(configured_path) if configured_path else None
+        self._restore()
 
     def increment(self, metric_name: str, value: int = 1, **tags: object) -> None:
         """Increment a counter metric.
@@ -44,8 +69,12 @@ class MetricsCollector:
             **tags: Dimension tags used to qualify the metric key.
         """
         key = self._make_key(metric_name, tags)
+        payload: dict[str, Any] | None
+        version: int
         with self._lock:
             self._counters[key] = self._counters.get(key, 0) + value
+            payload, version = self._snapshot_payload_locked()
+        self._persist_snapshot_payload(payload, version)
 
     def record(self, metric_name: str, value: float, **tags: object) -> None:
         """Record a histogram value.
@@ -56,10 +85,14 @@ class MetricsCollector:
             **tags: Dimension tags used to qualify the metric key.
         """
         key = self._make_key(metric_name, tags)
+        payload: dict[str, Any] | None
+        version: int
         with self._lock:
             if key not in self._histograms:
                 self._histograms[key] = deque(maxlen=10000)
             self._histograms[key].append(value)
+            payload, version = self._snapshot_payload_locked()
+        self._persist_snapshot_payload(payload, version)
 
     def get_counter(self, metric_name: str, **tags: object) -> int:
         """Return the current counter value for a metric key.
@@ -120,10 +153,67 @@ class MetricsCollector:
             A deterministic string key such as
             ``"vetinari.task.count{status=completed}"``.
         """
+        safe_metric = sanitize_untrusted_text(metric_name, max_length=200)
         if not tags:
-            return metric_name
-        tag_str = ",".join(f"{k}={v}" for k, v in sorted(tags.items()))
-        return f"{metric_name}{{{tag_str}}}"
+            return safe_metric
+        safe_tags = {sanitize_untrusted_text(str(k), max_length=80): _stable_metric_tag(v) for k, v in tags.items()}
+        tag_str = ",".join(f"{k}={v}" for k, v in sorted(safe_tags.items()))
+        return f"{safe_metric}{{{tag_str}}}"
+
+    def _restore(self) -> None:
+        """Restore counters and histograms from the configured snapshot."""
+        if self._persistence_path is None or not self._persistence_path.exists():
+            return
+        try:
+            data = json.loads(self._persistence_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"metrics snapshot unreadable: {self._persistence_path}") from exc
+        if data.get("schema_version") != 1:
+            raise ValueError(f"metrics snapshot schema unsupported: {self._persistence_path}")
+        unknown_keys = set(data) - _SNAPSHOT_KEYS
+        if unknown_keys:
+            keys = ", ".join(sorted(str(key) for key in unknown_keys))
+            raise ValueError(f"metrics snapshot has unknown fields: {keys}")
+        counters = data.get("counters", {})
+        histograms = data.get("histograms", {})
+        if not isinstance(counters, dict) or not isinstance(histograms, dict):
+            raise ValueError(f"metrics snapshot malformed: {self._persistence_path}")
+        self._counters = {str(key): int(value) for key, value in counters.items()}
+        self._histograms = {
+            str(key): deque((float(item) for item in values), maxlen=10000)
+            for key, values in histograms.items()
+            if isinstance(values, list)
+        }
+
+    def _snapshot_payload_locked(self) -> tuple[dict[str, Any] | None, int]:
+        """Return a persistence payload while the caller holds ``_lock``."""
+        self._snapshot_version += 1
+        version = self._snapshot_version
+        if self._persistence_path is None:
+            return None, version
+        return {
+            "schema_version": 1,
+            "counters": dict(self._counters),
+            "histograms": {key: list(values) for key, values in self._histograms.items()},
+        }, version
+
+    def _persist_snapshot_payload(self, payload: dict[str, Any] | None, version: int) -> None:
+        """Persist a metrics snapshot without holding the hot-path mutation lock."""
+        if self._persistence_path is None or payload is None:
+            return
+        self._persistence_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self._persistence_path.with_suffix(
+            f"{self._persistence_path.suffix}.{version}.{threading.get_ident()}.tmp",
+        )
+        tmp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        with self._lock:
+            if version == self._snapshot_version:
+                tmp_path.replace(self._persistence_path)
+                return
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove stale metrics snapshot temp file: %s", tmp_path, exc_info=True)
 
 
 # Global metrics collector singleton
@@ -170,6 +260,43 @@ def record_model_latency(duration_ms: float) -> None:
         duration_ms: Elapsed inference time in milliseconds.
     """
     _metrics.record("vetinari.model.latency", duration_ms)
+
+
+def record_model_call_failure(
+    *,
+    project_id: str,
+    agent_type: str,
+    model_id: str,
+    failure_class: str,
+    task_id: str = "",
+) -> None:
+    """Record a failed model call with route-identifying dimensions.
+
+    Args:
+        project_id: Workbench or project identifier associated with the call.
+        task_id: Task identifier associated with the failed call.
+        agent_type: Agent type that attempted the call.
+        model_id: Model or provider route that failed.
+        failure_class: Stable failure class such as ``timeout`` or ``rate_limit``.
+    """
+    tags = {
+        "project_id": f"sha256:{_stable_metric_tag(project_id, high_cardinality=True)}",
+        "agent_type": _stable_metric_tag(agent_type),
+        "model_id": _stable_metric_tag(model_id),
+        "failure_class": _stable_metric_tag(failure_class),
+    }
+    if task_id:
+        tags["task_id"] = f"sha256:{_stable_metric_tag(task_id, high_cardinality=True)}"
+    _metrics.increment("vetinari.model.call.failure", **tags)
+
+
+def increment_training_records_skipped(*, reason: str, model: str) -> None:
+    """Record a rejected training record with route-stable labels."""
+    _metrics.increment(
+        "vetinari.training.records.skipped",
+        reason=_stable_metric_tag(reason),
+        model=_stable_metric_tag(model),
+    )
 
 
 def increment_api_request(status_code: int) -> None:

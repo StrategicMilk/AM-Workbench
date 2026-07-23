@@ -11,11 +11,14 @@ Submodules:
 
 from __future__ import annotations
 
+import hashlib
+import importlib.util
 import logging
+import sys
 import threading
-from dataclasses import dataclass  # noqa: VET123 - barrel export preserves public import compatibility
-from pathlib import Path  # noqa: VET123 - barrel export preserves public import compatibility
-from typing import Any  # noqa: VET123 - barrel export preserves public import compatibility
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any
 
 from vetinari.exceptions import ConfigurationError, ModelNotFoundError
 from vetinari.ml.classifiers import (
@@ -29,10 +32,22 @@ from vetinari.ml.classifiers import (
 from vetinari.ml.task_classifier import TaskClassifier
 
 logger = logging.getLogger(__name__)
+_TRUSTED_ARTIFACT_ROOT = (Path(__file__).resolve().parent / "models").resolve()
 
 
-@dataclass
-class ModelInfo:
+def _module_is_available(module_name: str) -> bool:
+    """Return True when an ML backend dependency is discoverable without importing it."""
+    if module_name in sys.modules:
+        return sys.modules[module_name] is not None
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ModuleNotFoundError, ValueError):
+        logger.warning("Exception handled by  module is available fallback", exc_info=True)
+        return False
+
+
+@dataclass(frozen=True, slots=True)
+class MLModelInfo:
     """Metadata about a loaded ML model.
 
     Args:
@@ -44,6 +59,30 @@ class ModelInfo:
     name: str = ""
     model_type: str = ""
     loaded: bool = False
+
+
+ModelInfo = MLModelInfo
+
+
+@dataclass(frozen=True, slots=True)
+class _EngineEmbeddingModel:
+    """Small ``encode`` adapter over the canonical AM Engine client."""
+
+    model_id: str
+
+    def encode(self, inputs: Any) -> Any:
+        """Encode input through the supervised AM Engine.
+
+        Returns:
+            One vector for string input, otherwise vectors in input order.
+        """
+        from vetinari.engine.client import EmbeddingsRequest, get_engine_client
+
+        single = isinstance(inputs, str)
+        items = (inputs,) if single else tuple(str(item) for item in inputs)
+        response = get_engine_client().embeddings(EmbeddingsRequest(items, model_id=self.model_id))
+        vectors = [[float(value) for value in vector] for vector in response.vectors]
+        return vectors[0] if single else vectors
 
 
 class MLModelRegistry:
@@ -59,7 +98,7 @@ class MLModelRegistry:
         self._lock = threading.Lock()
 
     def load(self, name: str, model_path: Path) -> Any:
-        """Load a small ML model (sklearn joblib, ONNX, or sentence-transformers).
+        """Load a small ML model or register an engine-backed embedding model.
 
         Args:
             name: Identifier for the model.
@@ -83,33 +122,30 @@ class MLModelRegistry:
             model_type = "unknown"
 
             if model_path.suffix == ".onnx":
-                try:
-                    import onnxruntime as ort
+                trusted_model_path = _resolve_trusted_model_path(model_path)
+                _verify_file_sha256(trusted_model_path)
+                if not _module_is_available("onnxruntime"):
+                    raise ConfigurationError("onnxruntime not installed — cannot load ONNX model")
+                import onnxruntime as ort
 
-                    model = ort.InferenceSession(str(model_path))
-                    model_type = "onnx"
-                except ImportError as exc:
-                    raise ConfigurationError("onnxruntime not installed — cannot load ONNX model") from exc
+                model = ort.InferenceSession(str(trusted_model_path))
+                model_type = "onnx"
 
             elif model_path.suffix == ".joblib":
-                try:
-                    import joblib
+                if not _module_is_available("joblib"):
+                    raise ConfigurationError("joblib not installed — cannot load sklearn model")
+                import joblib
 
-                    model = joblib.load(model_path)  # noqa: VET302 — Trusted: loaded from vetinari/ml/models/, not user-provided
-                    model_type = "sklearn"
-                except ImportError as exc:
-                    raise ConfigurationError("joblib not installed — cannot load sklearn model") from exc
+                trusted_model_path = _resolve_trusted_model_path(model_path)
+                _verify_file_sha256(trusted_model_path)
+                model = joblib.load(trusted_model_path)
+                model_type = "sklearn"
 
             elif model_path.is_dir():
-                try:
-                    from sentence_transformers import SentenceTransformer
-
-                    model = SentenceTransformer(str(model_path))
-                    model_type = "sentence_transformer"
-                except ImportError as exc:
-                    raise ConfigurationError(
-                        "sentence-transformers not installed — cannot load embedding model"
-                    ) from exc
+                trusted_model_path = _resolve_trusted_model_path(model_path)
+                _verify_directory_manifest(trusted_model_path)
+                model = _EngineEmbeddingModel(name)
+                model_type = "engine_embedding"
             else:
                 raise ConfigurationError(f"Unsupported model format: {model_path.suffix}")
 
@@ -165,7 +201,7 @@ class MLModelRegistry:
             self._models.pop(name, None)
             info = self._model_info.get(name)
             if info:
-                info.loaded = False
+                self._model_info[name] = replace(info, loaded=False)
 
     def get_status(self) -> dict[str, Any]:
         """Return registry status.
@@ -181,6 +217,51 @@ class MLModelRegistry:
                     name: {"type": info.model_type, "loaded": info.loaded} for name, info in self._model_info.items()
                 },
             }
+
+
+def _resolve_trusted_model_path(model_path: Path) -> Path:
+    """Resolve a model path and require it to live under the packaged ML model root."""
+    resolved = model_path.resolve()
+    try:
+        resolved.relative_to(_TRUSTED_ARTIFACT_ROOT)
+    except ValueError as exc:
+        raise ConfigurationError(f"Joblib model path is outside trusted model root: {resolved}") from exc
+    return resolved
+
+
+def _verify_file_sha256(path: Path) -> None:
+    """Verify a model artifact against its adjacent sha256 metadata file."""
+    digest_path = path.with_suffix(path.suffix + ".sha256")
+    if not digest_path.exists():
+        raise ConfigurationError(f"Missing sha256 metadata for model artifact: {path}")
+    expected = digest_path.read_text(encoding="utf-8").split()[0].lower()
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != expected:
+        raise ConfigurationError(f"Model artifact digest mismatch: {path}")
+
+
+def _verify_directory_manifest(path: Path) -> None:
+    """Verify a directory-backed model against a package-local sha256 manifest."""
+    manifest = path / "manifest.sha256"
+    if not manifest.exists():
+        raise ConfigurationError(f"Missing sha256 manifest for model directory: {path}")
+    for raw_line in manifest.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        expected, separator, relative = line.partition("  ")
+        if not expected or not separator or not relative:
+            raise ConfigurationError(f"Malformed sha256 manifest line for {path}: {line!r}")
+        artifact = (path / relative).resolve()
+        try:
+            artifact.relative_to(path)
+        except ValueError as exc:
+            raise ConfigurationError(f"Model manifest references path outside trusted root: {relative}") from exc
+        if not artifact.is_file():
+            raise ConfigurationError(f"Model manifest references missing artifact: {relative}")
+        actual = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        if actual != expected:
+            raise ConfigurationError(f"Model artifact digest mismatch: {artifact}")
 
 
 # Singleton

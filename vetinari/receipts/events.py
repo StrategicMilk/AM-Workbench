@@ -80,4 +80,33 @@ def receipt_appended(
     )
 
 
-__all__ = ["ReceiptAppended", "receipt_appended"]
+def emit_receipt_event(
+    *,
+    project_id: str,
+    receipt_id: str,
+    kind: str,
+    passed: bool,
+    awaiting_user: bool,
+) -> ReceiptAppended:
+    """Compatibility alias for constructing receipt append events.
+
+    Args:
+        project_id: Project the receipt belongs to.
+        receipt_id: Unique identifier of the appended receipt.
+        kind: WorkReceiptKind value as a string.
+        passed: Whether the embedded OutcomeSignal verdict is positive.
+        awaiting_user: Whether this receipt blocks on user input.
+
+    Returns:
+        A populated ReceiptAppended event ready to publish.
+    """
+    return receipt_appended(
+        project_id=project_id,
+        receipt_id=receipt_id,
+        kind=kind,
+        passed=passed,
+        awaiting_user=awaiting_user,
+    )
+
+
+__all__ = ["ReceiptAppended", "emit_receipt_event", "receipt_appended"]

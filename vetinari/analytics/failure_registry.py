@@ -11,10 +11,7 @@ Inference → Orchestration → Quality Gate → Failure Classification → **Fa
 
 from __future__ import annotations
 
-import contextlib
-import json
 import logging
-import os
 import re
 import threading
 import uuid
@@ -24,16 +21,28 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from vetinari.analytics.failure_registry_remediation import FailureRegistryRemediationMixin
+from vetinari.analytics.failure_registry_rules import FailureRegistryRulesMixin
+from vetinari.analytics.failure_registry_storage import FailureRegistryStorageError, FailureRegistryStorageMixin
+from vetinari.analytics.failure_registry_storage import _load_jsonl_dicts as _load_jsonl_dicts
+from vetinari.analytics.failure_registry_storage import _rotating_jsonl_store as _rotating_jsonl_store
+from vetinari.workbench.cost.token_cost_split import load_rotation_settings as load_rotation_settings
+
 logger = logging.getLogger(__name__)
+
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
 # Lazy-initialized to avoid Path.home() at import time
 _REGISTRY_DIR: Path | None = None
+_REGISTRY_USER_DIR: Path | None = None
 _RULES_DIR: Path | None = None
+_REGISTRY_DIR_LOCK = threading.RLock()
 
 # Minimum failures in the same category before auto-generating a prevention rule
 _RULE_GENERATION_THRESHOLD = 3
+_FAILURE_REGISTRY_ROTATION_KEY = "failure_registry_jsonl"
+_PREVENTION_RULES_ROTATION_KEY = "prevention_rules_jsonl"
 
 
 def _get_registry_dir() -> Path:
@@ -42,12 +51,17 @@ def _get_registry_dir() -> Path:
     Uses get_user_dir() so tests can override the location via VETINARI_USER_DIR
     without the directory being pinned at import time.
     """
-    global _REGISTRY_DIR
-    if _REGISTRY_DIR is None:
+    global _REGISTRY_DIR, _REGISTRY_USER_DIR
+    with _REGISTRY_DIR_LOCK:
         from vetinari.constants import get_user_dir
 
-        _REGISTRY_DIR = get_user_dir()
-    return _REGISTRY_DIR
+        current = get_user_dir()
+        if _REGISTRY_DIR is not None and _REGISTRY_USER_DIR is None:
+            return _REGISTRY_DIR
+        if _REGISTRY_DIR is None or current != _REGISTRY_USER_DIR:
+            _REGISTRY_DIR = current
+            _REGISTRY_USER_DIR = current
+        return _REGISTRY_DIR
 
 
 def _registry_path() -> Path:
@@ -186,7 +200,11 @@ class PreventionRule:
 # ── FailureRegistry ─────────────────────────────────────────────────────────
 
 
-class FailureRegistry:
+class FailureRegistry(
+    FailureRegistryRulesMixin,
+    FailureRegistryStorageMixin,
+    FailureRegistryRemediationMixin,
+):
     """Append-only registry of pipeline failures with prevention rule generation.
 
     Thread-safe. Writes each failure as a single JSONL line. Prevention rules
@@ -287,8 +305,13 @@ class FailureRegistry:
                 updated.append(entry_dict)
 
             if found:
-                self._rewrite_entries(updated)
-                logger.info("Failure %s resolved", failure_id)
+                try:
+                    self._rewrite_entries(updated)
+                    logger.info("Failure %s resolved", failure_id)
+                except FailureRegistryStorageError:
+                    logger.error(
+                        "Failure %s resolution could not be persisted; registry file left unchanged", failure_id
+                    )
 
             return found
 
@@ -307,6 +330,10 @@ class FailureRegistry:
 
         Returns:
             List of matching FailureRegistryEntry instances.
+
+        Raises:
+            ValueError: If a stored registry row cannot be converted into a
+                FailureRegistryEntry.
         """
         raw_entries = self._load_all_entries()
         results: list[FailureRegistryEntry] = []
@@ -329,11 +356,9 @@ class FailureRegistry:
                         k: v for k, v in entry_dict.items() if k in FailureRegistryEntry.__dataclass_fields__
                     })
                 )
-            except TypeError:
-                logger.warning(
-                    "Skipping malformed failure entry: %s",
-                    entry_dict.get("failure_id", "unknown"),
-                )
+            except TypeError as exc:
+                failure_id = entry_dict.get("failure_id", "unknown")
+                raise ValueError(f"malformed failure registry entry: {failure_id}") from exc
 
         return results
 
@@ -353,362 +378,6 @@ class FailureRegistry:
         with self._rules_cache_lock:
             self._rules_cache = rules
         return list(rules)
-
-    # -- Prevention rule generation --------------------------------------------
-
-    def check_and_generate_prevention_rules(self, category: str) -> PreventionRule | None:
-        """Check if a category has enough failures to generate a prevention rule.
-
-        Groups active failures by category and generates a rule when the count
-        reaches ``_RULE_GENERATION_THRESHOLD``. Skips categories that already
-        have a prevention rule.
-
-        Args:
-            category: The failure category to check.
-
-        Returns:
-            The newly generated PreventionRule, or None if threshold not met.
-        """
-        entries = self.get_failures(category=category)
-        active = [e for e in entries if e.status == FailureStatus.ACTIVE.value]
-
-        if len(active) < _RULE_GENERATION_THRESHOLD:
-            return None
-
-        # Check if we already have a rule for this category
-        existing_rules = self.get_prevention_rules()
-        if any(r.category == category for r in existing_rules):
-            return None
-
-        # Generate rule from failure descriptions
-        rule = self._generate_rule(category, active)
-        if rule:
-            self._save_rule(rule)
-            # Invalidate cache
-            with self._rules_cache_lock:
-                self._rules_cache = None
-            logger.info(
-                "Prevention rule generated — id=%s category=%s from %d failures",
-                rule.rule_id,
-                category,
-                len(active),
-            )
-        return rule
-
-    # -- Internal helpers ------------------------------------------------------
-
-    def _append_entry(self, entry: FailureRegistryEntry) -> None:
-        """Append a single entry as JSONL. Caller must hold self._lock."""
-        path = _registry_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(entry.to_dict(), default=str) + "\n")
-        except OSError as exc:
-            logger.error(
-                "Could not write failure entry %s — entry lost: %s",
-                entry.failure_id,
-                exc,
-            )
-
-    def _load_all_entries(self) -> list[dict[str, Any]]:
-        """Load all entries from the JSONL file as raw dicts."""
-        path = _registry_path()
-        if not path.exists():
-            return []
-
-        entries: list[dict[str, Any]] = []
-        try:
-            with path.open(encoding="utf-8") as f:
-                for line_no, line in enumerate(f, 1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entries.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            "Skipping malformed JSON at line %d in %s",
-                            line_no,
-                            path,
-                        )
-        except OSError as exc:
-            logger.warning(
-                "Could not read failure registry — returning empty: %s",
-                exc,
-            )
-        return entries
-
-    def _rewrite_entries(self, entries: list[dict[str, Any]]) -> None:
-        """Rewrite all entries to the JSONL file. Caller must hold self._lock."""
-        path = _registry_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            with tmp_path.open("w", encoding="utf-8") as f:
-                for entry in entries:
-                    f.write(json.dumps(entry, default=str) + "\n")
-                f.flush()
-                os.fsync(f.fileno())
-            tmp_path.replace(path)
-        except OSError as exc:
-            with contextlib.suppress(OSError):
-                tmp_path.unlink()
-            logger.error("Could not rewrite failure registry — data may be stale: %s", exc)
-
-    def _generate_rule(
-        self,
-        category: str,
-        failures: list[FailureRegistryEntry],
-    ) -> PreventionRule | None:
-        """Generate a prevention rule from a set of related failures.
-
-        Extracts common patterns from failure descriptions. Uses PATTERN type
-        for failures with identifiable regex patterns, SEMANTIC for structural
-        issues, and EXTRACTED for general failure history analysis.
-
-        Args:
-            category: The failure category.
-            failures: List of related failure entries.
-
-        Returns:
-            A PreventionRule, or None if no meaningful rule can be extracted.
-        """
-        descriptions = [f.description for f in failures]
-        failure_ids = [f.failure_id for f in failures]
-
-        # Find common words across descriptions (excluding stop words)
-        _stop_words = frozenset({
-            "the",
-            "a",
-            "an",
-            "is",
-            "was",
-            "were",
-            "are",
-            "be",
-            "been",
-            "to",
-            "of",
-            "in",
-            "for",
-            "on",
-            "with",
-            "at",
-            "by",
-            "from",
-            "and",
-            "or",
-            "not",
-            "no",
-            "but",
-            "this",
-            "that",
-            "it",
-        })
-        word_counts: dict[str, int] = {}
-        for desc in descriptions:
-            words = set(desc.lower().split()) - _stop_words
-            for word in words:
-                word_counts[word] = word_counts.get(word, 0) + 1
-
-        # Words present in all failure descriptions are the pattern
-        common = [w for w, c in word_counts.items() if c >= len(failures)]
-
-        if not common:
-            # Extracted rule: summarize the category
-            rule_type = PreventionRuleType.EXTRACTED.value
-            pattern = f"Repeated {category} failures detected"
-            description = (
-                f"Auto-generated from {len(failures)} failures in category '{category}'. "
-                f"Descriptions: {'; '.join(d[:80] for d in descriptions[:3])}"
-            )
-        elif any(kw in common for kw in ("missing", "lacking", "absent", "without", "no")):
-            # Semantic rule: structural absence
-            rule_type = PreventionRuleType.SEMANTIC.value
-            pattern = " ".join(sorted(common)[:5])
-            description = f"Output must not have: {pattern} (from {len(failures)} failures)"
-        else:
-            # Pattern rule: regex from common words
-            rule_type = PreventionRuleType.PATTERN.value
-            pattern = "|".join(re.escape(w) for w in sorted(common)[:5])
-            description = f"Pattern match for known failure: {pattern} (from {len(failures)} failures)"
-
-        return PreventionRule(
-            rule_id=f"prev_{uuid.uuid4().hex[:12]}",
-            rule_type=rule_type,
-            category=category,
-            pattern=pattern,
-            description=description,
-            created_from_failures=failure_ids,
-            created_at=datetime.now(timezone.utc).isoformat(),
-        )
-
-    def _save_rule(self, rule: PreventionRule) -> None:
-        """Append a prevention rule to the rules JSONL file."""
-        path = _rules_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(rule.to_dict(), default=str) + "\n")
-        except OSError as exc:
-            logger.error(
-                "Could not save prevention rule %s — rule lost: %s",
-                rule.rule_id,
-                exc,
-            )
-
-    def _load_rules_from_disk(self) -> list[PreventionRule]:
-        """Load all prevention rules from the JSONL file."""
-        path = _rules_path()
-        if not path.exists():
-            return []
-
-        rules: list[PreventionRule] = []
-        try:
-            with path.open(encoding="utf-8") as f:
-                for line_no, line in enumerate(f, 1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        data = json.loads(line)
-                        rules.append(
-                            PreventionRule(**{
-                                k: v for k, v in data.items() if k in PreventionRule.__dataclass_fields__
-                            })
-                        )
-                    except (json.JSONDecodeError, TypeError):
-                        logger.warning(
-                            "Skipping malformed prevention rule at line %d in %s",
-                            line_no,
-                            path,
-                        )
-        except OSError as exc:
-            logger.warning(
-                "Could not read prevention rules — returning empty: %s",
-                exc,
-            )
-        return rules
-
-    # -- Remediation outcome tracking (14.1) ------------------------------------
-
-    def log_remediation_outcome(
-        self,
-        failure_mode: str,
-        action_description: str,
-        success: bool,
-    ) -> None:
-        """Log the outcome of a remediation action for trend tracking.
-
-        Appends a record to ``~/.vetinari/remediation-outcomes.jsonl``
-        (separate from the main failure registry) so that success rates
-        per (failure_mode, action) pair can be computed.
-
-        Args:
-            failure_mode: The failure mode that was remediated (e.g. ``"oom"``).
-            action_description: Description of the remediation action taken.
-            success: Whether the remediation resolved the failure.
-        """
-        import uuid
-        from datetime import datetime, timezone
-
-        record = {
-            "outcome_id": f"rem_{uuid.uuid4().hex[:12]}",
-            "failure_mode": failure_mode,
-            "action_description": action_description,
-            "success": success,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "schema_version": 1,
-        }
-
-        path = _get_registry_dir() / "remediation-outcomes.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(record, default=str) + "\n")
-        except OSError as exc:
-            logger.error(
-                "Could not write remediation outcome — record lost: %s",
-                exc,
-            )
-
-        logger.info(
-            "Remediation outcome logged — mode=%s action=%s success=%s",
-            failure_mode,
-            action_description[:80],
-            success,
-        )
-
-    def get_remediation_stats(self) -> dict[tuple[str, str], dict[str, int]]:
-        """Return per-(failure_mode, action) success/failure counts.
-
-        Reads from ``~/.vetinari/remediation-outcomes.jsonl`` and aggregates
-        counts.
-
-        Returns:
-            Dict mapping ``(failure_mode, action_description)`` to
-            ``{"success": int, "failure": int}``.
-        """
-        path = _get_registry_dir() / "remediation-outcomes.jsonl"
-        if not path.exists():
-            return {}
-
-        stats: dict[tuple[str, str], dict[str, int]] = {}
-        try:
-            with path.open(encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        record = json.loads(line)
-                    except json.JSONDecodeError as exc:
-                        logger.warning(
-                            "Skipping malformed remediation outcome record in %s: %s",
-                            path,
-                            exc,
-                        )
-                        continue
-                    key = (record.get("failure_mode", ""), record.get("action_description", ""))
-                    if key not in stats:
-                        stats[key] = {"success": 0, "failure": 0}
-                    if record.get("success"):
-                        stats[key]["success"] += 1
-                    else:
-                        stats[key]["failure"] += 1
-        except OSError as exc:
-            logger.warning(
-                "Could not read remediation outcomes — returning empty stats: %s",
-                exc,
-            )
-        return stats
-
-    def get_remediation_confidence(
-        self,
-        failure_mode: str,
-        action_description: str,
-    ) -> float:
-        """Return confidence score for a (failure_mode, action) pair.
-
-        Confidence is the success rate: successes / total.  Returns 0.0 if
-        no outcomes have been recorded for this pair.
-
-        Args:
-            failure_mode: The failure mode string.
-            action_description: The remediation action description.
-
-        Returns:
-            Float between 0.0 and 1.0.
-        """
-        stats = self.get_remediation_stats()
-        counts = stats.get((failure_mode, action_description))
-        if not counts:
-            return 0.0
-        total = counts["success"] + counts["failure"]
-        if total == 0:
-            return 0.0
-        return counts["success"] / total
 
     def reset(self) -> None:
         """Clear all in-memory state. Intended for test isolation only."""
@@ -747,9 +416,11 @@ def reset_failure_registry() -> None:
 
     Intended for test isolation only.
     """
-    global _registry, _REGISTRY_DIR
+    global _registry, _REGISTRY_DIR, _REGISTRY_USER_DIR
     with _registry_lock:
         if _registry is not None:
             _registry.reset()
         _registry = None
-        _REGISTRY_DIR = None
+        with _REGISTRY_DIR_LOCK:
+            _REGISTRY_DIR = None
+            _REGISTRY_USER_DIR = None

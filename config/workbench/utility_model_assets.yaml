@@ -1,0 +1,39 @@
+schema_version: 1
+datasets:
+  dataset:workbench-routing-decisions@v1:
+    owner: workbench.route-policy
+    status: available
+  dataset:source-quality-labels@v1:
+    owner: workbench.source-health
+    status: available
+  dataset:prompt-injection-cases@v1:
+    owner: gateway.policy
+    status: available
+  dataset:failure-autopsy-labels@v1:
+    owner: workbench.failure-intelligence
+    status: available
+  dataset:plan-quality-reviews@v1:
+    owner: foreman.plan-review
+    status: available
+  dataset:retrieval-judgments@v1:
+    owner: workbench.rag-debugger
+    status: available
+eval_suites:
+  eval-suite:route-classifier@v1:
+    owner: foreman.router
+    status: available
+  eval-suite:source-quality@v1:
+    owner: inspector.evidence-review
+    status: available
+  eval-suite:prompt-injection@v1:
+    owner: inspector.security
+    status: available
+  eval-suite:failure-cause@v1:
+    owner: inspector.run-review
+    status: available
+  eval-suite:plan-quality@v1:
+    owner: inspector.plan-quality
+    status: available
+  eval-suite:retrieval-reranker@v1:
+    owner: workbench.retrieval
+    status: available

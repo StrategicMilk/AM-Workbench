@@ -12,9 +12,43 @@ instantiating ImprovementLog.
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from typing import Any
 
 logger = logging.getLogger(__name__)
+_SUBSCRIBED = False
+_SUBSCRIBED_BUS_ID: int | None = None
+_SUBSCRIBE_LOCK = threading.Lock()
+
+
+def _log_kaizen_event(event: Any) -> None:
+    logger.info("kaizen event observed: %r", event)
+
+
+def _ensure_kaizen_event_subscribers() -> None:
+    global _SUBSCRIBED, _SUBSCRIBED_BUS_ID
+    from vetinari.events import (
+        KaizenImprovementActive,
+        KaizenImprovementConfirmed,
+        KaizenImprovementProposed,
+        KaizenImprovementReverted,
+        KaizenLintFinding,
+        get_event_bus,
+    )
+
+    with _SUBSCRIBE_LOCK:
+        bus = get_event_bus()
+        bus_id = id(bus)
+        if _SUBSCRIBED and bus_id == _SUBSCRIBED_BUS_ID:
+            return
+        bus.subscribe(KaizenImprovementProposed, _log_kaizen_event)
+        bus.subscribe(KaizenImprovementConfirmed, _log_kaizen_event)
+        bus.subscribe(KaizenImprovementActive, _log_kaizen_event)
+        bus.subscribe(KaizenImprovementReverted, _log_kaizen_event)
+        bus.subscribe(KaizenLintFinding, _log_kaizen_event)
+        _SUBSCRIBED = True
+        _SUBSCRIBED_BUS_ID = bus_id
 
 
 def emit_proposed(
@@ -40,6 +74,7 @@ def emit_proposed(
     try:
         from vetinari.events import KaizenImprovementProposed, get_event_bus
 
+        _ensure_kaizen_event_subscribers()
         bus = get_event_bus()
         bus.publish(
             KaizenImprovementProposed(
@@ -83,6 +118,7 @@ def emit_confirmed(
     try:
         from vetinari.events import KaizenImprovementConfirmed, get_event_bus
 
+        _ensure_kaizen_event_subscribers()
         bus = get_event_bus()
         bus.publish(
             KaizenImprovementConfirmed(
@@ -127,6 +163,7 @@ def emit_active(
     try:
         from vetinari.events import KaizenImprovementActive, get_event_bus
 
+        _ensure_kaizen_event_subscribers()
         bus = get_event_bus()
         bus.publish(
             KaizenImprovementActive(
@@ -161,6 +198,7 @@ def emit_reverted(improvement_id: str, metric: str, reason: str) -> None:
     try:
         from vetinari.events import KaizenImprovementReverted, get_event_bus
 
+        _ensure_kaizen_event_subscribers()
         bus = get_event_bus()
         bus.publish(
             KaizenImprovementReverted(
@@ -201,6 +239,7 @@ def emit_lint_finding(
     try:
         from vetinari.events import KaizenLintFinding, get_event_bus
 
+        _ensure_kaizen_event_subscribers()
         bus = get_event_bus()
         bus.publish(
             KaizenLintFinding(

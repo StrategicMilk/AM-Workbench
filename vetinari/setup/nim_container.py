@@ -1,4 +1,4 @@
-"""NVIDIA NIM container setup planning for the first-run wizard."""
+"""DEPRECATED: NIM container tier removed per the 2026-06-09 AM Engine decision."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from vetinari.system.hardware_detect import GpuVendor, HardwareProfile
 
 logger = logging.getLogger(__name__)
+
 
 DEFAULT_NIM_ENDPOINT = os.environ.get("VETINARI_NIM_ENDPOINT", "http://127.0.0.1:8001")
 DEFAULT_NIM_CONTAINER_NAME = "vetinari-nim"
@@ -133,7 +134,7 @@ def _docker_has_nvidia_runtime(*, timeout: float = 5.0) -> bool:
     if not docker:
         return False
     try:
-        result = subprocess.run(  # noqa: S603 - fixed docker binary path from shutil.which.
+        result = subprocess.run(
             [docker, "info", "--format", "{{json .Runtimes}}"],
             capture_output=True,
             text=True,
@@ -262,18 +263,7 @@ def plan_nim_container_setup(
             missing.append(key_env)
 
     can_auto_start = setup_mode == "auto" and not ready and not missing
-    if ready:
-        status = "ready"
-    elif not hardware_eligible:
-        status = "unsupported_hardware"
-    elif missing:
-        status = "missing_prerequisites"
-    elif setup_mode == "manual":
-        status = "manual_required"
-    elif setup_mode == "auto":
-        status = "auto_ready"
-    else:
-        status = "guided_ready"
+    status = _plan_status(ready, hardware_eligible, missing, setup_mode)
 
     start_command = ""
     if hardware_eligible and has_docker and image:
@@ -306,6 +296,21 @@ def plan_nim_container_setup(
     )
 
 
+def _plan_status(ready: bool, hardware_eligible: bool, missing: list[str], setup_mode: str) -> str:
+    """Return NIM setup status from readiness and prerequisites."""
+    if ready:
+        return "ready"
+    if not hardware_eligible:
+        return "unsupported_hardware"
+    if missing:
+        return "missing_prerequisites"
+    if setup_mode == "manual":
+        return "manual_required"
+    if setup_mode == "auto":
+        return "auto_ready"
+    return "guided_ready"
+
+
 def start_nim_container(
     plan: NIMContainerPlan,
     *,
@@ -330,7 +335,7 @@ def start_nim_container(
 
     try:
         if _coerce_env_bool(run_env.get("VETINARI_NIM_AUTO_LOGIN"), default=True) and run_env.get("NGC_API_KEY"):
-            subprocess.run(  # noqa: S603 - explicit auto setup invokes Docker with fixed arguments.
+            subprocess.run(
                 [docker, "login", "nvcr.io", "--username", "$oauthtoken", "--password-stdin"],
                 input=run_env["NGC_API_KEY"],
                 capture_output=True,
@@ -341,7 +346,7 @@ def start_nim_container(
             )
         docker_args = _docker_run_args(plan, run_env)
         docker_args[0] = docker
-        subprocess.run(  # noqa: S603 - explicit auto setup invokes Docker with vetted arguments.
+        subprocess.run(
             docker_args,
             capture_output=True,
             text=True,

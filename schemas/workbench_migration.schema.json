@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_migration.schema.json",
+  "title": "Workbench Migration Plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["proposal_id", "dry_run", "findings", "conflicts", "blocked_reasons", "writes_planned", "generated_at_utc"],
+  "properties": {
+    "proposal_id": {"type": "string", "minLength": 1},
+    "dry_run": {"type": "boolean"},
+    "writes_planned": {"type": "boolean"},
+    "generated_at_utc": {"type": "string", "minLength": 1},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "item_id",
+          "source_id",
+          "label",
+          "kind",
+          "path",
+          "destination_path",
+          "risk",
+          "default_selected",
+          "redacted_preview"
+        ],
+        "properties": {
+          "item_id": {"type": "string", "minLength": 1},
+          "source_id": {"type": "string", "minLength": 1},
+          "label": {"type": "string", "minLength": 1},
+          "kind": {"type": "string"},
+          "path": {"type": "string", "minLength": 1},
+          "destination_path": {"type": "string", "minLength": 1},
+          "risk": {"enum": ["low", "conflict", "risky_tool", "secret", "unavailable", "corrupt"]},
+          "default_selected": {"type": "boolean"},
+          "blocked_reason": {"type": ["string", "null"]},
+          "conflict_key": {"type": ["string", "null"]},
+          "redacted_preview": {"type": "string"}
+        }
+      }
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["conflict_key", "destination_path", "candidate_item_ids", "reason"],
+        "properties": {
+          "conflict_key": {"type": "string", "minLength": 1},
+          "destination_path": {"type": "string", "minLength": 1},
+          "candidate_item_ids": {"type": "array", "items": {"type": "string"}},
+          "reason": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "blocked_reasons": {"type": "array", "items": {"type": "string"}}
+  }
+}

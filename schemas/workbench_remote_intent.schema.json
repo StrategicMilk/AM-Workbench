@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_remote_intent.schema.json",
+  "title": "WorkbenchRemoteIntent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "intent_id",
+    "project_id",
+    "run_id",
+    "mission_id",
+    "kind",
+    "risk_tier",
+    "actor",
+    "device",
+    "service_binding",
+    "access_mode",
+    "created_at_utc",
+    "expires_at_utc",
+    "policy_version",
+    "evidence_refs",
+    "replay_metadata",
+    "parameters",
+    "privacy_governance",
+    "remote_intent_verified"
+  ],
+  "properties": {
+    "intent_id": { "$ref": "#/$defs/nonEmptyString" },
+    "project_id": { "$ref": "#/$defs/nonEmptyString" },
+    "run_id": { "$ref": "#/$defs/nonEmptyString" },
+    "mission_id": { "$ref": "#/$defs/nonEmptyString" },
+    "kind": {
+      "enum": [
+        "inspect_mission",
+        "approve_action",
+        "deny_action",
+        "pause_agent",
+        "resume_agent",
+        "request_summary",
+        "continue_work",
+        "change_priority",
+        "notify_when_blocked"
+      ]
+    },
+    "risk_tier": { "enum": ["observe", "guide", "control", "approval"] },
+    "access_mode": { "enum": ["tailscale_serve", "cloudflare_access", "manual_advanced"] },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actor_id", "subject", "provider", "display_name", "trusted_proxy_id"],
+      "properties": {
+        "actor_id": { "$ref": "#/$defs/nonEmptyString" },
+        "subject": { "$ref": "#/$defs/nonEmptyString" },
+        "provider": { "$ref": "#/$defs/nonEmptyString" },
+        "display_name": { "type": "string" },
+        "trusted_proxy_id": { "type": "string" }
+      }
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device_id", "user_id", "enrolled", "posture_state", "attested_at_utc", "tailnet_node_id"],
+      "properties": {
+        "device_id": { "$ref": "#/$defs/nonEmptyString" },
+        "user_id": { "$ref": "#/$defs/nonEmptyString" },
+        "enrolled": { "const": true },
+        "posture_state": { "enum": ["healthy", "trusted", "compliant"] },
+        "attested_at_utc": { "$ref": "#/$defs/nonEmptyString" },
+        "tailnet_node_id": { "type": "string" }
+      }
+    },
+    "service_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "service_id",
+        "access_mode",
+        "origin",
+        "host",
+        "port",
+        "localhost_only",
+        "trusted_proxy",
+        "public_hostname",
+        "cloudflare_access_policy_ref"
+      ],
+      "properties": {
+        "service_id": { "$ref": "#/$defs/nonEmptyString" },
+        "access_mode": { "enum": ["tailscale_serve", "cloudflare_access", "manual_advanced"] },
+        "origin": { "$ref": "#/$defs/nonEmptyString" },
+        "host": { "$ref": "#/$defs/nonEmptyString" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "localhost_only": { "type": "boolean" },
+        "trusted_proxy": { "type": "boolean" },
+        "public_hostname": { "type": "string" },
+        "cloudflare_access_policy_ref": { "type": "string" }
+      }
+    },
+    "created_at_utc": { "$ref": "#/$defs/nonEmptyString" },
+    "expires_at_utc": { "$ref": "#/$defs/nonEmptyString" },
+    "policy_version": { "$ref": "#/$defs/nonEmptyString" },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "replay_metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["nonce", "mission_snapshot_ref", "material_fingerprint", "approval_state_ref"],
+      "properties": {
+        "nonce": { "$ref": "#/$defs/nonEmptyString" },
+        "mission_snapshot_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "material_fingerprint": { "$ref": "#/$defs/nonEmptyString" },
+        "approval_state_ref": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "parameters": { "type": "object" },
+    "privacy_governance": { "$ref": "#/$defs/privacyGovernance" },
+    "remote_intent_verified": { "type": "boolean" }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "privacyGovernance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "privacy_class",
+        "subject_ref",
+        "consent_ref",
+        "retention_ref",
+        "redaction_ref",
+        "erasure_ref"
+      ],
+      "properties": {
+        "privacy_class": {
+          "type": "string",
+          "enum": ["public", "operational", "subject_data", "secret"]
+        },
+        "subject_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "consent_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "retention_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "redaction_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "erasure_ref": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    }
+  }
+}

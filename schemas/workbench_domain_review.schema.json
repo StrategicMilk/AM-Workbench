@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_domain_review.schema.json",
+  "title": "Workbench Domain Expert Review",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "candidate_id",
+    "domain",
+    "output_excerpt",
+    "source_excerpt",
+    "evidence_refs",
+    "provenance_ref",
+    "confidence",
+    "safety_state_ref",
+    "policy_refs",
+    "citation_refs",
+    "risk_hint",
+    "reviewer_authority",
+    "correction_consent"
+  ],
+  "properties": {
+    "candidate_id": { "type": "string", "minLength": 1 },
+    "domain": { "type": "string", "minLength": 1 },
+    "output_excerpt": { "type": "string", "minLength": 1 },
+    "source_excerpt": { "type": "string", "minLength": 1 },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "provenance_ref": { "type": "string", "minLength": 1 },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "safety_state_ref": { "type": "string", "minLength": 1 },
+    "policy_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "citation_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "risk_hint": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "critical"]
+    },
+    "review_dimensions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "source_accuracy",
+          "tone",
+          "policy_compliance",
+          "citation_sufficiency",
+          "risk_rating",
+          "usefulness",
+          "corrected_output"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "reviewer_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewer_id", "role", "domains", "authority_ref"],
+      "properties": {
+        "reviewer_id": { "type": "string", "minLength": 1 },
+        "role": { "type": "string", "minLength": 1 },
+        "domains": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "authority_ref": { "type": "string", "minLength": 1 },
+        "expires_at_utc": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "correction_consent": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "eval_case",
+          "preference_draft",
+          "method_card",
+          "source_tool_card",
+          "diagnosis_label",
+          "training_candidate"
+        ]
+      },
+      "uniqueItems": true
+    }
+  }
+}

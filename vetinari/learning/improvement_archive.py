@@ -18,12 +18,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from vetinari.boundary_guards import require_nonempty
 from vetinari.database import get_connection
 
 logger = logging.getLogger(__name__)
 
+
 # Maximum stepping stones per agent type
 _MAX_STEPPING_STONES = 10
+MINIMUM_SAMPLE_COUNT = 5
 
 
 @dataclass
@@ -187,9 +190,26 @@ class ImprovementArchive:
 
         Args:
             config_id: Config to promote.
+
+        Raises:
+            ValueError: If the config is missing or lacks enough samples for
+                evidence-backed promotion.
         """
+        config_id = require_nonempty(config_id, field_name="config_id")
         with self._lock:
             conn = get_connection()
+            row = conn.execute(
+                "SELECT sample_count FROM config_archive WHERE config_id = ?",
+                (config_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"config {config_id!r} does not exist")
+            sample_count = int(row[0])
+            if sample_count < MINIMUM_SAMPLE_COUNT:
+                raise ValueError(
+                    f"config {config_id!r} has {sample_count} sample(s); "
+                    f"minimum {MINIMUM_SAMPLE_COUNT} required for promotion"
+                )
             conn.execute(
                 "UPDATE config_archive SET status = 'active' WHERE config_id = ?",
                 (config_id,),

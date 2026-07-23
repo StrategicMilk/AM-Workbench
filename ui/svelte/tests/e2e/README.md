@@ -30,20 +30,26 @@ npm run test:e2e
 
 The Playwright config (`playwright.config.js`) starts `vite dev --port 5174`
 as the test web server. The dev server uses `ui/svelte/index.html` directly,
-which is the only self-contained way to serve the SPA without the Litestar
-backend running — the production build emits chunks to `../static/svelte/`
-(no standalone `index.html`; Litestar normally serves the HTML shell).
+which is the only self-contained way to serve the SPA without the native Rust
+kernel API running. The production build emits chunks to `../static/svelte/`;
+the application shell is served by the packaged Workbench host, not by a
+retained Python web app.
 
 Port 5174 (dev default + 1) avoids colliding with a developer's running
 `npm run dev` on 5173.
 
 ## How the tests stay backend-free
 
-Every API call is mocked via `page.route()` — no Litestar server is
-required. The tests install a permissive fallback mock for every `/api/`
+Every API call is mocked via `page.route()`; no Rust kernel server is required.
+The tests install a permissive fallback mock for every `/api/`
 endpoint the Dashboard / Projects view touches, then layer specific
 canned responses for `/api/attention` and `/api/projects/*/receipts` to
 drive the empty / populated states.
+
+`bridge_bypass_regression.spec.ts` is a source-wired regression suite for the
+native Tauri API bridge. It keeps model hub and workbench playground actions on
+`workbenchKernelRequest` / `vetinari_kernel_request` paths and fails if those
+actions drift back to raw same-origin `fetch()` calls.
 
 ## Out of scope
 

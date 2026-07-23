@@ -18,7 +18,9 @@ from vetinari.constants import CACHE_TTL_ONE_WEEK, get_user_dir
 
 logger = logging.getLogger(__name__)
 
-# Capability-to-task-type affinity mapping (research-validated defaults)
+
+# Capability-to-task-type affinity mapping.
+# calibration: internal-heuristic -- no external validation
 # Scores represent expected performance 0.0-1.0 for each task type
 CAPABILITY_TASK_AFFINITY: dict[str, dict[str, float]] = {
     "code": {
@@ -102,7 +104,7 @@ SIZE_SCALING: dict[str, float] = {
 }
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class BenchmarkPrior:
     """Prior parameters for a model+task_type Thompson arm."""
 
@@ -122,8 +124,19 @@ class BenchmarkCache:
     """Cached benchmark/capability data."""
 
     priors: dict[str, BenchmarkPrior] = field(default_factory=dict)
+    benchmark_scores: dict[str, float] = field(default_factory=dict)
     last_updated: float = 0.0
     ttl_seconds: float = CACHE_TTL_ONE_WEEK  # 7 days
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"priors={self.priors!r}, "
+            f"benchmark_scores={self.benchmark_scores!r}, "
+            f"last_updated={self.last_updated!r}, "
+            f"ttl_seconds={self.ttl_seconds!r}"
+            ")"
+        )
 
 
 class BenchmarkSeeder:
@@ -131,6 +144,7 @@ class BenchmarkSeeder:
 
     def __init__(self):
         self._cache = BenchmarkCache()
+        self._lock = threading.Lock()
         self._load_cache()
 
     def get_prior(self, model_id: str, task_type: str) -> tuple[float, float]:
@@ -145,16 +159,18 @@ class BenchmarkSeeder:
         """
         key = f"{model_id}:{task_type}"
 
-        # Check cache first
-        if key in self._cache.priors:
-            p = self._cache.priors[key]
-            return p.alpha, p.beta
+        with self._lock:
+            # Check cache first
+            if key in self._cache.priors:
+                p = self._cache.priors[key]
+                return p.alpha, p.beta
 
-        # Compute from capabilities
-        prior = self._compute_capability_prior(model_id, task_type)
-        self._cache.priors[key] = prior
-        self._save_cache()
-        return prior.alpha, prior.beta
+            # Compute from capabilities and persist while the cache mutation is
+            # still guarded so concurrent callers cannot double-compute.
+            prior = self._compute_capability_prior(model_id, task_type)
+            self._cache.priors[key] = prior
+            self._save_cache()
+            return prior.alpha, prior.beta
 
     def seed_model(self, model_id: str, model_metadata: dict[str, Any] | None = None) -> dict[str, tuple[float, float]]:
         """Seed all task-type priors for a model.
@@ -181,8 +197,37 @@ class BenchmarkSeeder:
             priors[tt] = self.get_prior(model_id, tt)
         return priors
 
+    def record_measured_benchmark(self, model_id: str, task_type: str, score: float) -> BenchmarkPrior:
+        """Record a measured benchmark score and rebuild the cold-start prior.
+
+        Args:
+            model_id: Model identifier used for routing or lookup.
+            task_type: Task type value consumed by record_measured_benchmark().
+            score: Score value evaluated by the operation.
+
+        Returns:
+            Value produced for the caller.
+
+        Raises:
+            ValueError: Propagated when validation, persistence, or execution fails.
+        """
+        if not 0.0 <= score <= 1.0:
+            raise ValueError("score must be between 0.0 and 1.0")
+        key = f"{model_id}:{task_type}"
+        with self._lock:
+            self._cache.benchmark_scores[key] = float(score)
+            prior = self._prior_from_score(model_id, task_type, score, source="benchmark", confidence=0.9)
+            self._cache.priors[key] = prior
+            self._save_cache()
+            return prior
+
     def _compute_capability_prior(self, model_id: str, task_type: str) -> BenchmarkPrior:
-        """Compute prior from model name patterns and capability affinities."""
+        """Compute prior from measured benchmark scores before name hints."""
+        key = f"{model_id}:{task_type}"
+        measured_score = self._cache.benchmark_scores.get(key)
+        if measured_score is not None:
+            return self._prior_from_score(model_id, task_type, measured_score, source="benchmark", confidence=0.9)
+
         model_lower = model_id.lower()
         task_lower = task_type.lower()
 
@@ -210,20 +255,38 @@ class BenchmarkSeeder:
         # Step 4: Convert to Beta distribution parameters
         # Higher affinity → higher alpha, lower beta
         # Use moderate prior strength (equivalent to ~10 observations)
-        prior_strength = 10
-        alpha = scaled_affinity * prior_strength + 1
-        beta = (1 - scaled_affinity) * prior_strength + 1
+        return self._prior_from_score(
+            model_id,
+            task_type,
+            scaled_affinity,
+            source="capability_name_fallback",
+            confidence=0.6 if detected_caps != ["chat"] else 0.3,
+        )
 
+    @staticmethod
+    def _prior_from_score(
+        model_id: str,
+        task_type: str,
+        score: float,
+        *,
+        source: str,
+        confidence: float,
+    ) -> BenchmarkPrior:
+        """Convert a measured or fallback score into Beta prior parameters."""
+        prior_strength = 10
+        alpha = score * prior_strength + 1
+        beta = (1 - score) * prior_strength + 1
         return BenchmarkPrior(
             model_id=model_id,
             task_type=task_type,
             alpha=round(alpha, 2),
             beta=round(beta, 2),
-            source="capability",
-            confidence=0.6 if detected_caps != ["chat"] else 0.3,
+            source=source,
+            confidence=confidence,
         )
 
-    def _estimate_size_scale(self, model_lower: str) -> float:
+    @staticmethod
+    def _estimate_size_scale(model_lower: str) -> float:
         """Estimate quality scaling from model name size hints."""
         # Try to extract parameter count from model name
         size_match = re.search(r"(\d+\.?\d*)[bB]", model_lower)
@@ -248,6 +311,9 @@ class BenchmarkSeeder:
                 with cache_file.open(encoding="utf-8") as f:
                     data = json.load(f)
                 self._cache.last_updated = data.get("last_updated", 0.0)
+                self._cache.benchmark_scores = {
+                    str(key): float(value) for key, value in data.get("benchmark_scores", {}).items()
+                }
                 for key, p in data.get("priors", {}).items():
                     self._cache.priors[key] = BenchmarkPrior(**p)
                 logger.debug("[BenchmarkSeeder] Loaded %s cached priors", len(self._cache.priors))
@@ -261,6 +327,7 @@ class BenchmarkSeeder:
             cache_file = state_dir / "benchmark_cache.json"
             data = {
                 "last_updated": time.time(),
+                "benchmark_scores": self._cache.benchmark_scores,
                 "priors": {k: asdict(v) for k, v in self._cache.priors.items()},
             }
             with cache_file.open("w", encoding="utf-8") as f:

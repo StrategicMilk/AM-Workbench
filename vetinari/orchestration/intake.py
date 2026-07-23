@@ -24,6 +24,7 @@ from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
 
+
 # ── Tier enum ──────────────────────────────────────────────────────────
 
 # Compiled patterns for feature extraction
@@ -101,18 +102,25 @@ class PipelinePaused:
 # ── Tier Pipelines ─────────────────────────────────────────────────────
 
 # Maps each tier to the ordered sequence of agent types in its pipeline.
-# Agent types are strings matching AgentType enum values.
+# CUSTOM uses a two-pass worker phase for complex execution, followed by
+# inspector verification and final foreman synthesis.
 TIER_PIPELINES: dict[Tier, list[str]] = {
     Tier.EXPRESS: [AgentType.WORKER.value, AgentType.INSPECTOR.value],
     Tier.STANDARD: [AgentType.FOREMAN.value, AgentType.WORKER.value, AgentType.INSPECTOR.value],
-    Tier.CUSTOM: [AgentType.FOREMAN.value, AgentType.WORKER.value, AgentType.INSPECTOR.value],
+    Tier.CUSTOM: [
+        AgentType.FOREMAN.value,
+        AgentType.WORKER.value,
+        AgentType.WORKER.value,
+        AgentType.INSPECTOR.value,
+        AgentType.FOREMAN.value,
+    ],
 }
 
 
 # ── IntakeFeatures ─────────────────────────────────────────────────────
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class IntakeFeatures:
     """Feature vector extracted from a goal string for classification.
 
@@ -184,7 +192,7 @@ class RequestIntake:
         Returns:
             The classified Tier.
         """
-        context = context or {}  # noqa: VET112 - empty fallback preserves optional request metadata contract
+        context = context or {}
         goal = unicodedata.normalize("NFC", goal)
         features = _features or self._extract_features(goal, context)
 
@@ -249,12 +257,13 @@ class RequestIntake:
         Returns:
             Tuple of (Tier, IntakeFeatures).
         """
-        context = context or {}  # noqa: VET112 - empty fallback preserves optional request metadata contract
+        context = context or {}
         features = self._extract_features(goal, context)
         tier = self.classify(goal, context, _features=features)
         return tier, features
 
-    def _extract_features(self, goal: str, context: dict[str, Any]) -> IntakeFeatures:
+    @staticmethod
+    def _extract_features(goal: str, context: dict[str, Any]) -> IntakeFeatures:
         """Extract classification features from a goal string.
 
         Args:

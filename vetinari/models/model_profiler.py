@@ -17,42 +17,33 @@ Usage::
     from vetinari.models.model_profiler import get_model_profiler
 
     profiler = get_model_profiler()
-    profile = profiler.profile_model(Path(DEFAULT_MODELS_DIR) / "qwen2.5-coder-7b-q8_0.gguf")  # noqa: VET306 — docstring example only, not live code
+    profile = profiler.profile_model(Path(DEFAULT_MODELS_DIR) / "qwen2.5-coder-7b-q8_0.gguf")
     # -> ModelProfile(family="qwen2", n_ctx=16384, n_gpu_layers=-1, ...)
 """
 
 from __future__ import annotations
 
+import importlib
 import logging
 import threading
 from pathlib import Path
 from typing import Any
 
 # Re-export everything callers may import from this module
-from vetinari.models.model_profiler_data import (  # noqa: F401 - import intentionally probes or re-exports API surface
+from vetinari.models.model_profiler_data import (
     _CHAT_FORMAT_MAP,
     _DEFAULT_TEMPERATURES,
-    _FAMILY_PATTERNS,
-    _KV_BYTES_PER_TOKEN,
-    _QUANT_TEMP_OFFSETS,
     _ROPE_FREQ_BASE_OVERRIDES,
-    _RUNTIME_OVERHEAD_GB,
     _TEMPERATURE_MATRIX,
     GGUFMetadata,
     ModelProfile,
-    _config_path,
-    _detect_quantization,
-    _extract_kv_int,
-    _extract_kv_string,
     _load_cached_profile,
-    _metadata_from_filename,
     _save_profile,
     build_model_artifact_identity,
     calculate_gpu_layers,
     calculate_optimal_context,
     detect_family,
     estimate_kv_per_token,
-    get_temperature,
     model_profile_cache_id,
     read_metadata,
 )
@@ -88,13 +79,13 @@ class ModelProfiler:
     def _detect_vram() -> float:
         """Auto-detect available GPU VRAM via pynvml."""
         try:
-            import pynvml  # type: ignore[import-untyped]
+            pynvml: Any = importlib.import_module("pynvml")
 
             pynvml.nvmlInit()
             try:
                 handle = pynvml.nvmlDeviceGetHandleByIndex(0)
                 mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                return mem.free / (1024**3)
+                return float(mem.free) / (1024**3)
             finally:
                 pynvml.nvmlShutdown()
         except Exception:
@@ -107,7 +98,7 @@ class ModelProfiler:
         try:
             import psutil
 
-            return psutil.virtual_memory().available / (1024**3)
+            return float(psutil.virtual_memory().available) / (1024**3)
         except Exception:
             logger.warning("RAM auto-detection failed; defaulting to 32 GB")
             return 32.0
@@ -130,57 +121,71 @@ class ModelProfiler:
         model_id = model_path.stem
         artifact_identity = build_model_artifact_identity(model_path)
         cache_id = model_profile_cache_id(model_path, artifact_identity["artifact_sha256"])
+        cached_profile = self._cached_profile(cache_id, model_id, force_refresh=force_refresh)
+        if cached_profile is not None:
+            return cached_profile
 
-        # Check in-memory cache
-        if not force_refresh:
-            with self._lock:
-                if cache_id in self._cache:
-                    return self._cache[cache_id]
+        profile = self._build_fresh_profile(model_path, model_id, artifact_identity)
+        self._cache_profile(cache_id, profile)
+        logger.info(
+            "Profiled model %s: family=%s, ctx=%d, gpu_layers=%d, batch=%d, chat=%s",
+            model_id,
+            profile.family,
+            profile.n_ctx,
+            profile.n_gpu_layers,
+            profile.n_batch,
+            profile.chat_format,
+        )
+        return profile
 
-            # Check disk cache
-            cached = _load_cached_profile(cache_id)
-            if cached is not None:
-                try:
-                    profile = self._profile_from_dict(cached, model_id)
-                    with self._lock:
-                        self._cache[cache_id] = profile
-                    return profile
-                except Exception:
-                    logger.warning("Disk cache invalid for %s; re-profiling", cache_id)
+    def _cached_profile(self, cache_id: str, model_id: str, *, force_refresh: bool) -> ModelProfile | None:
+        """Return an in-memory or disk cached profile when valid."""
+        if force_refresh:
+            return None
+        with self._lock:
+            if cache_id in self._cache:
+                return self._cache[cache_id]
+        cached = _load_cached_profile(cache_id)
+        if cached is None:
+            return None
+        try:
+            profile = self._profile_from_dict(cached, model_id)
+        except Exception:
+            logger.warning("Disk cache invalid for %s; re-profiling", cache_id)
+            return None
+        with self._lock:
+            self._cache[cache_id] = profile
+        return profile
 
-        # Read GGUF metadata
+    def _build_fresh_profile(
+        self,
+        model_path: Path,
+        model_id: str,
+        artifact_identity: dict[str, Any],
+    ) -> ModelProfile:
+        """Read GGUF metadata and compute a fresh model profile."""
         metadata = read_metadata(model_path)
         family = detect_family(metadata.architecture)
 
-        # Calculate bytes per layer (model_size / num_layers)
         if metadata.block_count > 0 and metadata.file_size_gb > 0:
             bytes_per_layer = (metadata.file_size_gb * (1024**3)) / metadata.block_count
         else:
-            bytes_per_layer = 0.5 * (1024**3)  # Default 0.5 GB/layer fallback
+            bytes_per_layer = 0.5 * (1024**3)
 
-        # KV cache estimation
         kv_per_token = estimate_kv_per_token(
             head_count_kv=metadata.head_count_kv,
             embedding_length=metadata.embedding_length,
             head_count=metadata.head_count,
             kv_quant="q8_0",
         )
-
-        # Trained context limit from metadata or fallback
         trained_limit = metadata.context_length if metadata.context_length > 0 else 8192
-
-        # Calculate optimal context
         n_ctx = calculate_optimal_context(
             free_vram_gb=self._vram_gb,
-            model_vram_gb=metadata.file_size_gb * 1.1,  # 10% overhead for model load
+            model_vram_gb=metadata.file_size_gb * 1.1,
             kv_per_token=kv_per_token,
             trained_limit=trained_limit,
         )
-
-        # KV reserve for GPU layer calculation
         kv_reserve_gb = (n_ctx * kv_per_token) / (1024**3)
-
-        # Calculate GPU layers
         n_gpu_layers = calculate_gpu_layers(
             free_vram_gb=self._vram_gb,
             bytes_per_layer=bytes_per_layer,
@@ -189,20 +194,11 @@ class ModelProfiler:
             expert_count=metadata.expert_count,
             expert_used_count=metadata.expert_used_count,
         )
-
-        # Batch size: larger for bigger models, smaller for tiny context
         n_batch = self._compute_batch_size(n_ctx, metadata.file_size_gb)
-
-        # Chat format from architecture family
         chat_format = _CHAT_FORMAT_MAP.get(family)
-
-        # Rope frequency base for extended context models
         rope_freq_base = _ROPE_FREQ_BASE_OVERRIDES.get(family)
-
-        # Temperature defaults for this family
         base_temps = _TEMPERATURE_MATRIX.get(family, _DEFAULT_TEMPERATURES).copy()
-
-        profile = ModelProfile(
+        return ModelProfile(
             model_id=model_id,
             family=family,
             metadata=metadata,
@@ -221,23 +217,11 @@ class ModelProfiler:
             base_temperatures=base_temps,
         )
 
-        # Cache in memory and persist to disk
+    def _cache_profile(self, cache_id: str, profile: ModelProfile) -> None:
+        """Persist a computed profile to memory and disk caches."""
         with self._lock:
             self._cache[cache_id] = profile
-
         _save_profile(cache_id, profile.to_dict())
-
-        logger.info(
-            "Profiled model %s: family=%s, ctx=%d, gpu_layers=%d, batch=%d, chat=%s",
-            model_id,
-            family,
-            n_ctx,
-            n_gpu_layers,
-            n_batch,
-            chat_format,
-        )
-
-        return profile
 
     @staticmethod
     def _compute_batch_size(n_ctx: int, file_size_gb: float) -> int:

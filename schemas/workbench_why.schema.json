@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_why.schema.json",
+  "title": "Workbench Structured Why Panel Decision Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "decision_id",
+    "kind",
+    "subject",
+    "chosen_option",
+    "alternatives",
+    "confidence",
+    "evidence",
+    "authority",
+    "policy_gates",
+    "preference_effects",
+    "next_actions"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "decision_id": { "$ref": "#/$defs/id" },
+    "kind": { "$ref": "#/$defs/decisionKind" },
+    "subject": { "$ref": "#/$defs/nonEmptyString" },
+    "chosen_option": { "$ref": "#/$defs/nonEmptyString" },
+    "alternatives": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/evidenceRef" }
+    },
+    "authority": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/authorityRef" }
+    },
+    "policy_gates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/policyGate" }
+    },
+    "preference_effects": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/preferenceEffect" }
+    },
+    "next_actions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decisionKind": {
+      "enum": [
+        "model",
+        "source",
+        "tool",
+        "policy",
+        "cost",
+        "route",
+        "automation",
+        "approval",
+        "user_question"
+      ]
+    },
+    "provenance": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          { "$ref": "#/$defs/nonEmptyString" },
+          { "$ref": "#/$defs/nonEmptyString" }
+        ],
+        "items": false,
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "evidenceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_id",
+        "kind",
+        "title",
+        "uri",
+        "captured_at_utc",
+        "provenance",
+        "supports"
+      ],
+      "properties": {
+        "evidence_id": { "$ref": "#/$defs/id" },
+        "kind": { "$ref": "#/$defs/nonEmptyString" },
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "uri": { "$ref": "#/$defs/nonEmptyString" },
+        "captured_at_utc": {
+          "type": "string",
+          "format": "date-time",
+          "minLength": 1
+        },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "supports": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "authorityRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authority_id",
+        "source",
+        "rule",
+        "decision",
+        "provenance"
+      ],
+      "properties": {
+        "authority_id": { "$ref": "#/$defs/id" },
+        "source": { "$ref": "#/$defs/nonEmptyString" },
+        "rule": { "$ref": "#/$defs/nonEmptyString" },
+        "decision": { "$ref": "#/$defs/nonEmptyString" },
+        "provenance": { "$ref": "#/$defs/provenance" }
+      }
+    },
+    "policyGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "state"],
+      "properties": {
+        "name": { "$ref": "#/$defs/id" },
+        "state": { "enum": ["pass", "warn", "block", "unknown"] }
+      }
+    },
+    "preferenceEffect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preference_id", "effect", "applied", "reason"],
+      "properties": {
+        "preference_id": { "$ref": "#/$defs/id" },
+        "effect": { "$ref": "#/$defs/nonEmptyString" },
+        "applied": { "type": "boolean" },
+        "reason": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    }
+  }
+}

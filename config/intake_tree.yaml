@@ -1,0 +1,102 @@
+# Intake decision tree: maps raw prompt tokens to RequestFrame field defaults. Loaded lazily by IntakeParser.
+version: 1
+root:
+  token_matches: []
+  children:
+    - name: code_generation
+      token_matches: ["build", "create", "implement", "add feature", "write code"]
+      leaf: code_generation
+    - name: refactor
+      token_matches: ["refactor", "cleanup", "simplify", "restructure"]
+      leaf: refactor
+    - name: bug_fix
+      token_matches: ["bug", "fix", "error", "failing", "regression"]
+      leaf: bug_fix
+    - name: analysis_research
+      token_matches: ["analyze", "research", "investigate", "compare", "audit"]
+      leaf: analysis_research
+    - name: plan_only
+      token_matches: ["plan", "roadmap", "design", "proposal"]
+      leaf: plan_only
+    - name: data_processing
+      token_matches: ["csv", "spreadsheet", "dataset", "transform data", "parse data"]
+      leaf: data_processing
+    - name: infrastructure
+      token_matches: ["deploy", "infrastructure", "server", "migration", "provision"]
+      leaf: infrastructure
+    - name: documentation
+      token_matches: ["document", "readme", "docs", "guide", "runbook"]
+      leaf: documentation
+    - name: test_writing
+      token_matches: ["test", "pytest", "coverage", "regression test"]
+      leaf: test_writing
+    - name: exploratory_spike
+      token_matches: ["spike", "prototype", "experiment", "proof of concept", "poc"]
+      leaf: exploratory_spike
+leaves:
+  code_generation:
+    preferred_worker_mode: code
+    preferred_model_tier: standard
+    urgency_default: medium
+    scope_hint: "ship code with focused verification"
+    destructive_intent_signals: ["delete", "drop", "remove permanently", "wipe"]
+  refactor:
+    preferred_worker_mode: refactor
+    preferred_model_tier: standard
+    urgency_default: medium
+    scope_hint: "preserve behavior while improving structure"
+    destructive_intent_signals: ["delete", "remove old", "purge"]
+  bug_fix:
+    preferred_worker_mode: code
+    preferred_model_tier: quality
+    urgency_default: high
+    scope_hint: "reproduce the failure before patching"
+    destructive_intent_signals: ["reset", "wipe", "drop"]
+  analysis_research:
+    preferred_worker_mode: analysis
+    preferred_model_tier: quality
+    urgency_default: medium
+    scope_hint: "produce evidence-backed findings"
+    destructive_intent_signals: ["delete", "purge", "wipe"]
+  plan_only:
+    preferred_worker_mode: plan
+    preferred_model_tier: quality
+    urgency_default: low
+    scope_hint: "produce an executable plan only"
+    destructive_intent_signals: ["remove", "retire", "replace"]
+  data_processing:
+    preferred_worker_mode: code
+    preferred_model_tier: standard
+    urgency_default: medium
+    scope_hint: "transform data with schema-preserving checks"
+    destructive_intent_signals: ["overwrite", "truncate", "drop"]
+  infrastructure:
+    preferred_worker_mode: infra
+    preferred_model_tier: standard
+    urgency_default: high
+    scope_hint: "prefer reversible and idempotent operations"
+    destructive_intent_signals: ["destroy", "delete", "deprovision", "wipe", "terminate"]
+  documentation:
+    preferred_worker_mode: docs
+    preferred_model_tier: fast
+    urgency_default: low
+    scope_hint: "update written guidance only"
+    destructive_intent_signals: ["delete", "remove"]
+  test_writing:
+    preferred_worker_mode: test
+    preferred_model_tier: standard
+    urgency_default: medium
+    scope_hint: "add meaningful regression coverage"
+    destructive_intent_signals: ["delete", "remove"]
+  exploratory_spike:
+    preferred_worker_mode: spike
+    preferred_model_tier: fast
+    urgency_default: high
+    scope_hint: "prove feasibility without production hardening"
+    destructive_intent_signals: ["delete", "replace", "wipe"]
+default:
+  preferred_worker_mode: analysis
+  preferred_model_tier: standard
+  urgency_default: medium
+  scope_hint: "clarify intent before broad execution"
+  destructive_intent_signals: ["delete", "destroy", "purge", "wipe", "drop", "truncate"]

@@ -9,6 +9,7 @@ Every improvement is a first-class entity following the PDCA
 from __future__ import annotations
 
 from vetinari.kaizen.aggregator import ImprovementAggregator, KaizenWeeklyReport
+from vetinari.kaizen.anti_goals_extractor import extract_pool, write_pool
 from vetinari.kaizen.defect_trends import (
     DefectHotspot,
     DefectTrend,
@@ -16,7 +17,7 @@ from vetinari.kaizen.defect_trends import (
     DefectTrendReport,
 )
 from vetinari.kaizen.gemba import AutoGembaWalk, GembaFinding, GembaReport
-from vetinari.kaizen.improvement_log import (  # noqa: VET123 - barrel export preserves public import compatibility
+from vetinari.kaizen.improvement_log import (
     ImprovementLog,
     ImprovementRecord,
     ImprovementStatus,
@@ -50,8 +51,10 @@ __all__ = [
     "RegressionDetector",
     "ThresholdApplicator",
     "ThresholdOverride",
+    "extract_pool",
     "scheduled_pdca_check",
     "scheduled_regression_check",
     "scheduled_trend_analysis",
     "wire_kaizen_subsystem",
+    "write_pool",
 ]

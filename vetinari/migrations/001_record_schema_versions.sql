@@ -1,0 +1,4 @@
+-- Add per-row schema version tracking to the packaged SQLite migration schema.
+-- vetinari:add-column-if-missing PlanHistory schema_version INTEGER NOT NULL DEFAULT 1
+-- vetinari:add-column-if-missing SubtaskMemory schema_version INTEGER NOT NULL DEFAULT 1
+-- vetinari:add-column-if-missing ModelPerformance schema_version INTEGER NOT NULL DEFAULT 1

@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # -- Data types ---------------------------------------------------------------
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class CandidateDecision:
     """An implicit decision surfaced from a code diff.
 
@@ -126,10 +126,74 @@ _PATTERNS: list[dict[str, Any]] = [
 _ADR_REF_PATTERN = re.compile(r"ADR-(\d+)")
 
 
+def _normalize_adr_ref(adr: str) -> str:
+    ref = adr.strip()
+    match = _ADR_REF_PATTERN.search(ref)
+    return match.group(1) if match else ref
+
+
+def _normalize_adr_refs(adrs: list[str]) -> set[str]:
+    """Normalize ADR references to numeric IDs for comparison."""
+    return {_normalize_adr_ref(adr) for adr in adrs}
+
+
+def _extract_pattern_override_decisions(
+    diff: str,
+    patterns: list[dict[str, Any]],
+    active_existing_adrs: set[str],
+) -> list[dict[str, Any]]:
+    decisions: list[dict[str, Any]] = []
+    for pattern in patterns:
+        pattern_adr = pattern.get("adr")
+        adr_exists = bool(pattern_adr is not None and _normalize_adr_ref(str(pattern_adr)) in active_existing_adrs)
+        if adr_exists:
+            continue
+        decisions.append({
+            "pattern_id": pattern.get("id", ""),
+            "evidence": diff,
+            "adr_exists": adr_exists,
+        })
+    return decisions
+
+
+def _candidate_for_pattern(
+    *,
+    pattern: dict[str, Any],
+    line: str,
+    lines: list[str],
+    index: int,
+    diff_adr_refs: set[str],
+    active_existing_adrs: set[str],
+) -> CandidateDecision:
+    match = pattern["regex"].search(line)
+    if match is None:
+        raise ValueError("pattern did not match line")
+    match_text = match.group(0).strip().lstrip("+").strip()
+    context_line = _next_added_context_line(lines, index)
+    description = pattern["description_template"].format(
+        match=match_text,
+        context=context_line or match_text,
+    )
+    confidence = pattern["confidence"]
+    if len(match_text) < 10:
+        confidence *= 0.7
+    return CandidateDecision(
+        description=description,
+        decision_type=pattern["decision_type"],
+        evidence=line.strip(),
+        confidence=round(confidence, 2),
+        adr_exists=bool(diff_adr_refs & active_existing_adrs) if active_existing_adrs else False,
+        reasoning=pattern["reasoning"],
+    )
+
+
 def extract_implicit_decisions(
     diff: str,
     context: dict[str, Any] | None = None,
-) -> list[CandidateDecision]:
+    *,
+    patterns: list[dict[str, Any]] | None = None,
+    existing_adrs: list[str] | None = None,
+) -> list[CandidateDecision] | list[dict[str, Any]]:
     """Scan a diff for architectural choices not recorded as ADRs.
 
     Analyzes added lines for patterns indicating significant decisions:
@@ -141,13 +205,21 @@ def extract_implicit_decisions(
         diff: Unified diff text (e.g. from ``git diff``).
         context: Optional context dict with keys like "existing_adrs"
             (list of known ADR numbers) to suppress already-documented decisions.
+        patterns: Optional override list of decision-pattern specs; defaults to the
+            built-in pattern set when omitted.
+        existing_adrs: Optional list of known ADR identifiers used to suppress
+            decisions that already reference an ADR.
 
     Returns:
         List of CandidateDecision instances. Low-confidence extractions
         are included but flagged, not auto-committed.
     """
     context = context if context is not None else {}
-    existing_adrs = set(context.get("existing_adrs", []))
+    active_existing_adrs = _normalize_adr_refs(
+        existing_adrs if existing_adrs is not None else context.get("existing_adrs", [])
+    )
+    if patterns is not None:
+        return _extract_pattern_override_decisions(diff, patterns, active_existing_adrs)
     candidates: list[CandidateDecision] = []
     seen_descriptions: set[str] = set()  # Deduplicate
 
@@ -161,43 +233,18 @@ def extract_implicit_decisions(
             if match is None:
                 continue
 
-            # Build description
-            match_text = match.group(0).strip().lstrip("+").strip()
-            # Get surrounding context (next non-empty added line)
-            context_line = ""
-            for j in range(i + 1, min(i + 5, len(lines))):
-                if lines[j].startswith("+") and lines[j].strip() != "+":
-                    context_line = lines[j].lstrip("+").strip()
-                    break
-
-            description = pattern["description_template"].format(
-                match=match_text,
-                context=context_line or match_text,
+            candidate = _candidate_for_pattern(
+                pattern=pattern,
+                line=line,
+                lines=lines,
+                index=i,
+                diff_adr_refs=diff_adr_refs,
+                active_existing_adrs=active_existing_adrs,
             )
-
-            # Skip duplicates
-            if description in seen_descriptions:
+            if candidate.description in seen_descriptions:
                 continue
-            seen_descriptions.add(description)
-
-            # Check if an ADR already covers this
-            adr_exists = bool(diff_adr_refs & existing_adrs) if existing_adrs else False
-
-            # Reduce confidence for low-significance patterns
-            confidence = pattern["confidence"]
-            if len(match_text) < 10:
-                confidence *= 0.7  # Very short matches are less likely significant
-
-            candidates.append(
-                CandidateDecision(
-                    description=description,
-                    decision_type=pattern["decision_type"],
-                    evidence=line.strip(),
-                    confidence=round(confidence, 2),
-                    adr_exists=adr_exists,
-                    reasoning=pattern["reasoning"],
-                )
-            )
+            seen_descriptions.add(candidate.description)
+            candidates.append(candidate)
 
     # Sort by confidence descending
     candidates.sort(key=lambda c: c.confidence, reverse=True)
@@ -210,6 +257,13 @@ def extract_implicit_decisions(
         )
 
     return candidates
+
+
+def _next_added_context_line(lines: list[str], index: int) -> str:
+    for j in range(index + 1, min(index + 5, len(lines))):
+        if lines[j].startswith("+") and lines[j].strip() != "+":
+            return lines[j].lstrip("+").strip()
+    return ""
 
 
 def log_extracted_decisions(candidates: list[CandidateDecision]) -> list[str]:

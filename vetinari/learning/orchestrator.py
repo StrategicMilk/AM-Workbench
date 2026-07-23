@@ -20,12 +20,14 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from typing import Any
 
+from vetinari.clock import Clock, SystemClock, utc_now_iso
+
 logger = logging.getLogger(__name__)
+
 
 # ── Configuration defaults ───────────────────────────────────────────────────
 
@@ -37,7 +39,7 @@ ROLLBACK_WINDOW_HOURS = 24  # Monitor for degradation within this window after a
 # ── Rollback tracking ───────────────────────────────────────────────────────
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ActionBaseline:
     """Tracks a quality baseline captured before an improvement action.
 
@@ -56,7 +58,7 @@ class ActionBaseline:
     action_id: str
     strategy: str
     baseline_quality: float
-    recorded_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    recorded_at: str = field(default_factory=utc_now_iso)
     rolled_back: bool = False
 
     def __repr__(self) -> str:
@@ -84,8 +86,9 @@ class LearningOrchestrator:
       - Publishes ``HumanApprovalNeeded`` on COLLAPSE_RISK detection
     """
 
-    def __init__(self, cycle_interval_seconds: int = CYCLE_INTERVAL_SECONDS) -> None:
+    def __init__(self, cycle_interval_seconds: int = CYCLE_INTERVAL_SECONDS, clock: Clock | None = None) -> None:
         self._cycle_interval = cycle_interval_seconds
+        self._clock = clock or SystemClock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -236,7 +239,8 @@ class LearningOrchestrator:
 
         return handler()
 
-    def _run_prompt_evolution(self) -> float:
+    @staticmethod
+    def _run_prompt_evolution() -> float:
         """Check shadow test results and pending variant promotions.
 
         Returns:
@@ -253,7 +257,8 @@ class LearningOrchestrator:
             logger.exception("[LearningOrchestrator] Prompt evolution cycle failed — no changes applied")
             return 0.0
 
-    def _run_training(self) -> float:
+    @staticmethod
+    def _run_training() -> float:
         """Check data sufficiency and trigger retraining if recommended.
 
         Queries the :class:`~vetinari.learning.training_manager.TrainingManager`
@@ -298,7 +303,8 @@ class LearningOrchestrator:
             logger.exception("[LearningOrchestrator] Training check failed — no training triggered")
             return 0.0
 
-    def _run_auto_research(self) -> float:
+    @staticmethod
+    def _run_auto_research() -> float:
         """Ask model scout for better alternatives for underperforming task types.
 
         Returns:
@@ -342,7 +348,7 @@ class LearningOrchestrator:
             bus.publish(
                 HumanApprovalNeeded(
                     event_type="HumanApprovalNeeded",
-                    timestamp=time.time(),
+                    timestamp=self._event_timestamp(),
                     task_id="learning-orchestrator-collapse",
                     reason="Quality collapse risk detected — all learning halted until manual review",
                     context={"cycle": self._cycle_count, "phase": "collapse_risk"},
@@ -351,7 +357,8 @@ class LearningOrchestrator:
         except Exception:
             logger.exception("[LearningOrchestrator] Could not publish collapse alert — event bus unavailable")
 
-    def _pick_saturation_strategy(self, optimizer: Any) -> str | None:
+    @staticmethod
+    def _pick_saturation_strategy(optimizer: Any) -> str | None:
         """When saturated, pick a different strategy from ROI rankings.
 
         Instead of repeating the top strategy (which is plateauing), try
@@ -378,7 +385,8 @@ class LearningOrchestrator:
 
     # ── Quality monitoring and rollback ───────────────────────────────────
 
-    def _get_current_quality(self) -> float | None:
+    @staticmethod
+    def _get_current_quality() -> float | None:
         """Fetch the current average quality score across recent evaluations.
 
         Returns:
@@ -411,7 +419,7 @@ class LearningOrchestrator:
         if current_quality is None:
             return
 
-        now = datetime.now(timezone.utc)
+        now = self._clock.utc_now()
         still_active: list[ActionBaseline] = []
 
         for baseline in self._action_baselines:
@@ -443,10 +451,14 @@ class LearningOrchestrator:
                     current_quality,
                     drop_fraction * 100,
                 )
-                baseline.rolled_back = True
-                self._publish_rollback_event(baseline, current_quality)
+                rolled_back = replace(baseline, rolled_back=True)
+                still_active[-1] = rolled_back
+                self._publish_rollback_event(rolled_back, current_quality)
 
         self._action_baselines = still_active
+
+    def _event_timestamp(self) -> float:
+        return self._clock.utc_now().timestamp()
 
     def _publish_rollback_event(self, baseline: ActionBaseline, current_quality: float) -> None:
         """Publish a KaizenImprovementReverted event for a rolled-back action.
@@ -462,7 +474,7 @@ class LearningOrchestrator:
             bus.publish(
                 KaizenImprovementReverted(
                     event_type="KaizenImprovementReverted",
-                    timestamp=time.time(),
+                    timestamp=self._event_timestamp(),
                     improvement_id=baseline.action_id,
                     metric="overall_quality",
                     reason=(

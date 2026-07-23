@@ -15,6 +15,7 @@ from vetinari.types import AgentType, StatusEnum
 
 logger = logging.getLogger(__name__)
 
+
 # Agent state constants
 AGENT_STATE_IDLE = "idle"
 AGENT_STATE_RUNNING = StatusEnum.RUNNING.value

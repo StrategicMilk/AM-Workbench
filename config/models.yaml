@@ -73,14 +73,13 @@ model_routing:
 # ---------------------------------------------------------------------------
 inference_backend:
   # Setup-generated configs use hardware-aware ordering:
-  # NIM first on NVIDIA/CUDA when reachable, vLLM as native-model fallback,
-  # and llama_cpp for explicit preference, weak/no server setups, GGUF-only
-  # models, CPU/RAM+VRAM offload, oversized local models, and recovery.
+  # AM Engine routes local work through llama_cpp by default, with
+  # openai_server as the server-compatible escape hatch.
   selection_policy: "configured"
   # Project default order before user hardware is known.
-  primary: "vllm"
-  fallback: "nim"
-  fallback_order: ["vllm", "nim", "llama_cpp"]
+  primary: "llama_cpp"
+  fallback: "openai_server"
+  fallback_order: ["llama_cpp", "openai_server"]
   llama_cpp_use_cases:
     - "explicit_user_preference"
     - "weak_or_no_server_setup"
@@ -88,39 +87,25 @@ inference_backend:
     - "cpu_ram_vram_offload"
     - "oversized_local_models"
     - "recovery_fallback"
-  # Native Hugging Face-format model root for vLLM/NIM workflows.
+  # Native Hugging Face-format model root for server workflows.
   # Override with VETINARI_NATIVE_MODELS_DIR.
   native_models_dir: "./models/native"
   # Supported model formats per backend
   model_format:
+    am_engine: ["gguf"]
     llama_cpp: ["gguf"]
     llama_server: ["gguf"]
-    vllm: ["safetensors", "gguf", "awq", "gptq"]  # GPU-only — no CPU offload
+    vllm: ["safetensors", "gguf", "awq", "gptq"]  # GPU-only - disabled by default
     nim: ["safetensors", "gguf", "awq", "gptq"]    # GPU-only — no CPU offload
-    litellm: []  # Cloud models — no local format
-
-  # vLLM backend — GPU-only, high-throughput local inference (ADR-0066)
-  # Requires the pyproject-managed [vllm] extra, or a separately pinned vLLM server environment.
-  # vLLM cannot offload model layers to RAM — models must fit in VRAM.
-  # For models larger than VRAM, use llama_cpp with cpu_offload_enabled.
-  vllm:
-    enabled: false
-    endpoint: "http://localhost:8000"  # vLLM OpenAI-compatible API server
-    gpu_only: true  # Cannot offload to RAM — VRAM only
-    semantic_cache_enabled: true
-    cache_namespace: "vetinari"
-    # Optional per-request prefix-cache isolation. Prefer a long random value
-    # in VETINARI_VLLM_CACHE_SALT for shared servers.
-    cache_salt: ""
-    # Used by start-vllm-wsl.ps1 and recorded in cache provenance.
-    prefix_caching_enabled: true
-    prefix_caching_hash_algo: "sha256"
-    # Setup writes a secret-free container_setup plan when a vLLM endpoint is
-    # absent and a Docker/server path is available.
-    container_setup: {}
 
   # NVIDIA NIMs backend — containerized GPU inference (ADR-0066)
   # Requires: NVIDIA NIM container running locally or on network
+  # vLLM backend - optional GPU server path, disabled unless explicitly configured.
+  vllm:
+    enabled: false
+    endpoint: "http://localhost:8000"
+    gpu_only: true
+
   nim:
     enabled: false
     endpoint: "http://localhost:8001"  # NIM inference endpoint
@@ -133,6 +118,13 @@ inference_backend:
     kv_cache_reuse_enabled: false
     kv_cache_host_offload_enabled: null
     supports_cache_salt: false
+
+  # First-party AM Engine runtime — opt-in until the program default-flip pack.
+  am_engine:
+    enabled: false
+    endpoint: null
+    binary_path: null
+    vision_enabled: false
 
 # ---------------------------------------------------------------------------
 # Model tier hierarchy — used by DynamicModelRouter for tier-aware routing
@@ -371,11 +363,8 @@ policy:
   # Provider preference order (first = highest priority)
   preferred_providers:
     - local
-    - ollama
     - claude
     - gemini
-    - huggingface
-    - replicate
   # Fallback: if local inference is unavailable, allow cloud escalation
   allow_cloud_fallback: true
   cloud_fallback_trigger: "local_unavailable"
@@ -385,14 +374,46 @@ policy:
 # ---------------------------------------------------------------------------
 cloud_models:
   # Claude (Anthropic) ───────────────────────────────────────────────────────
-  - model_id: "claude-sonnet-4"
+  - model_id: "claude-opus-4-8"
     provider: "claude"
-    display_name: "Claude Sonnet 4"
+    display_name: "Claude Opus 4.8"
     capabilities:
       - reasoning
       - coding
       - analysis
-    context_window: 200000
+    context_window: 1000000
+    latency_hint: "medium"
+    privacy_level: "public"
+    cost_per_1k_tokens: 0.025
+    status: "available"
+    endpoint: "https://api.anthropic.com/v1/messages"
+    requires_env:
+      - ANTHROPIC_API_KEY  # Also accepts CLAUDE_API_KEY as fallback
+
+  - model_id: "claude-opus-4-7"
+    provider: "claude"
+    display_name: "Claude Opus 4.7"
+    capabilities:
+      - reasoning
+      - coding
+      - analysis
+    context_window: 1000000
+    latency_hint: "medium"
+    privacy_level: "public"
+    cost_per_1k_tokens: 0.025
+    status: "available"
+    endpoint: "https://api.anthropic.com/v1/messages"
+    requires_env:
+      - ANTHROPIC_API_KEY  # Also accepts CLAUDE_API_KEY as fallback
+
+  - model_id: "claude-sonnet-4-6"
+    provider: "claude"
+    display_name: "Claude Sonnet 4.6"
+    capabilities:
+      - reasoning
+      - coding
+      - analysis
+    context_window: 1000000
     latency_hint: "medium"
     privacy_level: "public"
     cost_per_1k_tokens: 0.015
@@ -401,50 +422,67 @@ cloud_models:
     requires_env:
       - ANTHROPIC_API_KEY  # Also accepts CLAUDE_API_KEY as fallback
 
-  - model_id: "claude-haiku-4"
+  - model_id: "claude-haiku-4-5-20251001"
     provider: "claude"
-    display_name: "Claude Haiku 4"
+    display_name: "Claude Haiku 4.5"
     capabilities:
       - fast
       - coding
     context_window: 200000
     latency_hint: "fast"
     privacy_level: "public"
-    cost_per_1k_tokens: 0.0008
+    cost_per_1k_tokens: 0.005
     status: "available"
     endpoint: "https://api.anthropic.com/v1/messages"
     requires_env:
       - ANTHROPIC_API_KEY  # Also accepts CLAUDE_API_KEY as fallback
 
   # Gemini (Google) ──────────────────────────────────────────────────────────
-  - model_id: "gemini-2.5-flash"
+  - model_id: "gemini-3.5-flash"
     provider: "gemini"
-    display_name: "Gemini 2.5 Flash"
+    display_name: "Gemini 3.5 Flash"
     capabilities:
       - reasoning
       - vision
       - coding
-    context_window: 1000000
+    context_window: 1048576
     latency_hint: "fast"
     privacy_level: "public"
-    cost_per_1k_tokens: 0.0
+    cost_per_1k_tokens: 0.009
     status: "available"
     endpoint: "https://generativelanguage.googleapis.com/v1beta/models"
     requires_env:
       - GEMINI_API_KEY
 
-  - model_id: "gemini-2.5-pro"
+  - model_id: "gemini-3.1-flash-lite"
     provider: "gemini"
-    display_name: "Gemini 2.5 Pro"
+    display_name: "Gemini 3.1 Flash-Lite"
     capabilities:
       - reasoning
       - vision
       - coding
-    context_window: 2000000
+    context_window: 1048576
+    latency_hint: "fast"
+    privacy_level: "public"
+    cost_per_1k_tokens: 0.0015
+    status: "available"
+    endpoint: "https://generativelanguage.googleapis.com/v1beta/models"
+    requires_env:
+      - GEMINI_API_KEY
+
+  - model_id: "gemini-3.1-pro-preview"
+    provider: "gemini"
+    display_name: "Gemini 3.1 Pro Preview"
+    capabilities:
+      - reasoning
+      - vision
+      - coding
+    context_window: 1048576
     latency_hint: "medium"
     privacy_level: "public"
-    cost_per_1k_tokens: 0.00125
-    status: "available"
+    cost_per_1k_tokens: 0.012
+    status: "unpriced"
+    pricing_required: true
     endpoint: "https://generativelanguage.googleapis.com/v1beta/models"
     requires_env:
       - GEMINI_API_KEY
@@ -461,7 +499,8 @@ cloud_models:
     latency_hint: "medium"
     privacy_level: "public"
     cost_per_1k_tokens: 0.005
-    status: "available"
+    status: "unpriced"
+    pricing_required: true
     endpoint: "https://api.openai.com/v1/chat/completions"
     requires_env:
       - OPENAI_API_KEY
@@ -476,54 +515,10 @@ cloud_models:
     latency_hint: "fast"
     privacy_level: "public"
     cost_per_1k_tokens: 0.0006
-    status: "available"
+    status: "unpriced"
+    pricing_required: true
     endpoint: "https://api.openai.com/v1/chat/completions"
     requires_env:
       - OPENAI_API_KEY
 
   # HuggingFace Inference ────────────────────────────────────────────────────
-  - model_id: "hf-inference-meta-llama-3.1-70b"
-    provider: "huggingface"
-    display_name: "Llama 3.1 70B (HF)"
-    capabilities:
-      - reasoning
-      - coding
-    context_window: 32768
-    latency_hint: "medium"
-    privacy_level: "public"
-    cost_per_1k_tokens: 0.0
-    status: "available"
-    endpoint: "https://api-inference.huggingface.co/meta-llama/Llama-3.1-70B-Instruct"
-    requires_env:
-      - HF_HUB_TOKEN
-
-  - model_id: "hf-inference-mistral-7b"
-    provider: "huggingface"
-    display_name: "Mistral 7B (HF)"
-    capabilities:
-      - coding
-      - fast
-    context_window: 32768
-    latency_hint: "fast"
-    privacy_level: "public"
-    cost_per_1k_tokens: 0.0
-    status: "available"
-    endpoint: "https://api-inference.huggingface.co/mistralai/Mistral-7B-Instruct-v0.2"
-    requires_env:
-      - HF_HUB_TOKEN
-
-  # Replicate ────────────────────────────────────────────────────────────────
-  - model_id: "replicate-llama-3.1-70b"
-    provider: "replicate"
-    display_name: "Llama 3.1 70B (Replicate)"
-    capabilities:
-      - reasoning
-      - coding
-    context_window: 32768
-    latency_hint: "medium"
-    privacy_level: "public"
-    cost_per_1k_tokens: 0.001
-    status: "available"
-    endpoint: "https://api.replicate.com/v1/models/meta/llama-3.1-70b-instruct"
-    requires_env:
-      - REPLICATE_API_TOKEN

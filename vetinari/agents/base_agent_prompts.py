@@ -17,10 +17,12 @@ import hashlib
 import logging
 from typing import TYPE_CHECKING
 
+logger = logging.getLogger(__name__)
+
+
 if TYPE_CHECKING:
     from vetinari.agents.base_agent import BaseAgent
 
-logger = logging.getLogger(__name__)
 
 # Full prompt framework for large models (>7B parameters).
 # Covers reasoning steps, confidence rating, verification, error handling,
@@ -135,54 +137,13 @@ def build_system_prompt(agent: BaseAgent, mode: str = "") -> str:
         if identity:
             stable_parts.append(identity)
     except Exception:
-        logger.warning("Could not get system prompt for context assembly")
+        logger.warning("Could not get system prompt for context assembly", exc_info=True)
 
-    # Tier 2: Mode-relevant practices
-    try:
-        from vetinari.agents.practices import get_practices_for_mode
-
-        practices = get_practices_for_mode(mode)
-        if practices:
-            stable_parts.append(practices)
-    except Exception:
-        logger.warning("Could not load practices for mode %s", mode)
-
-    # Tier 2b: Mode-relevant standards
-    try:
-        from vetinari.config.standards_loader import get_standards_loader
-
-        loader = get_standards_loader()
-        standards = loader.get_for_context(agent.agent_type.value, mode)
-        if standards:
-            stable_parts.append(standards)
-    except Exception:
-        logger.warning("Could not load standards for mode %s", mode)
-
-    # Tier 2c: Rules
-    try:
-        from vetinari.rules_manager import get_rules_manager
-
-        mgr = get_rules_manager()
-        rules = mgr.format_rules_for_context(agent.agent_type.value, mode)
-        if rules:
-            stable_parts.append(rules)
-    except Exception:
-        logger.warning("Could not load rules for mode %s", mode)
+    _append_mode_context(stable_parts, agent, mode)
 
     # Tier 3: RAG knowledge base context (if available) — dynamic because results
     # vary by query and change as the knowledge base is updated.
-    try:
-        from vetinari.rag import get_knowledge_base
-
-        kb = get_knowledge_base()
-        if kb is not None and mode:
-            kb_results = kb.query(f"{agent.agent_type.value} {mode}", k=3)
-            if kb_results:
-                kb_context = "\n".join(f"- {doc.content[:200]}" for doc in kb_results if doc.content)
-                if kb_context:
-                    dynamic_parts.append(f"## Relevant Knowledge\n\n{kb_context}")
-    except Exception:
-        logger.warning("RAG knowledge base unavailable for context enrichment")
+    _append_rag_context(dynamic_parts, agent, mode)
 
     # Separate stable and dynamic parts for KV cache reuse
     stable = "\n\n".join(stable_parts)
@@ -201,3 +162,47 @@ def build_system_prompt(agent: BaseAgent, mode: str = "") -> str:
     )
 
     return combined
+
+
+def _append_mode_context(stable_parts: list[str], agent: BaseAgent, mode: str) -> None:
+    try:
+        from vetinari.agents.practices import get_practices_for_mode
+
+        practices = get_practices_for_mode(mode)
+        if practices:
+            stable_parts.append(practices)
+    except Exception:
+        logger.warning("Could not load practices for mode %s", mode, exc_info=True)
+
+    try:
+        from vetinari.config.standards_loader import get_standards_loader
+
+        standards = get_standards_loader().get_for_context(agent.agent_type.value, mode)
+        if standards:
+            stable_parts.append(standards)
+    except Exception:
+        logger.warning("Could not load standards for mode %s", mode, exc_info=True)
+
+    try:
+        from vetinari.rules_manager import get_rules_manager
+
+        rules = get_rules_manager().format_rules_for_context(agent.agent_type.value, mode)
+        if rules:
+            stable_parts.append(rules)
+    except Exception:
+        logger.warning("Could not load rules for mode %s", mode, exc_info=True)
+
+
+def _append_rag_context(dynamic_parts: list[str], agent: BaseAgent, mode: str) -> None:
+    try:
+        from vetinari.rag import get_knowledge_base
+
+        kb = get_knowledge_base()
+        if kb is None or not mode:
+            return
+        kb_results = kb.query(f"{agent.agent_type.value} {mode}", k=3)
+        kb_context = "\n".join(f"- {doc.content[:200]}" for doc in kb_results if doc.content)
+        if kb_context:
+            dynamic_parts.append(f"## Relevant Knowledge\n\n{kb_context}")
+    except Exception:
+        logger.warning("RAG knowledge base unavailable for context enrichment", exc_info=True)

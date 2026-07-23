@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_diagnosis.schema.json",
+  "title": "Workbench Diagnosis Graph Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "diagnosis_id",
+    "project_id",
+    "run_id",
+    "cause",
+    "confidence",
+    "degraded",
+    "actionable",
+    "blockers",
+    "evidence_refs",
+    "input_kinds",
+    "candidates",
+    "next_artifact",
+    "created_at_utc"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "diagnosis_id": { "$ref": "#/$defs/nonEmptyString" },
+    "project_id": { "$ref": "#/$defs/projectId" },
+    "run_id": { "$ref": "#/$defs/nonEmptyString" },
+    "cause": { "$ref": "#/$defs/cause" },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "degraded": { "type": "boolean" },
+    "actionable": { "type": "boolean" },
+    "blockers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/blocker" },
+      "uniqueItems": true
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonEmptyString" },
+      "uniqueItems": true
+    },
+    "input_kinds": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/inputKind" },
+      "uniqueItems": true
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/candidate" }
+    },
+    "next_artifact": { "$ref": "#/$defs/nextArtifact" },
+    "created_at_utc": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 1
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "projectId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "inputKind": {
+      "enum": [
+        "trace",
+        "monitoring_signal",
+        "eval_failure",
+        "user_correction",
+        "source_health",
+        "dataset_revision",
+        "policy_block",
+        "runtime_pressure",
+        "proposal"
+      ]
+    },
+    "cause": {
+      "enum": [
+        "retrieval_miss",
+        "stale_source",
+        "context_loss",
+        "tool_failure",
+        "route_mismatch",
+        "policy_conflict",
+        "data_contamination",
+        "runtime_capacity",
+        "user_ambiguity",
+        "eval_failure",
+        "unknown",
+        "insufficient_evidence"
+      ]
+    },
+    "nextArtifactKind": {
+      "enum": [
+        "eval_case",
+        "annotation_task",
+        "prompt_patch",
+        "source_refresh",
+        "method_card",
+        "tool_card",
+        "route_proposal",
+        "policy_proposal",
+        "repro_capsule",
+        "documented_no_op"
+      ]
+    },
+    "blocker": {
+      "enum": [
+        "missing_evidence",
+        "missing_provenance",
+        "missing_confidence",
+        "invalid_confidence",
+        "low_confidence",
+        "missing_authority",
+        "safety_state_unavailable"
+      ]
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cause", "confidence", "reason", "evidence_refs"],
+      "properties": {
+        "cause": { "$ref": "#/$defs/cause" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "reason": { "$ref": "#/$defs/nonEmptyString" },
+        "evidence_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "nextArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "artifact_id", "title", "rationale", "authority_ref"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/nextArtifactKind" },
+        "artifact_id": { "$ref": "#/$defs/nonEmptyString" },
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "rationale": { "$ref": "#/$defs/nonEmptyString" },
+        "authority_ref": { "type": "string" }
+      }
+    }
+  }
+}

@@ -8,8 +8,8 @@ routers that dispatch to the appropriate handler.
 from __future__ import annotations
 
 import logging
-from abc import ABC, abstractmethod  # noqa: VET123 - barrel export preserves public import compatibility
-from typing import (  # noqa: VET123 - barrel export preserves public import compatibility
+from abc import ABC, abstractmethod
+from typing import (
     Any,
     Protocol,
     runtime_checkable,
@@ -18,13 +18,14 @@ from typing import (  # noqa: VET123 - barrel export preserves public import com
 from vetinari.agents.contracts import AgentResult, AgentTask
 from vetinari.exceptions import AgentError
 
+logger = logging.getLogger(__name__)
+
+
 __all__ = [
     "BaseHandler",
     "HandlerProtocol",
     "HandlerRouter",
 ]
-
-logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -37,10 +38,10 @@ class HandlerProtocol(Protocol):
     """
 
     @property
-    def mode_name(self) -> str: ...  # noqa: VET032 - ellipsis marks protocol placeholder behavior under test
+    def mode_name(self) -> str: ...
 
     @property
-    def description(self) -> str: ...  # noqa: VET032 - ellipsis marks protocol placeholder behavior under test
+    def description(self) -> str: ...
 
     def execute(self, task: AgentTask, context: dict[str, Any]) -> AgentResult:
         """Execute the handler's logic for the given task.
@@ -53,7 +54,7 @@ class HandlerProtocol(Protocol):
         Returns:
             The result of the handler's execution.
         """
-        ...  # noqa: VET032 - ellipsis marks protocol placeholder behavior under test
+        ...
 
     def get_system_prompt(self) -> str:
         """Produce the full system prompt injected into the LLM context for this handler's mode.
@@ -61,7 +62,7 @@ class HandlerProtocol(Protocol):
         Returns:
             The system prompt string used to configure the LLM for this mode.
         """
-        ...  # noqa: VET032 - ellipsis marks protocol placeholder behavior under test
+        ...
 
 
 class BaseHandler(ABC):

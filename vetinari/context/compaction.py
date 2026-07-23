@@ -17,10 +17,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 
-from vetinari.context.session_state import SessionState, get_session_state_extractor
+from vetinari.context.compaction_tiers import CompactionTierMixin
+from vetinari.context.session_state import SessionState
 from vetinari.context.window_manager import WindowConversationMessage
 
 logger = logging.getLogger(__name__)
+
 
 # ── Constants ──────────────────────────────────────────────────────────
 
@@ -93,7 +95,7 @@ class CompactionResult:
 # ── ContextCompactor ───────────────────────────────────────────────────
 
 
-class ContextCompactor:
+class ContextCompactor(CompactionTierMixin):
     """Three-tier compaction engine for conversation message lists.
 
     Tries each compaction tier in ascending order of aggressiveness and
@@ -186,15 +188,9 @@ class ContextCompactor:
                 tokens_before,
                 target_tokens,
             )
-            result = CompactionResult(
-                tier=CompactionTier.STATE_EXTRACTION,
-                messages_before=msgs_before,
-                messages_after=msgs_before,
-                tokens_before=tokens_before,
-                tokens_after=tokens_before,
-                tokens_saved=0,
+            return list(messages), self._result(
+                CompactionTier.STATE_EXTRACTION, msgs_before, msgs_before, tokens_before
             )
-            return list(messages), result
 
         # ── Tier 1: state extraction ───────────────────────────────────
         t1_msgs, state = self._tier1_state_extraction(messages, task_id, stage, model_id)
@@ -206,14 +202,13 @@ class ContextCompactor:
                 t1_tokens,
                 tokens_before - t1_tokens,
             )
-            result = CompactionResult(
-                tier=CompactionTier.STATE_EXTRACTION,
-                messages_before=msgs_before,
-                messages_after=len(t1_msgs),
-                tokens_before=tokens_before,
-                tokens_after=t1_tokens,
-                tokens_saved=max(0, tokens_before - t1_tokens),
-                state_extracted=state,
+            result = self._result(
+                CompactionTier.STATE_EXTRACTION,
+                msgs_before,
+                len(t1_msgs),
+                tokens_before,
+                t1_tokens,
+                state,
             )
             return t1_msgs, result
 
@@ -227,17 +222,9 @@ class ContextCompactor:
                 t2_tokens,
                 tokens_before - t2_tokens,
             )
-            result = CompactionResult(
-                tier=CompactionTier.SUMMARY,
-                messages_before=msgs_before,
-                messages_after=len(t2_msgs),
-                tokens_before=tokens_before,
-                tokens_after=t2_tokens,
-                tokens_saved=max(0, tokens_before - t2_tokens),
-            )
+            result = self._result(CompactionTier.SUMMARY, msgs_before, len(t2_msgs), tokens_before, t2_tokens)
             return t2_msgs, result
 
-        # ── Tier 3: head+tail truncation ───────────────────────────────
         t3_msgs = self._tier3_truncate(messages, target_tokens)
         t3_tokens = sum(m.token_count for m in t3_msgs)
         logger.info(
@@ -246,126 +233,30 @@ class ContextCompactor:
             t3_tokens,
             tokens_before - t3_tokens,
         )
-        result = CompactionResult(
-            tier=CompactionTier.TRUNCATION,
-            messages_before=msgs_before,
-            messages_after=len(t3_msgs),
-            tokens_before=tokens_before,
-            tokens_after=t3_tokens,
-            tokens_saved=max(0, tokens_before - t3_tokens),
-        )
+        result = self._result(CompactionTier.TRUNCATION, msgs_before, len(t3_msgs), tokens_before, t3_tokens)
         return t3_msgs, result
 
+    @staticmethod
+    def _result(
+        tier: CompactionTier,
+        messages_before: int,
+        messages_after: int,
+        tokens_before: int,
+        tokens_after: int | None = None,
+        state_extracted: SessionState | None = None,
+    ) -> CompactionResult:
+        after = tokens_before if tokens_after is None else tokens_after
+        return CompactionResult(
+            tier=tier,
+            messages_before=messages_before,
+            messages_after=messages_after,
+            tokens_before=tokens_before,
+            tokens_after=after,
+            tokens_saved=max(0, tokens_before - after),
+            state_extracted=state_extracted,
+        )
+
     # ── Private tier implementations ───────────────────────────────────
-
-    def _tier1_state_extraction(
-        self,
-        messages: list[WindowConversationMessage],
-        task_id: str,
-        stage: str,
-        model_id: str,
-    ) -> tuple[list[WindowConversationMessage], SessionState | None]:
-        """Tier 1: extract structured state from older messages then replace them.
-
-        Concatenates the content of all messages except the most recent
-        ``preserve_recent`` ones, runs ``SessionStateExtractor`` over that
-        text, and replaces the older messages with a single compact state-summary
-        system message followed by a resume instruction.
-
-        Args:
-            messages: Full message list to process.
-            task_id: Forwarded to ``SessionStateExtractor.extract``.
-            stage: Forwarded to ``SessionStateExtractor.extract``.
-            model_id: Forwarded to ``SessionStateExtractor.extract``.
-
-        Returns:
-            Two-tuple of (new_messages, extracted_state). The state is None
-            if there were not enough messages to extract from.
-        """
-        if len(messages) <= self._preserve_recent:
-            # Nothing old enough to replace — return unchanged.
-            return list(messages), None
-
-        split = len(messages) - self._preserve_recent
-        older = messages[:split]
-        recent = messages[split:]
-
-        combined_text = "\n".join(f"[{m.role}]: {m.content}" for m in older)
-        extractor = get_session_state_extractor()
-        state = extractor.extract(
-            text=combined_text,
-            task_id=task_id,
-            stage=stage,
-            model_id=model_id,
-        )
-
-        summary_text = self._format_state_as_summary(state)
-        resume_text = self._build_resume_instruction(state, summary=summary_text)
-
-        state_msg = WindowConversationMessage(
-            role=_ROLE_SYSTEM,
-            content=f"{_STATE_SUMMARY_PREFIX}{summary_text}",
-            is_compressed=True,
-            metadata={"compaction_tier": CompactionTier.STATE_EXTRACTION.value, "original_count": len(older)},
-        )
-        resume_msg = WindowConversationMessage(
-            role=_ROLE_SYSTEM,
-            content=resume_text,
-            is_compressed=True,
-            metadata={"compaction_tier": CompactionTier.STATE_EXTRACTION.value, "is_resume_instruction": True},
-        )
-
-        new_messages = [state_msg, resume_msg, *recent]
-        logger.debug(
-            "_tier1_state_extraction: replaced %d older messages with state+resume, kept %d recent",
-            len(older),
-            len(recent),
-        )
-        return new_messages, state
-
-    def _tier2_summarize(self, messages: list[WindowConversationMessage]) -> list[WindowConversationMessage]:
-        """Tier 2: summarize older messages, preserve the most recent N verbatim.
-
-        Builds a bullet-point plaintext summary of the older portion and
-        inserts it as a single compressed system message at the front of the
-        recent tail.
-
-        Args:
-            messages: Full message list to process.
-
-        Returns:
-            New message list with a summary prepended to the recent tail.
-        """
-        if len(messages) <= self._preserve_recent:
-            return list(messages)
-
-        split = len(messages) - self._preserve_recent
-        older = messages[:split]
-        recent = messages[split:]
-
-        summary_text = self._simple_summarize(older)
-        resume_text = self._build_resume_instruction(state=None, summary=summary_text)
-
-        summary_msg = WindowConversationMessage(
-            role=_ROLE_SYSTEM,
-            content=f"{_HISTORY_SUMMARY_PREFIX}{summary_text}",
-            is_compressed=True,
-            metadata={"compaction_tier": CompactionTier.SUMMARY.value, "original_count": len(older)},
-        )
-        resume_msg = WindowConversationMessage(
-            role=_ROLE_SYSTEM,
-            content=resume_text,
-            is_compressed=True,
-            metadata={"compaction_tier": CompactionTier.SUMMARY.value, "is_resume_instruction": True},
-        )
-
-        logger.debug(
-            "_tier2_summarize: summarized %d messages into %d chars, kept %d recent",
-            len(older),
-            len(summary_text),
-            len(recent),
-        )
-        return [summary_msg, resume_msg, *recent]
 
     def _tier3_truncate(
         self,
@@ -428,7 +319,8 @@ class ContextCompactor:
         )
         return result
 
-    def _simple_summarize(self, messages: list[WindowConversationMessage]) -> str:
+    @staticmethod
+    def _simple_summarize(messages: list[WindowConversationMessage]) -> str:
         """Build a bullet-point summary from message content without an LLM call.
 
         Each message contributes one bullet point. Long message content is
@@ -462,8 +354,8 @@ class ContextCompactor:
             return "(no messages to summarize)"
         return "\n".join(bullets)
 
+    @staticmethod
     def _build_resume_instruction(
-        self,
         state: SessionState | None,
         summary: str = "",
     ) -> str:
@@ -502,7 +394,8 @@ class ContextCompactor:
 
     # ── Internal helpers ───────────────────────────────────────────────
 
-    def _format_state_as_summary(self, state: SessionState) -> str:
+    @staticmethod
+    def _format_state_as_summary(state: SessionState) -> str:
         """Render a SessionState as a concise human-readable summary string.
 
         Used to produce the content of the state-summary system message in

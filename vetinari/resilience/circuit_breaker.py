@@ -26,7 +26,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, TypeVar
 
@@ -41,6 +41,7 @@ from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
 
+
 T = TypeVar("T")
 
 
@@ -52,7 +53,7 @@ class ResilienceCircuitState(Enum):
     HALF_OPEN = "half_open"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CircuitBreakerConfig:
     """Configuration for a single circuit breaker."""
 
@@ -64,6 +65,20 @@ class CircuitBreakerConfig:
     backoff_max: float = 30.0  # seconds
     backoff_factor: float = 2.0
 
+    def __post_init__(self) -> None:
+        if self.failure_threshold < 1:
+            raise ValueError("failure_threshold must be >= 1")
+        if self.recovery_timeout < 0:
+            raise ValueError("recovery_timeout must be >= 0")
+        if self.half_open_max_calls < 1:
+            raise ValueError("half_open_max_calls must be >= 1")
+        if self.backoff_base < 0:
+            raise ValueError("backoff_base must be >= 0")
+        if self.backoff_max < self.backoff_base:
+            raise ValueError("backoff_max must be >= backoff_base")
+        if self.backoff_factor < 1:
+            raise ValueError("backoff_factor must be >= 1")
+
     def __repr__(self) -> str:
         """Show key identifying fields for debugging."""
         return (
@@ -72,7 +87,7 @@ class CircuitBreakerConfig:
         )
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class CircuitBreakerStats:
     """Runtime statistics for a circuit breaker."""
 
@@ -194,11 +209,14 @@ class CircuitBreaker:
     def record_success(self) -> None:
         """Record a successful call."""
         with self._lock:
-            self.stats.total_calls += 1
-            self.stats.total_successes += 1
-            self.stats.consecutive_successes += 1
-            self.stats.consecutive_failures = 0
-            self.stats.last_success_time = time.monotonic()
+            self.stats = replace(
+                self.stats,
+                total_calls=self.stats.total_calls + 1,
+                total_successes=self.stats.total_successes + 1,
+                consecutive_successes=self.stats.consecutive_successes + 1,
+                consecutive_failures=0,
+                last_success_time=time.monotonic(),
+            )
 
             if self._state == ResilienceCircuitState.HALF_OPEN:
                 # Accumulate successful probes — only close when all required probes pass.
@@ -215,11 +233,14 @@ class CircuitBreaker:
     def record_failure(self) -> None:
         """Record a failed call."""
         with self._lock:
-            self.stats.total_calls += 1
-            self.stats.total_failures += 1
-            self.stats.consecutive_failures += 1
-            self.stats.consecutive_successes = 0
-            self.stats.last_failure_time = time.monotonic()
+            self.stats = replace(
+                self.stats,
+                total_calls=self.stats.total_calls + 1,
+                total_failures=self.stats.total_failures + 1,
+                consecutive_failures=self.stats.consecutive_failures + 1,
+                consecutive_successes=0,
+                last_failure_time=time.monotonic(),
+            )
 
             if self._state == ResilienceCircuitState.HALF_OPEN:
                 # Probe failed → re-open
@@ -266,8 +287,9 @@ class CircuitBreaker:
             CircuitBreakerOpen: If the circuit is OPEN and not ready for a probe.
         """
         if not self.allow_request():
-            remaining = self._time_until_half_open()
-            self.stats.total_rejections += 1
+            with self._lock:
+                remaining = self._time_until_half_open()
+                self.stats = replace(self.stats, total_rejections=self.stats.total_rejections + 1)
             raise CircuitBreakerOpen(self.name, remaining)
 
         try:
@@ -282,8 +304,7 @@ class CircuitBreaker:
         """Manually reset the breaker to CLOSED."""
         with self._lock:
             self._transition(ResilienceCircuitState.CLOSED)
-            self.stats.consecutive_failures = 0
-            self.stats.consecutive_successes = 0
+            self.stats = replace(self.stats, consecutive_failures=0, consecutive_successes=0)
             logger.info("Circuit breaker '%s' manually reset → CLOSED", self.name)
 
     def trip(self) -> None:
@@ -313,13 +334,13 @@ class CircuitBreaker:
         """Trip the breaker → OPEN. Must hold lock."""
         self._transition(ResilienceCircuitState.OPEN)
         self._opened_at = time.monotonic()
-        self.stats.trips += 1
+        self.stats = replace(self.stats, trips=self.stats.trips + 1)
 
     def _transition(self, new_state: ResilienceCircuitState) -> None:
         """Transition to a new state. Must hold lock."""
         if self._state != new_state:
             self._state = new_state
-            self.stats.last_state_change = time.monotonic()
+            self.stats = replace(self.stats, last_state_change=time.monotonic())
             if new_state == ResilienceCircuitState.HALF_OPEN:
                 # Reset both probe counters when entering HALF_OPEN so each
                 # recovery window starts with a clean slate.

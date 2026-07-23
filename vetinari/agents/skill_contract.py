@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+from vetinari.boundary_guards import assert_dependency_success
 from vetinari.types import AgentType, SeverityLevel
 from vetinari.utils.serialization import dataclass_to_dict
 
@@ -12,10 +13,31 @@ from vetinari.utils.serialization import dataclass_to_dict
 Severity = SeverityLevel
 
 
+@dataclass(frozen=True, slots=True)
+class SkillContract:
+    """Runtime guard for skill contract self-check dependencies."""
+
+    def self_check(self, *, check_result: str, required: str = "pass") -> bool:
+        """Validate a skill dependency result against the required marker.
+
+        Args:
+            check_result: Dependency result marker to validate.
+            required: Required success marker.
+
+        Returns:
+            ``True`` when the dependency result satisfies the guard.
+        """
+        required_values = {required}
+        if check_result not in required_values:
+            assert_dependency_success(check_result, {check_result})
+        assert_dependency_success(True, dependency_id=check_result)
+        return True
+
+
 class Verdict(Enum):
     """Quality verdict for a reviewed artifact."""
 
-    PASS = "pass"  # noqa: S105 - sentinel value is not a runtime secret
+    PASS = "pass"
     FAIL = "fail"
     NEEDS_REVIEW = "needs_review"
 
@@ -40,7 +62,7 @@ class ArtifactType(Enum):
     REPORT = "report"
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class Finding:
     """Individual quality issue detected during review."""
 
@@ -61,7 +83,7 @@ class Finding:
         return dataclass_to_dict(self)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class Artifact:
     """Build or review artifact produced by an agent."""
 
@@ -93,10 +115,10 @@ class Artifact:
 class SkillOutput:
     """Universal structured output for all Vetinari agents and skills."""
 
-    agent_type: str
-    task_summary: str
-    verdict: Verdict
-    confidence: float
+    agent_type: str = ""
+    task_summary: str = ""
+    verdict: Verdict = Verdict.NEEDS_REVIEW
+    confidence: float = 0.0
     findings: list[Finding] = field(default_factory=list)
     scores: dict[str, float] = field(default_factory=dict)
     overall_score: float = 0.0
@@ -105,6 +127,8 @@ class SkillOutput:
     data_provenance: DataProvenance = DataProvenance.UNKNOWN
     self_check_passed: bool = False
     self_check_issues: list[str] = field(default_factory=list)
+    content: str = ""
+    skill_id: str = ""
 
     def __repr__(self) -> str:
         return f"SkillOutput(agent_type={self.agent_type!r}, verdict={self.verdict!r}, findings={len(self.findings)})"
@@ -128,6 +152,8 @@ class SkillOutput:
             "data_provenance": self.data_provenance.value,
             "self_check_passed": self.self_check_passed,
             "self_check_issues": self.self_check_issues,
+            "content": self.content,
+            "skill_id": self.skill_id,
         }
 
     @classmethod
@@ -174,6 +200,8 @@ class SkillOutput:
             data_provenance=DataProvenance(d.get("data_provenance", "unknown")),
             self_check_passed=d.get("self_check_passed", False),
             self_check_issues=d.get("self_check_issues", []),
+            content=d.get("content", ""),
+            skill_id=d.get("skill_id", ""),
         )
 
 
@@ -240,7 +268,7 @@ def compute_overall_score(scores: dict[str, float], agent_type: str) -> float:
         agent_type: The agent type.
 
     Returns:
-        The computed value.
+        Computed overall score result.
     """
     rubric = SCORING_RUBRICS.get(agent_type, {})
     if not rubric or not scores:
@@ -267,7 +295,10 @@ VAGUE_PATTERNS = [
 
 
 def self_check(output: SkillOutput) -> SkillOutput:
-    """Verify output quality. Mutates and returns the output.
+    """Verify output quality and attach detected contract issues.
+
+    Args:
+        output: Skill output to inspect and mutate.
 
     Returns:
         The SkillOutput result.

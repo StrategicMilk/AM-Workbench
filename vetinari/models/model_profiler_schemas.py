@@ -150,6 +150,12 @@ TEMPERATURE_MATRIX: dict[str, dict[str, float]] = {
 # Quantization offsets: lower-precision quants get slightly higher temperature
 # to compensate for reduced output diversity.
 QUANT_TEMP_OFFSETS: dict[str, float] = {
+    "q2_k": 0.08,
+    "q2_k_s": 0.08,
+    "q2_k_m": 0.07,
+    "q3_k_s": 0.07,
+    "q3_k_m": 0.06,
+    "q3_k_l": 0.05,
     "q4_0": 0.05,
     "q4_1": 0.04,
     "q4_k_s": 0.04,

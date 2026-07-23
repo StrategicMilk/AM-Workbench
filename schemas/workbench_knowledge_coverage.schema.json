@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_knowledge_coverage.schema.json",
+  "title": "AM Workbench knowledge coverage and deprecation report",
+  "description": "Operational coverage, freshness, deprecation, drift, confidence, and evidence-gap signals for trusted Workbench knowledge context.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "coverage_score",
+    "source_freshness",
+    "consolidation_count",
+    "deprecated_entities",
+    "source_hash_drift",
+    "relationship_confidence",
+    "missing_evidence_gaps",
+    "trusted_current_verdict",
+    "provenance_refs",
+    "decisions"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "enum": ["allowed", "degraded", "blocked"]
+    },
+    "coverage_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "source_freshness": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/source_freshness"
+      }
+    },
+    "consolidation_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "deprecated_entities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "source_hash_drift": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "relationship_confidence": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/relationship_confidence"
+      }
+    },
+    "missing_evidence_gaps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/missing_evidence_gap"
+      }
+    },
+    "trusted_current_verdict": {
+      "enum": ["allowed", "caveated", "downranked", "blocked"]
+    },
+    "provenance_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/trusted_context_decision"
+      }
+    }
+  },
+  "$defs": {
+    "source_freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "status", "reason"],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": ["fresh", "stale", "unknown", "unavailable"]
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "relationship_confidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relationship_id", "confidence", "verdict", "reason"],
+      "properties": {
+        "relationship_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "confidence": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "verdict": {
+          "enum": ["allowed", "caveated", "downranked", "blocked"]
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "missing_evidence_gap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record_id", "evidence_ref", "reason"],
+      "properties": {
+        "record_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "trusted_context_decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record_id", "entity_id", "verdict", "reasons", "rank_multiplier", "text"],
+      "properties": {
+        "record_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "entity_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "verdict": {
+          "enum": ["allowed", "caveated", "downranked", "blocked"]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "rank_multiplier": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "text": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

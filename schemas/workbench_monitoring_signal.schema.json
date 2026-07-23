@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_monitoring_signal.schema.json",
+  "title": "Workbench Production AI Monitoring Signal",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "signal_id",
+    "kind",
+    "project_id",
+    "run_id",
+    "endpoint_id",
+    "asset_id",
+    "severity",
+    "score",
+    "threshold",
+    "evidence_refs",
+    "captured_at_utc",
+    "routing_hint"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "signal_id": { "$ref": "#/$defs/nonEmptyString" },
+    "kind": { "$ref": "#/$defs/signalKind" },
+    "project_id": { "$ref": "#/$defs/projectId" },
+    "run_id": { "$ref": "#/$defs/nonEmptyString" },
+    "endpoint_id": { "$ref": "#/$defs/nonEmptyString" },
+    "asset_id": { "$ref": "#/$defs/nonEmptyString" },
+    "severity": { "$ref": "#/$defs/severity" },
+    "score": { "type": "number" },
+    "threshold": { "type": "number" },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "captured_at_utc": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 1
+    },
+    "routing_hint": { "type": "string" }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "projectId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "severity": {
+      "enum": ["info", "warning", "error", "critical"]
+    },
+    "signalKind": {
+      "enum": [
+        "data_drift",
+        "embedding_shift",
+        "quality_regression",
+        "hallucination",
+        "toxicity",
+        "pii_phi",
+        "prompt_change",
+        "model_change",
+        "provider_change",
+        "endpoint_slo",
+        "tool_call_failure",
+        "retrieval_failure",
+        "agent_state_anomaly"
+      ]
+    }
+  }
+}

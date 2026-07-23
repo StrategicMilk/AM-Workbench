@@ -1,0 +1,79 @@
+schema_version: 1
+profiles:
+  default:
+    agent_types: ["*"]
+    max_items: 2
+    max_tokens: 600
+    min_relevance: 0.70
+    min_confidence: 0.75
+    authority_tiers: ["memory", "prompt"]
+    scopes: ["global", "project"]
+    include_stale: false
+    include_tainted: false
+    include_superseded: false
+  foreman:
+    agent_types: ["FOREMAN"]
+    max_items: 4
+    max_tokens: 1200
+    min_relevance: 0.72
+    min_confidence: 0.80
+    authority_tiers: ["memory", "prompt", "planning", "routing", "policy"]
+    scopes: ["global", "project", "agent:FOREMAN", "task"]
+    include_stale: false
+    include_tainted: false
+    include_superseded: false
+  worker:
+    agent_types: ["WORKER"]
+    max_items: 3
+    max_tokens: 900
+    min_relevance: 0.68
+    min_confidence: 0.78
+    authority_tiers: ["memory", "prompt", "planning"]
+    scopes: ["global", "project", "agent:WORKER", "task"]
+    include_stale: false
+    include_tainted: false
+    include_superseded: false
+  inspector:
+    agent_types: ["INSPECTOR"]
+    max_items: 5
+    max_tokens: 1100
+    min_relevance: 0.65
+    min_confidence: 0.82
+    authority_tiers: ["memory", "prompt", "planning", "routing", "policy"]
+    scopes: ["global", "project", "agent:INSPECTOR", "task"]
+    include_stale: false
+    include_tainted: false
+    include_superseded: false
+  workbench:
+    agent_types: ["WORKBENCH", "workbench"]
+    max_items: 4
+    max_tokens: 1000
+    min_relevance: 0.70
+    min_confidence: 0.80
+    authority_tiers: ["memory", "prompt", "planning"]
+    scopes: ["global", "project", "user", "workbench"]
+    include_stale: false
+    include_tainted: false
+    include_superseded: false
+  monitoring:
+    agent_types: ["MONITOR", "MONITORING"]
+    max_items: 3
+    max_tokens: 700
+    min_relevance: 0.75
+    min_confidence: 0.85
+    authority_tiers: ["memory", "policy", "routing"]
+    scopes: ["global", "project", "monitoring"]
+    include_stale: false
+    include_tainted: false
+    include_superseded: false
+  template_agent:
+    agent_types: ["TEMPLATE", "TEMPLATE_AGENT"]
+    max_items: 2
+    max_tokens: 500
+    min_relevance: 0.74
+    min_confidence: 0.82
+    authority_tiers: ["memory", "prompt"]
+    scopes: ["global", "project", "template"]
+    include_stale: false
+    include_tainted: false
+    include_superseded: false

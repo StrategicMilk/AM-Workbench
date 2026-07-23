@@ -16,127 +16,44 @@ from __future__ import annotations
 import fnmatch
 import json
 import logging
-import re
 import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from vetinari.constants import THREAD_JOIN_TIMEOUT
-from vetinari.utils.serialization import dataclass_to_dict
+from vetinari.privacy.envelope import PRIVACY_ENVELOPE_KEY, privacy_receipt, require_privacy_envelope
+from vetinari.watch_models import (
+    DIRECTIVE_PATTERNS,
+    DirectiveReport,
+    FileChange,
+    VetinariDirective,
+    WatchConfig,
+)
 
 logger = logging.getLogger(__name__)
 
-# Patterns for vetinari directives in comments
-DIRECTIVE_PATTERNS = [
-    re.compile(r"#\s*@vetinari\s+(.+)", re.IGNORECASE),
-    re.compile(r"//\s*@vetinari\s+(.+)", re.IGNORECASE),
-    re.compile(r"/\*\s*@vetinari\s+(.+?)\s*\*/", re.IGNORECASE),
-]
 
+def _privacy_safe_report_text(value: str | None) -> str | None:
+    """Redact directive text before durable watch-report persistence."""
+    if value is None:
+        return None
+    try:
+        from vetinari.security.redaction import redact_text
 
-@dataclass
-class FileChange:
-    """A detected file change."""
-
-    path: str
-    change_type: str  # "modified", "created", "deleted"
-    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    size: int = 0
-
-    def __repr__(self) -> str:
-        """Show key identifying fields for debugging."""
-        return f"FileChange(path={self.path!r}, change_type={self.change_type!r})"
-
-
-@dataclass
-class VetinariDirective:
-    """A @vetinari directive found in source code."""
-
-    file_path: str
-    line_number: int
-    directive: str  # The command after @vetinari
-    full_line: str
-
-    def __repr__(self) -> str:
-        """Show key identifying fields for debugging."""
-        return (
-            f"VetinariDirective(file_path={self.file_path!r},"
-            f" line_number={self.line_number!r}, directive={self.directive!r})"
-        )
-
-    @property
-    def action(self) -> str:
-        """Extract action verb from directive."""
-        parts = self.directive.strip().split()
-        return parts[0].lower() if parts else ""
-
-    @property
-    def target(self) -> str:
-        """Extract target from directive."""
-        parts = self.directive.strip().split(None, 1)
-        return parts[1] if len(parts) > 1 else ""
-
-
-@dataclass
-class DirectiveReport:
-    """A structured report entry written when a directive is processed.
-
-    Each entry captures who asked for what, where, and when so that
-    downstream tooling (CI, the dashboard, editors) can consume the
-    report file without parsing log output.
-    """
-
-    action: str
-    file_path: str
-    line_number: int
-    target: str
-    full_line: str
-    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    priority: str = "normal"  # "high" for fix, "normal" for review/test
-
-    def __repr__(self) -> str:
-        """Show key identifying fields for debugging."""
-        return f"DirectiveReport(action={self.action!r}, file_path={self.file_path!r}, priority={self.priority!r})"
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to a JSON-compatible dictionary."""
-        return dataclass_to_dict(self)
-
-
-@dataclass(frozen=True)
-class WatchConfig:
-    """Configuration for watch mode."""
-
-    watch_dir: str = "."
-    poll_interval: float = 2.0  # seconds
-    include_patterns: list[str] = field(default_factory=lambda: ["*.py", "*.js", "*.ts", "*.jsx", "*.tsx"])
-    exclude_patterns: list[str] = field(
-        default_factory=lambda: [
-            "__pycache__",
-            ".git",
-            "node_modules",
-            ".venv",
-            "*.pyc",
-            ".vetinari",
-        ],
-    )
-    max_file_size: int = 1_000_000  # 1MB max for scanning
-    scan_directives: bool = True
-
-    def __repr__(self) -> str:
-        """Show key identifying fields for debugging."""
-        return f"WatchConfig(watch_dir={self.watch_dir!r}, poll_interval={self.poll_interval!r})"
+        return redact_text(value)
+    except Exception:
+        logger.warning("Watch report redaction unavailable; storing conservative placeholder", exc_info=True)
+        return "[REDACTION_UNAVAILABLE]"
 
 
 class FileWatcher:
     """Polling-based file watcher."""
 
-    def __init__(self, config: WatchConfig = None):
+    def __init__(self, config: WatchConfig | None = None):
         self._config = config or WatchConfig()
         self._file_states: dict[str, float] = {}  # path -> mtime
         # Tracks whether the initial baseline scan has completed. Separate from
@@ -409,9 +326,20 @@ class WatchMode:
         Args:
             report: The ``DirectiveReport`` to persist.
         """
+        row = report.to_dict()
+        row["target"] = _privacy_safe_report_text(row.get("target"))
+        row["full_line"] = _privacy_safe_report_text(row.get("full_line"))
+        row[PRIVACY_ENVELOPE_KEY] = privacy_receipt(
+            privacy_class="subject_data",
+            subject_id=report.file_path,
+            source="watch.directive_report",
+            erasure_token=f"watch.directive_report:{report.file_path}:{report.line_number}",
+            redaction_applied=True,
+        )
+        require_privacy_envelope(row)
         try:
             with Path(self._report_path).open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(report.to_dict()) + "\n")
+                fh.write(json.dumps(row, separators=(",", ":")) + "\n")
         except OSError as exc:
             logger.warning(
                 "Could not write watch report for %s:%d — directive not enqueued: %s",
@@ -565,73 +493,21 @@ class WatchMode:
         self._record(report)
 
     def _handle_explain(self, d: VetinariDirective) -> None:
-        """Handle a ``@vetinari explain`` directive.
-
-        Flags the code section as needing a documentation or comment
-        explanation, and enqueues a report entry.
-
-        Args:
-            d: The parsed directive.
-        """
-        logger.info(
-            "[watch] EXPLAIN requested — %s (line %d in %s)",
-            d.target or d.full_line,
-            d.line_number,
-            d.file_path,
-        )
-        report = DirectiveReport(
-            action="explain",
-            file_path=d.file_path,
-            line_number=d.line_number,
-            target=d.target,
-            full_line=d.full_line,
-            priority="normal",
-        )
-        self._record(report)
+        """Handle a ``@vetinari explain`` directive."""
+        self._record_normal("explain", d, logging.INFO)
 
     def _handle_refactor(self, d: VetinariDirective) -> None:
-        """Handle a ``@vetinari refactor`` directive.
-
-        Flags the code section as a refactoring candidate and enqueues a
-        normal-priority report entry.
-
-        Args:
-            d: The parsed directive.
-        """
-        logger.info(
-            "[watch] REFACTOR candidate — %s (line %d in %s)",
-            d.target or d.full_line,
-            d.line_number,
-            d.file_path,
-        )
-        report = DirectiveReport(
-            action="refactor",
-            file_path=d.file_path,
-            line_number=d.line_number,
-            target=d.target,
-            full_line=d.full_line,
-            priority="normal",
-        )
-        self._record(report)
+        """Handle a ``@vetinari refactor`` directive."""
+        self._record_normal("refactor", d, logging.INFO)
 
     def _handle_review(self, d: VetinariDirective) -> None:
-        """Handle a ``@vetinari review`` directive.
+        """Handle a ``@vetinari review`` directive."""
+        self._record_normal("review", d, logging.WARNING)
 
-        Flags the file and line for a human or automated code review.  Logs at
-        WARNING level and enqueues a report entry so review tooling can surface
-        all flagged sections in one pass.
-
-        Args:
-            d: The parsed directive.
-        """
-        logger.warning(
-            "[watch] REVIEW flagged — %s:%d — %s",
-            d.file_path,
-            d.line_number,
-            d.target or d.full_line,
-        )
+    def _record_normal(self, action: str, d: VetinariDirective, level: int) -> None:
+        logger.log(level, "[watch] %s: %s:%d - %s", action.upper(), d.file_path, d.line_number, d.target or d.full_line)
         report = DirectiveReport(
-            action="review",
+            action=action,
             file_path=d.file_path,
             line_number=d.line_number,
             target=d.target,

@@ -15,32 +15,43 @@ Grammar-constrained generation is available via ``grammar_library``:
 
 from __future__ import annotations
 
+from .adapter_cache import clear_adapter_cache, get_local_inference_adapter
 from .base import InferenceRequest, InferenceResponse, ModelInfo, ProviderAdapter, ProviderConfig
+from .cloud_adapter import CloudAdapter
 from .grammar_library import (
+    GRAMMAR_LIBRARY,
+    TASK_TYPE_TO_GRAMMAR,
     get_grammar,
     get_grammar_for_task_type,
     truncate_at_grammar_boundary,
     validate_grammar,
 )
-from .litellm_adapter import LiteLLMAdapter
 from .llama_cpp_adapter import LlamaCppProviderAdapter
 from .llama_cpp_local_adapter import LocalInferenceAdapter
+from .manager import AdapterManager
 from .openai_server_adapter import OpenAIServerAdapter
+from .pool import ModelPool
 from .registry import AdapterRegistry
 
 __all__ = [
+    "GRAMMAR_LIBRARY",
+    "TASK_TYPE_TO_GRAMMAR",
+    "AdapterManager",
     "AdapterRegistry",
+    "CloudAdapter",
     "InferenceRequest",
     "InferenceResponse",
-    "LiteLLMAdapter",
     "LlamaCppProviderAdapter",
     "LocalInferenceAdapter",
     "ModelInfo",
+    "ModelPool",
     "OpenAIServerAdapter",
     "ProviderAdapter",
     "ProviderConfig",
+    "clear_adapter_cache",
     "get_grammar",
     "get_grammar_for_task_type",
+    "get_local_inference_adapter",
     "truncate_at_grammar_boundary",
     "validate_grammar",
 ]

@@ -8,7 +8,7 @@ Unified quality gate system combining:
 
 Implementation is split across submodules to stay under the 550-line ceiling:
 - ``gate_types``: shared enum/dataclass types (VerificationMode, GateResult, etc.)
-- ``gate_checks``: check method implementations (_GateCheckMixin)
+- ``gate_checks``: check method implementations (_GateCheckRunner)
 - this file: QualityGateRunner orchestration + threshold data + public API
 
 All public names are re-exported here so existing callers do not need to
@@ -31,7 +31,7 @@ from vetinari.constants import (
     QUALITY_GATE_MEDIUM,
 )
 from vetinari.types import AgentType
-from vetinari.validation.gate_checks import _GateCheckMixin
+from vetinari.validation.gate_checks import _GateCheckRunner
 from vetinari.validation.gate_types import (
     GateCheckResult,
     GateResult,
@@ -40,6 +40,7 @@ from vetinari.validation.gate_types import (
 )
 
 logger = logging.getLogger(__name__)
+
 
 # Re-export gate_types names so existing ``from vetinari.validation.quality_gates import X``
 # callers continue to work without changes.
@@ -60,7 +61,7 @@ __all__ = [
 ]
 
 
-class QualityGateRunner(_GateCheckMixin):
+class QualityGateRunner(_GateCheckRunner):
     """Runs quality gates between pipeline stages.
 
     Each pipeline stage (post_planning, post_execution, post_testing,
@@ -71,7 +72,7 @@ class QualityGateRunner(_GateCheckMixin):
     configuration for each stage. Custom gates can be provided at
     construction time to override or extend defaults.
 
-    The actual check implementations live in ``_GateCheckMixin``
+    The actual check implementations live in ``_GateCheckRunner``
     (``gate_checks.py``) to keep each module under 550 lines.
     """
 
@@ -141,7 +142,7 @@ class QualityGateRunner(_GateCheckMixin):
     # Public API
     # ------------------------------------------------------------------
 
-    def run_gate(self, stage: str, artifacts: dict[str, Any]) -> list[GateCheckResult]:
+    def run_gate(self, stage: str, artifacts: dict[str, Any] | None) -> list[GateCheckResult]:
         """Run all gates for a pipeline stage.
 
         Args:
@@ -158,6 +159,21 @@ class QualityGateRunner(_GateCheckMixin):
         if not gate_configs:
             logger.debug("No gates configured for stage '%s'", stage)
             return []
+
+        if not isinstance(artifacts, dict) or not artifacts:
+            logger.warning("Quality gate '%s' failed closed: artifacts missing or malformed", stage)
+            return [
+                GateCheckResult(
+                    gate_name=config.name,
+                    mode=config.mode,
+                    result=GateResult.FAILED,
+                    score=0.0,
+                    issues=[{"severity": "error", "message": "Required gate artifacts missing or malformed"}],
+                    suggestions=["Provide non-empty gate artifacts before marking the stage passed"],
+                    metadata={"stage": stage, "required": config.required},
+                )
+                for config in gate_configs
+            ]
 
         results: list[GateCheckResult] = []
         for config in gate_configs:
@@ -226,7 +242,7 @@ class QualityGateRunner(_GateCheckMixin):
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class QualityGate:
     """Quality threshold for a specific agent (optionally per-mode).
 
@@ -437,8 +453,8 @@ def check_quality_gate(
                 "agent_type": agent_type,
                 "score": round(score, 3),
                 "threshold": round(threshold, 3),
-                "mode": mode or "",  # noqa: VET112 - empty fallback preserves optional request metadata contract
-                "task_type": task_type or "",  # noqa: VET112 - empty fallback preserves optional request metadata contract
+                "mode": mode or "",
+                "task_type": task_type or "",
             },
         )
     except Exception:

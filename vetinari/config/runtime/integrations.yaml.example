@@ -1,5 +1,7 @@
 # Issue tracker integration configuration
-# Copy to config/integrations.yaml and fill in credentials.
+# Copy to your user runtime config, not into the repository, and keep secrets in
+# environment variables. The runtime rejects credential values that point at
+# repository files.
 # Only the block matching the chosen type needs to be filled in.
 
 issue_tracker:
@@ -7,16 +9,16 @@ issue_tracker:
   type: github
 
   github:
-    token: ""   # GitHub personal access token with 'repo' scope
+    token: "env:GITHUB_TOKEN"  # GitHub personal access token with 'repo' scope
     owner: ""   # Repository owner login (user or org, e.g. "StrategicMilk")
     repo: ""    # Repository name without owner prefix (e.g. "Vetinari")
 
   linear:
-    api_key: ""  # Linear personal API key (Settings -> API -> Personal API keys)
+    api_key: "env:LINEAR_API_KEY"  # Linear personal API key (Settings -> API -> Personal API keys)
     team_id: ""  # Linear team UUID (visible in team URL: linear.app/team/<id>)
 
   jira:
     url: ""           # Jira instance base URL (e.g. https://company.atlassian.net)
     email: ""         # Jira account email address
-    api_token: ""     # Jira API token (generate at https://id.atlassian.com/manage-profile/security/api-tokens)
+    api_token: "env:JIRA_API_TOKEN"  # Jira API token (generate at https://id.atlassian.com/manage-profile/security/api-tokens)
     project_key: ""   # Jira project key shown in issue keys (e.g. VET for VET-42)

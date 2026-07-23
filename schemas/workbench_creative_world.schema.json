@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_creative_world.schema.json",
+  "title": "Workbench Creative World",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "world_id",
+    "title",
+    "summary",
+    "tone_style_guide",
+    "characters",
+    "relationships",
+    "timeline",
+    "scene_history",
+    "authority_ref",
+    "provenance_ref",
+    "evidence_refs"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "world_id": { "$ref": "#/$defs/non_empty_string" },
+    "title": { "$ref": "#/$defs/non_empty_string" },
+    "summary": { "$ref": "#/$defs/non_empty_string" },
+    "authority_ref": { "$ref": "#/$defs/non_empty_string" },
+    "provenance_ref": { "$ref": "#/$defs/non_empty_string" },
+    "evidence_refs": { "$ref": "#/$defs/non_empty_string_array" },
+    "tone_style_guide": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["guide_id", "voice_summary", "style_rules", "forbidden_tones", "authority_ref", "provenance_ref"],
+      "properties": {
+        "guide_id": { "$ref": "#/$defs/non_empty_string" },
+        "voice_summary": { "$ref": "#/$defs/non_empty_string" },
+        "style_rules": { "$ref": "#/$defs/non_empty_string_array" },
+        "forbidden_tones": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/non_empty_string" },
+          "uniqueItems": true
+        },
+        "authority_ref": { "$ref": "#/$defs/non_empty_string" },
+        "provenance_ref": { "$ref": "#/$defs/non_empty_string" }
+      }
+    },
+    "characters": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "character_id",
+          "display_name",
+          "summary",
+          "canonical_traits",
+          "open_questions",
+          "authority_ref",
+          "provenance_ref"
+        ],
+        "properties": {
+          "character_id": { "$ref": "#/$defs/non_empty_string" },
+          "display_name": { "$ref": "#/$defs/non_empty_string" },
+          "summary": { "$ref": "#/$defs/non_empty_string" },
+          "canonical_traits": { "$ref": "#/$defs/non_empty_string_array" },
+          "open_questions": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/non_empty_string" },
+            "uniqueItems": true
+          },
+          "portrait_ref": { "$ref": "#/$defs/non_empty_string" },
+          "branch_ref": { "$ref": "#/$defs/non_empty_string" },
+          "authority_ref": { "$ref": "#/$defs/non_empty_string" },
+          "provenance_ref": { "$ref": "#/$defs/non_empty_string" }
+        }
+      }
+    },
+    "relationships": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "relationship_id",
+          "source_character_id",
+          "target_character_id",
+          "relationship_type",
+          "status",
+          "evidence_refs",
+          "authority_ref",
+          "provenance_ref"
+        ],
+        "properties": {
+          "relationship_id": { "$ref": "#/$defs/non_empty_string" },
+          "source_character_id": { "$ref": "#/$defs/non_empty_string" },
+          "target_character_id": { "$ref": "#/$defs/non_empty_string" },
+          "relationship_type": { "$ref": "#/$defs/non_empty_string" },
+          "status": { "$ref": "#/$defs/non_empty_string" },
+          "evidence_refs": { "$ref": "#/$defs/non_empty_string_array" },
+          "authority_ref": { "$ref": "#/$defs/non_empty_string" },
+          "provenance_ref": { "$ref": "#/$defs/non_empty_string" }
+        }
+      }
+    },
+    "timeline": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["event_id", "sequence", "summary", "evidence_refs"],
+        "properties": {
+          "event_id": { "$ref": "#/$defs/non_empty_string" },
+          "sequence": { "type": "integer", "minimum": 0 },
+          "summary": { "$ref": "#/$defs/non_empty_string" },
+          "evidence_refs": { "$ref": "#/$defs/non_empty_string_array" }
+        }
+      }
+    },
+    "scene_history": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "entry_id",
+          "beat_id",
+          "pov_character_id",
+          "timeline_event_ids",
+          "purpose",
+          "summary",
+          "outcome",
+          "evidence_refs",
+          "authority_ref",
+          "provenance_ref"
+        ],
+        "properties": {
+          "entry_id": { "$ref": "#/$defs/non_empty_string" },
+          "beat_id": { "$ref": "#/$defs/non_empty_string" },
+          "pov_character_id": { "$ref": "#/$defs/non_empty_string" },
+          "timeline_event_ids": { "$ref": "#/$defs/non_empty_string_array" },
+          "purpose": { "$ref": "#/$defs/non_empty_string" },
+          "summary": { "$ref": "#/$defs/non_empty_string" },
+          "outcome": { "$ref": "#/$defs/non_empty_string" },
+          "evidence_refs": { "$ref": "#/$defs/non_empty_string_array" },
+          "authority_ref": { "$ref": "#/$defs/non_empty_string" },
+          "provenance_ref": { "$ref": "#/$defs/non_empty_string" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "non_empty_string_array": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/non_empty_string" },
+      "uniqueItems": true
+    }
+  }
+}

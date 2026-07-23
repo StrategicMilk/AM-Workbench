@@ -1,0 +1,13 @@
+limits:
+  max_nodes: 2000
+  max_edges: 5000
+stale_source_policy:
+  reject_stale_sources: true
+  reject_unreadable_sources: true
+priority_policy:
+  allowed: score-components
+  weighted_product_ranking: false
+display_defaults:
+  default_view: components
+  show_score_components: true
+  show_stale_source_blockers: true

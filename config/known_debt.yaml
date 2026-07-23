@@ -1,0 +1,16 @@
+# Known Debt Registry
+#
+# Documents known checker violations that cannot be resolved within the current
+# worktree scope. Each entry MUST include:
+#   - checker_id: the script name and flag that produces the violation
+#   - error_code: the exact error code emitted (e.g., INV001)
+#   - missing_artifact: the path that the checker requires and that is absent
+#   - debt_note: plain-English explanation of why the artifact is missing
+#   - owner_task: which program wave/pack is responsible for producing it
+#   - removal_condition: the observable condition that removes this debt entry
+#
+# These entries document honest failures, not suppressions. The checkers still
+# fail closed (exit 1) in CI and enforcement contexts. This file tells reviewers
+# WHY they fail and who owns the fix.
+
+known_debt: []

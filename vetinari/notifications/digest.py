@@ -114,7 +114,8 @@ class DigestGenerator:
             overall_health=health,
         )
 
-    def _collect_tasks_section(self) -> DigestSection:
+    @staticmethod
+    def _collect_tasks_section() -> DigestSection:
         """Collect task completion/failure summary."""
         section = DigestSection(title="Tasks")
         try:
@@ -133,7 +134,8 @@ class DigestGenerator:
             section.items.append("Task data unavailable")
         return section
 
-    def _collect_learning_section(self) -> DigestSection:
+    @staticmethod
+    def _collect_learning_section() -> DigestSection:
         """Collect learning improvement summary."""
         section = DigestSection(title="Learning & Improvement")
         try:
@@ -146,7 +148,8 @@ class DigestGenerator:
             section.items.append("Learning data unavailable")
         return section
 
-    def _collect_cost_section(self) -> DigestSection:
+    @staticmethod
+    def _collect_cost_section() -> DigestSection:
         """Collect cost and token usage summary."""
         section = DigestSection(title="Cost & Usage")
         try:
@@ -160,7 +163,8 @@ class DigestGenerator:
             section.items.append("Cost data unavailable")
         return section
 
-    def _collect_approvals_section(self) -> DigestSection:
+    @staticmethod
+    def _collect_approvals_section() -> DigestSection:
         """Collect pending approval count."""
         section = DigestSection(title="Pending Approvals")
         try:
@@ -177,7 +181,8 @@ class DigestGenerator:
             section.items.append("Approval data unavailable")
         return section
 
-    def _collect_health_section(self) -> DigestSection:
+    @staticmethod
+    def _collect_health_section() -> DigestSection:
         """Collect system health assessment from live subsystems.
 
         Queries the metrics collector and any registered health sources.
@@ -214,7 +219,8 @@ class DigestGenerator:
         section.metrics = {"status": status}
         return section
 
-    def _assess_overall_health(self, sections: list[DigestSection]) -> str:
+    @staticmethod
+    def _assess_overall_health(sections: list[DigestSection]) -> str:
         """Determine overall health from section data.
 
         Returns ``"healthy"``, ``"warning"``, or ``"degraded"`` based on

@@ -38,6 +38,10 @@ feedback_loop:
   ema_alpha: 0.3            # EMA smoothing for success rate tracking
   signal_blend: 0.5         # Weight of success (bool) vs quality (float) in signal
 
+cascade_confidence:
+  heuristic_weight: 0.4     # Local confidence heuristic share in hybrid scoring
+  llm_weight: 0.6           # LLM quality-judge share in hybrid scoring
+
 auto_tuner:
   cycle_interval_seconds: 900
   max_concurrent: 8

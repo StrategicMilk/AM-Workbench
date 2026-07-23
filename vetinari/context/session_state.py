@@ -13,13 +13,16 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from vetinari.context.window_manager import estimate_tokens
+from vetinari.context.window_manager import count_tokens
 
 logger = logging.getLogger(__name__)
+
 
 # ── Pattern constants ──────────────────────────────────────────────────
 
@@ -127,7 +130,8 @@ class SessionStateExtractor:
     Intended to be used as a singleton via ``get_session_state_extractor()``.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, clock: Callable[[], float] | None = None) -> None:
+        self._clock = clock or time.time
         # Pre-compile decision-keyword pattern to match full sentences
         kw_alts = "|".join(re.escape(kw) for kw in _DECISION_KEYWORDS)
         self._decision_sentence_re = re.compile(
@@ -178,7 +182,7 @@ class SessionStateExtractor:
                 quality_scores={},
                 model_used=model_id,
                 token_count=0,
-                timestamp=time.time(),
+                timestamp=self._clock(),
             )
 
         decisions = self._extract_decisions(text)
@@ -204,7 +208,7 @@ class SessionStateExtractor:
             quality_scores=scores,
             model_used=model_id,
             token_count=tokens,
-            timestamp=time.time(),
+            timestamp=self._clock(),
         )
 
     # ── Private extraction helpers ─────────────────────────────────────
@@ -232,7 +236,8 @@ class SessionStateExtractor:
                 decisions.append(clean)
         return decisions
 
-    def _extract_outputs(self, text: str) -> list[str]:
+    @staticmethod
+    def _extract_outputs(text: str) -> list[str]:
         """Identify artifact references embedded in the stage output text.
 
         Looks for:
@@ -272,7 +277,8 @@ class SessionStateExtractor:
 
         return outputs
 
-    def _extract_quality_scores(self, text: str) -> dict[str, float]:
+    @staticmethod
+    def _extract_quality_scores(text: str) -> dict[str, float]:
         """Parse numeric quality metrics embedded in the stage output text.
 
         Recognises patterns such as ``score: 0.85``, ``quality: 70%``, and
@@ -307,9 +313,9 @@ class SessionStateExtractor:
         return scores
 
     def _estimate_tokens(self, text: str) -> int:
-        """Estimate the token count of *text* using the shared heuristic.
+        """Count tokens in *text* through the shared exact-count path.
 
-        Delegates to ``estimate_tokens`` from ``vetinari.context.window_manager``
+        Delegates to ``count_tokens`` from ``vetinari.context.window_manager``
         so that token-counting logic stays in one place.
 
         Args:
@@ -318,7 +324,7 @@ class SessionStateExtractor:
         Returns:
             Estimated number of tokens.
         """
-        return estimate_tokens(text)
+        return count_tokens(text)
 
 
 # ── Module-level singleton ─────────────────────────────────────────────
@@ -328,6 +334,7 @@ class SessionStateExtractor:
 # Lifecycle: created once per process; safe to share across threads (extractor is stateless)
 # Lock: none required — Python GIL protects the None check in practice; double-init is harmless
 _extractor: SessionStateExtractor | None = None
+_extractor_lock = threading.Lock()
 
 
 def get_session_state_extractor() -> SessionStateExtractor:
@@ -342,7 +349,9 @@ def get_session_state_extractor() -> SessionStateExtractor:
     """
     global _extractor
     if _extractor is None:
-        _extractor = SessionStateExtractor()
+        with _extractor_lock:
+            if _extractor is None:
+                _extractor = SessionStateExtractor()
     return _extractor
 
 

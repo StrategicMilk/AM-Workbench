@@ -34,20 +34,18 @@ from vetinari.skills.skill_definitions import (
     _AGENT_TO_SKILL,
     SKILL_REGISTRY,
 )
-from vetinari.skills.skill_registry_class import (  # noqa: F401 (re-exported)
-    SkillRegistry,
+from vetinari.skills.skill_registry_class import (
+    SkillRegistry as _DiskSkillRegistry,
+)
+from vetinari.skills.skill_registry_class import (
     get_registry,
 )
 from vetinari.skills.skill_spec import SkillSpec
-from vetinari.skills.skill_workflows import (  # noqa: F401 (re-exported)
-    get_orchestration_config,
-    get_skill_dependencies,
-    get_skills_for_workflow_stage,
-    get_workflow_template,
-    list_workflow_templates,
-)
 
 logger = logging.getLogger(__name__)
+
+
+SkillRegistry = _DiskSkillRegistry
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -224,24 +222,7 @@ def auto_populate_from_agents() -> dict[str, SkillSpec]:
         logger.debug("MultiModeAgent not available for auto-population")
         return {}
 
-    # Import agent classes to ensure subclasses are registered
-    import importlib
-
-    _agent_modules = [
-        "vetinari.agents.planner_agent",
-        "vetinari.agents.builder_agent",
-        "vetinari.agents.consolidated.worker_agent",
-        "vetinari.agents.consolidated.quality_agent",
-        "vetinari.agents.consolidated.operations_agent",
-        "vetinari.agents.consolidated.oracle_agent",
-        "vetinari.agents.consolidated.researcher_agent",
-    ]
-
-    for mod_name in _agent_modules:
-        try:
-            importlib.import_module(mod_name)
-        except ImportError:
-            logger.debug("Could not import %s for auto-population", mod_name)
+    _import_agent_modules_for_auto_population()
 
     result: dict[str, SkillSpec] = {}
 
@@ -292,6 +273,26 @@ def auto_populate_from_agents() -> dict[str, SkillSpec]:
             result[auto_spec.skill_id] = auto_spec
 
     return result
+
+
+def _import_agent_modules_for_auto_population() -> None:
+    """Import agent modules so MultiModeAgent subclasses are registered."""
+    import importlib
+
+    agent_modules = [
+        "vetinari.agents.planner_agent",
+        "vetinari.agents.builder_agent",
+        "vetinari.agents.consolidated.worker_agent",
+        "vetinari.agents.consolidated.quality_agent",
+        "vetinari.agents.consolidated.operations_agent",
+        "vetinari.agents.consolidated.oracle_agent",
+        "vetinari.agents.consolidated.researcher_agent",
+    ]
+    for mod_name in agent_modules:
+        try:
+            importlib.import_module(mod_name)
+        except ImportError:
+            logger.debug("Could not import %s for auto-population", mod_name)
 
 
 # ---------------------------------------------------------------------------
@@ -400,3 +401,67 @@ def list_agents() -> list[str]:
         Sorted list of agent type strings.
     """
     return get_registry().list_agents()
+
+
+def get_workflow_template(template_name: str) -> dict[str, Any] | None:
+    """Get a predefined workflow template by name.
+
+    Args:
+        template_name: The workflow template identifier.
+
+    Returns:
+        Template dict, or None if the template is not registered.
+    """
+    from vetinari.skills.skill_workflows import get_workflow_template as _get_workflow_template
+
+    return _get_workflow_template(template_name)
+
+
+def list_workflow_templates() -> list[str]:
+    """List the names of all available workflow templates.
+
+    Returns:
+        List of workflow template names.
+    """
+    from vetinari.skills.skill_workflows import list_workflow_templates as _list_workflow_templates
+
+    return _list_workflow_templates()
+
+
+def get_orchestration_config() -> dict[str, Any]:
+    """Get orchestration feature flags from the central registry.
+
+    Returns:
+        Orchestration feature flag mapping, or an empty dict.
+    """
+    from vetinari.skills.skill_workflows import get_orchestration_config as _get_orchestration_config
+
+    return _get_orchestration_config()
+
+
+def get_skill_dependencies(skill_id: str) -> list[str]:
+    """Get the list of skill ids that a given skill depends on.
+
+    Args:
+        skill_id: The skill identifier.
+
+    Returns:
+        List of dependency skill ids.
+    """
+    from vetinari.skills.skill_workflows import get_skill_dependencies as _get_skill_dependencies
+
+    return _get_skill_dependencies(skill_id)
+
+
+def get_skills_for_workflow_stage(stage_purpose: str) -> list[dict[str, Any]]:
+    """Find skills matching a specific workflow stage purpose string.
+
+    Args:
+        stage_purpose: Substring to match against workflow stage purpose text.
+
+    Returns:
+        List of matching workflow stage records.
+    """
+    from vetinari.skills.skill_workflows import get_skills_for_workflow_stage as _get_skills_for_workflow_stage
+
+    return _get_skills_for_workflow_stage(stage_purpose)

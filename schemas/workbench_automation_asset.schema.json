@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_automation_asset.schema.json",
+  "title": "Workbench Automation Recipe Asset",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "recipe_id",
+    "recipe_version",
+    "name",
+    "owner",
+    "trigger",
+    "conditions",
+    "authority_level",
+    "budget_ref",
+    "quiet_hours_ref",
+    "rollback_ref",
+    "failure_policy",
+    "eval_suite_refs",
+    "replay_policy",
+    "created_at_utc",
+    "stale_after_utc",
+    "provenance"
+  ],
+  "properties": {
+    "recipe_id": {"type": "string", "minLength": 1},
+    "recipe_version": {
+      "type": "string",
+      "pattern": "^[0-9]+(\\.[0-9]+)*$"
+    },
+    "name": {"type": "string", "minLength": 1},
+    "owner": {"type": "string", "minLength": 1},
+    "trigger": {
+      "type": "string",
+      "enum": [
+        "file_change",
+        "source_staleness",
+        "new_trace",
+        "failed_eval",
+        "new_model",
+        "dataset_drift",
+        "benchmark_change",
+        "cost_threshold",
+        "annotation_queue",
+        "training_completion"
+      ]
+    },
+    "conditions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "authority_level": {
+      "type": "string",
+      "enum": ["observe", "propose", "low_risk_execute", "high_impact"]
+    },
+    "budget_ref": {"type": "string", "minLength": 1},
+    "quiet_hours_ref": {"type": "string", "minLength": 1},
+    "rollback_ref": {"type": "string", "minLength": 1},
+    "failure_policy": {
+      "type": "string",
+      "enum": ["propose_only", "pause_automation", "escalate"]
+    },
+    "eval_suite_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "replay_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimum_trace_count", "minimum_confidence"],
+      "properties": {
+        "minimum_trace_count": {"type": "integer", "minimum": 1},
+        "minimum_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "require_negative_eval": {"type": "boolean", "default": true},
+        "require_promotion_for_high_impact": {"type": "boolean", "default": true}
+      }
+    },
+    "created_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "stale_after_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "promotion_decision_ref": {"type": "string", "default": ""},
+    "provenance": {
+      "type": "object",
+      "additionalProperties": {"type": "string"},
+      "required": ["source"],
+      "properties": {
+        "source": {"type": "string", "minLength": 1},
+        "builder_definition_ref": {"type": "string"},
+        "proposal_ref": {"type": "string"},
+        "trace_set_ref": {"type": "string"}
+      }
+    }
+  }
+}

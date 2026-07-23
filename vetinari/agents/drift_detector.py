@@ -17,9 +17,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from vetinari.boundary_guards import require_nonempty
 from vetinari.types import AgentType
 
 logger = logging.getLogger(__name__)
+
 
 # -- Configuration defaults --
 DEFAULT_DRIFT_WINDOW = 10  # Sliding window size for score tracking
@@ -71,6 +73,14 @@ class AgentDriftDetector:
         self._consecutive_threshold = consecutive_threshold
         self._drift_margin = drift_margin
         self._on_drift_detected = on_drift_detected
+        self._baseline_anchor: dict | None = (
+            anchor_baseline(
+                baseline={"window_size": window_size, "consecutive_threshold": consecutive_threshold},
+                on_drift=lambda _baseline: on_drift_detected,
+            )
+            if on_drift_detected is not None
+            else None
+        )
         # scores keyed by (agent_type.value, session_id) -> list of scores
         self._scores: dict[str, list[float]] = defaultdict(list)
         # Track which window tuple last fired the drift callback to prevent
@@ -223,3 +233,13 @@ def get_drift_detector() -> AgentDriftDetector:
             if _instance is None:
                 _instance = AgentDriftDetector()
     return _instance
+
+
+def anchor_baseline(*, baseline: dict, on_drift: Callable[[dict], object] | None) -> dict:
+    """Anchor a drift baseline only when a drift callback is registered.
+
+    Returns:
+        Copied baseline plus the drift callback reference.
+    """
+    require_nonempty(str(on_drift) if on_drift is not None else "", field_name="on_drift")
+    return {"baseline": dict(baseline), "on_drift": on_drift}

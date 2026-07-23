@@ -1,0 +1,16 @@
+id: chat
+primary_contract: vetinari.workbench.modes.chat.ChatWorkspaceState
+template_id: chat
+required_artifacts:
+  - workspace_state
+  - branch_graph
+  - pinned_context
+  - conversion_manifest
+promotion_gate: require_chat_ready
+conversion_targets:
+  - plan
+  - eval
+  - dataset
+  - prompt
+  - template
+  - evidence_notebook

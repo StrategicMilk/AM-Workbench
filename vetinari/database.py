@@ -24,17 +24,23 @@ import logging
 import os
 import sqlite3
 import threading
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from vetinari.constants import _PROJECT_ROOT, get_user_dir
+from vetinari.constants import VETINARI_STATE_DIR, get_user_dir
 from vetinari.database_schema import _UNIFIED_SCHEMA
 
 logger = logging.getLogger(__name__)
+
+_CONNECTION_PRAGMA_RETRIES = 5
+_CONNECTION_PRAGMA_RETRY_DELAY_S = 0.1
+
+
 _safe_log_lock = threading.Lock()
 
 # ── Default database location ────────────────────────────────────────────────
-_DEFAULT_DB_DIR = _PROJECT_ROOT / ".vetinari"
+_DEFAULT_DB_DIR = VETINARI_STATE_DIR
 _DEFAULT_DB_PATH = _DEFAULT_DB_DIR / "vetinari.db"
 
 # Thread-local storage for connections
@@ -64,21 +70,22 @@ def _safe_log(level: int, message: str, *args: object) -> None:
     with _safe_log_lock:
         handlers = _reachable_handlers(logger)
         original_handle_errors = [
-            (handler, "handleError" in handler.__dict__, handler.__dict__.get("handleError"))
-            for handler in handlers
+            (handler, "handleError" in handler.__dict__, handler.__dict__.get("handleError")) for handler in handlers
         ]
         try:
             for handler, _had_instance_override, _original in original_handle_errors:
-                handler.handleError = lambda _record: None  # type: ignore[method-assign]
+                mutable_handler: Any = handler
+                mutable_handler.handleError = lambda _record: None
             with contextlib.suppress(OSError, ValueError):
                 logger.log(level, message, *args)
         finally:
             for handler, had_instance_override, original in original_handle_errors:
+                restorable_handler: Any = handler
                 if had_instance_override:
-                    handler.handleError = original  # type: ignore[method-assign]
+                    restorable_handler.handleError = original
                 else:
                     with contextlib.suppress(AttributeError):
-                        del handler.handleError
+                        del restorable_handler.handleError
 
 
 # Lock for schema initialization (one-time operation)
@@ -87,24 +94,26 @@ _schema_initialized = False
 _schema_initialized_paths: set[Path] = set()
 
 
-def _get_db_path() -> Path:
+def _get_db_path(db_path: str | os.PathLike[str] | None = None) -> Path:
     """Resolve the database file path from env var or default.
 
     Returns:
         Absolute path to the unified SQLite database file.
     """
+    if db_path is not None:
+        return Path(db_path)
     env_path = os.environ.get("VETINARI_DB_PATH")
     if env_path:
         return Path(env_path)
-    return get_user_dir() / "vetinari.db"
+    return cast(Path, get_user_dir()) / "vetinari.db"
 
 
-def _schema_path_key() -> Path:
+def _schema_path_key(db_path: str | os.PathLike[str] | None = None) -> Path:
     """Return a stable key for the currently configured physical DB path."""
-    return _get_db_path().expanduser().resolve(strict=False)
+    return _get_db_path(db_path).expanduser().resolve(strict=False)
 
 
-def get_connection() -> sqlite3.Connection:
+def get_connection(db_path: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
     """Return a thread-local SQLite connection to the unified database.
 
     Creates the connection on first call per thread, sets WAL mode,
@@ -114,18 +123,21 @@ def get_connection() -> sqlite3.Connection:
 
     Returns:
         A ``sqlite3.Connection`` with WAL mode and row factory enabled.
+
+    Raises:
+        sqlite3.Error: If SQLite cannot open or initialize the database.
     """
     conn: sqlite3.Connection | None = getattr(_thread_local, "connection", None)
     cached_db_path = getattr(_thread_local, "db_path", None)
-    db_path = _get_db_path()
+    resolved_db_path = _get_db_path(db_path)
 
     # If we have a cached connection but the DB path changed, close and reconnect
-    if conn is not None and cached_db_path is not None and cached_db_path != db_path:
+    if conn is not None and cached_db_path is not None and cached_db_path != resolved_db_path:
         _safe_log(
             logging.WARNING,
             "Database path changed from %s to %s — closing and reconnecting",
             cached_db_path,
-            db_path,
+            resolved_db_path,
         )
         conn.close()
         conn = None
@@ -135,20 +147,32 @@ def get_connection() -> sqlite3.Connection:
     if conn is not None:
         return conn
 
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=30.0)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA wal_autocheckpoint=1000")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA busy_timeout=5000")  # 5 second wait on lock contention
-    conn.execute("PRAGMA cache_size=-32768")  # 32 MB page cache
-    conn.execute("PRAGMA mmap_size=268435456")  # 256 MB memory-mapped I/O
+    last_lock_error: sqlite3.OperationalError | None = None
+    for attempt in range(_CONNECTION_PRAGMA_RETRIES):
+        conn = sqlite3.connect(str(resolved_db_path), check_same_thread=False, timeout=30.0)
+        try:
+            conn.execute("PRAGMA busy_timeout=5000")  # 5 second wait on lock contention
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA wal_autocheckpoint=1000")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA cache_size=-32768")  # 32 MB page cache
+            conn.execute("PRAGMA mmap_size=268435456")  # 256 MB memory-mapped I/O
+            break
+        except sqlite3.OperationalError as exc:
+            conn.close()
+            if "locked" not in str(exc).lower() or attempt == _CONNECTION_PRAGMA_RETRIES - 1:
+                raise
+            last_lock_error = exc
+            time.sleep(_CONNECTION_PRAGMA_RETRY_DELAY_S * (attempt + 1))
+    else:
+        raise sqlite3.OperationalError("database remained locked during connection setup") from last_lock_error
     conn.row_factory = sqlite3.Row
 
     _thread_local.connection = conn
-    _thread_local.db_path = db_path
+    _thread_local.db_path = resolved_db_path
 
     # Ensure schema is created (thread-safe, one-time)
     init_schema(conn)
@@ -157,7 +181,7 @@ def get_connection() -> sqlite3.Connection:
         logging.DEBUG,
         "Database connection established for thread %s at %s",
         threading.current_thread().name,
-        db_path,
+        resolved_db_path,
     )
     return conn
 
@@ -181,20 +205,19 @@ def _schema_migration_statements(conn: sqlite3.Connection) -> list[str]:
 
     ``CREATE TABLE IF NOT EXISTS`` silently skips creation when a table
     already exists with the old column set, then subsequent ``CREATE INDEX``
-    statements fail because expected columns are missing. The returned
-    statements are executed in the same transaction as schema creation.
+    statements fail because expected columns are missing. Startup migrations
+    preserve kaizen rows and only drop legacy benchmark/defect tables whose
+    old shapes have no supported row-preserving upgrade path here.
     """
     statements: list[str] = []
     # Map: table_name -> column that MUST exist in the current schema.
-    # If the column is missing the table predates the unified schema and
-    # must be recreated.
+    # Kaizen tables use additive migrations below because they contain user
+    # improvement history that must not be discarded on startup.
     _required_columns: dict[str, str] = {
         "benchmark_results": "run_id",
         "benchmark_runs": "suite_name",
         # defect_occurrences was added in session-2B — drop and recreate if stale
         "defect_occurrences": "occurred_at",
-        "improvements": "hypothesis",
-        "improvement_observations": "observation_id",
     }
     for table, required_col in _required_columns.items():
         try:
@@ -212,37 +235,135 @@ def _schema_migration_statements(conn: sqlite3.Connection) -> list[str]:
             )
             statements.append(f"DROP TABLE IF EXISTS {table};")
 
-    # Additive column migrations: ALTER TABLE ADD COLUMN when column absent.
-    # Used when recreating the table would lose data (memories, memory_episodes).
-    _additive_columns: dict[str, list[tuple[str, str]]] = {
-        "memories": [
-            ("scope", "TEXT NOT NULL DEFAULT 'global'"),
-            ("recall_count", "INTEGER DEFAULT 0"),
-            ("supersedes_id", "TEXT"),
-            ("relationship_type", "TEXT"),
-            ("last_accessed", "INTEGER DEFAULT 0"),
-        ],
-        "embeddings": [("dimensions", "INTEGER NOT NULL DEFAULT 0")],
-        "memory_episodes": [("scope", "TEXT NOT NULL DEFAULT 'global'")],
-        "execution_state": [("terminal_status", "TEXT")],
-        "PlanHistory": [("plan_explanation_json", "TEXT")],
-        "SubtaskMemory": [
-            ("subtask_explanation_json", "TEXT"),
-            ("quality_score", "REAL DEFAULT 0.0"),
-        ],
-    }
-    for table, cols in _additive_columns.items():
+    return statements
+
+
+# Per-table additive columns applied individually (outside executescript) so
+# that each ALTER TABLE can be wrapped in try/except for concurrent-process safety.
+_ADDITIVE_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "improvements": [
+        ("hypothesis", "TEXT NOT NULL DEFAULT ''"),
+        ("target_value", "REAL NOT NULL DEFAULT 0.0"),
+        ("applied_by", "TEXT NOT NULL DEFAULT 'system'"),
+        ("created_at", "TEXT"),
+        ("observation_window_hours", "INTEGER NOT NULL DEFAULT 168"),
+        ("regression_detected", "INTEGER NOT NULL DEFAULT 0"),
+        ("rollback_plan", "TEXT NOT NULL DEFAULT ''"),
+        ("confirmed_at", "TEXT"),
+        ("reverted_at", "TEXT"),
+        ("notes", "TEXT DEFAULT ''"),
+    ],
+    "improvement_observations": [
+        ("observation_id", "INTEGER"),
+        ("sample_size", "INTEGER NOT NULL DEFAULT 1"),
+    ],
+    "memories": [
+        ("scope", "TEXT NOT NULL DEFAULT 'global'"),
+        ("recall_count", "INTEGER DEFAULT 0"),
+        ("supersedes_id", "TEXT"),
+        ("relationship_type", "TEXT"),
+        ("last_accessed", "INTEGER DEFAULT 0"),
+    ],
+    "embeddings": [("dimensions", "INTEGER NOT NULL DEFAULT 0")],
+    "episode_embeddings": [
+        ("model", "TEXT NOT NULL DEFAULT ''"),
+        ("dimensions", "INTEGER NOT NULL DEFAULT 0"),
+    ],
+    "memory_episodes": [("scope", "TEXT NOT NULL DEFAULT 'global'")],
+    "execution_state": [("terminal_status", "TEXT")],
+    "PlanHistory": [("plan_explanation_json", "TEXT")],
+    "SubtaskMemory": [
+        ("subtask_explanation_json", "TEXT"),
+        ("quality_score", "REAL DEFAULT 0.0"),
+    ],
+}
+
+
+def _apply_additive_column_migrations(conn: sqlite3.Connection) -> None:
+    """Apply per-table additive column migrations individually with race safety.
+
+    Each ALTER TABLE is executed outside executescript() so duplicate-column
+    errors from concurrent processes are tolerated via try/except.  Also
+    stamps every ordinary table with ``schema_version`` and derives
+    ``recall_count`` from ``access_count`` in the ``memories`` table.
+
+    Args:
+        conn: Open SQLite connection.
+    """
+    # 1. Named per-table column additions (pre-existing list)
+    for table, cols in _ADDITIVE_COLUMNS.items():
         try:
-            cursor = conn.execute(f"PRAGMA table_info({table})")
-            existing = {row[1] for row in cursor.fetchall()}
+            rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
         except sqlite3.OperationalError:
             logger.warning("Table %s not yet created; skipping additive column migration", table)
-            continue  # table doesn't exist yet — CREATE TABLE below will add it with the column
+            continue
+        existing = {row[1] for row in rows}
+        if not existing:
+            continue  # table missing — CREATE TABLE will add the column
         for col_name, col_def in cols:
-            if existing and col_name not in existing:
+            if col_name not in existing:
                 _safe_log(logging.INFO, "Adding column %s to %s", col_name, table)
-                statements.append(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def};")
-    return statements
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
+                    conn.commit()
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" in str(exc).lower():
+                        logger.info("Race: column %s.%s already added by peer", table, col_name)
+                    else:
+                        raise
+
+    # 2. Stamp schema_version on every ordinary table that lacks it.
+    #    Skip sqlite_* internal tables and memory_fts* virtual tables.
+    try:
+        all_tables = [
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            if not row[0].startswith(("sqlite_", "memory_fts"))
+        ]
+    except sqlite3.OperationalError as exc:
+        logger.warning("Could not enumerate SQLite tables for schema_version stamping: %s", exc)
+        all_tables = []
+
+    for table in all_tables:
+        try:
+            rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        except sqlite3.OperationalError as exc:
+            logger.warning("Could not inspect table %s for schema_version stamping: %s", table, exc)
+            continue
+        existing = {row[1] for row in rows}
+        if "schema_version" not in existing:
+            _safe_log(logging.INFO, "Stamping schema_version on table %s", table)
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1")
+                conn.commit()
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" in str(exc).lower():
+                    logger.info("Race: schema_version already added to %s by peer", table)
+                else:
+                    raise
+
+    # 3. Derive recall_count from access_count for legacy memories rows.
+    try:
+        mem_rows = conn.execute("PRAGMA table_info(memories)").fetchall()
+    except sqlite3.OperationalError:
+        mem_rows = []
+    mem_cols = {row[1] for row in mem_rows}
+    if "recall_count" in mem_cols and "access_count" in mem_cols:
+        conn.execute("UPDATE memories SET recall_count = access_count WHERE recall_count = 0 AND access_count > 0")
+        conn.commit()
+
+    try:
+        obs_rows = conn.execute("PRAGMA table_info(improvement_observations)").fetchall()
+    except sqlite3.OperationalError:
+        obs_rows = []
+    obs_cols = {row[1] for row in obs_rows}
+    if "observation_id" in obs_cols:
+        conn.execute(
+            "UPDATE improvement_observations "
+            "SET observation_id = rowid "
+            "WHERE observation_id IS NULL OR observation_id = 0"
+        )
+        conn.commit()
 
 
 def init_schema(conn: sqlite3.Connection | None = None) -> None:
@@ -272,6 +393,12 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
             # must use get_connection() which will pass conn to us.
             return
 
+        # Additive column migrations run BEFORE executescript so that
+        # legacy tables gain columns (e.g. scope, recall_count) before the
+        # unified schema tries to CREATE INDEX on those columns.  Each ALTER
+        # TABLE is individually wrapped in try/except for concurrent-process
+        # race safety (duplicate column name from peer process).
+        _apply_additive_column_migrations(conn)
         migration_sql = "\n".join(_schema_migration_statements(conn))
         script = f"BEGIN IMMEDIATE;\n{migration_sql}\n{_UNIFIED_SCHEMA}\nCOMMIT;"
         try:
@@ -280,6 +407,9 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
             with contextlib.suppress(sqlite3.Error):
                 conn.execute("ROLLBACK")
             raise
+        # Run again after executescript so that tables created by the schema
+        # script (PlanHistory, SubtaskMemory, etc.) also receive schema_version.
+        _apply_additive_column_migrations(conn)
         _schema_initialized_paths.add(schema_key)
         _schema_initialized = True
         _safe_log(logging.INFO, "Unified database schema initialized at %s", schema_key)

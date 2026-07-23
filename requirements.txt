@@ -1,8 +1,10 @@
 # Compatibility bootstrap for environments that still consume requirements.txt.
 # Canonical dependency metadata lives in pyproject.toml.
 
--e .[dev,local,ml,search,notifications]
+-e .[core,dev]
 
 # Optional heavy extras:
 # -e .[training]   # QLoRA / fine-tuning stack
 # -e .[vllm]       # vLLM backend
+# -e .[gpu]        # local GPU inference and ML stack
+# -e .[browser]    # Playwright-backed browser/scraping stack

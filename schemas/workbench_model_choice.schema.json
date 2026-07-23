@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_model_choice.schema.json",
+  "title": "Workbench Model Quick Choice Catalog",
+  "type": "object",
+  "required": ["surface", "surfaces", "choices", "generated_at_utc"],
+  "additionalProperties": false,
+  "properties": {
+    "surface": { "$ref": "#/$defs/surface" },
+    "surfaces": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/surface" },
+      "minItems": 8,
+      "uniqueItems": true
+    },
+    "choices": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/model_quick_choice" }
+    },
+    "generated_at_utc": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "surface": {
+      "type": "string",
+      "enum": ["chat", "vision", "image", "video", "embedding", "batch", "route", "specialist_agent"]
+    },
+    "inactive_reason": {
+      "type": "string",
+      "enum": [
+        "missing_capability",
+        "stage_not_serving",
+        "deprecated",
+        "provider_disabled",
+        "capability_snapshot_unavailable",
+        "blocked_by_policy",
+        "media_not_allowed_on_chat"
+      ]
+    },
+    "model_ref": {
+      "type": "object",
+      "required": ["provider", "model_id", "qualified_id"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "model_id": { "type": "string", "minLength": 1 },
+        "qualified_id": {
+          "type": "string",
+          "pattern": "^[^:]+::[^:]+$"
+        }
+      }
+    },
+    "capability_snapshot": {
+      "type": "object",
+      "required": ["capabilities", "provider", "stage", "deprecation_state", "card_id", "version_id", "captured_at_utc"],
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "provider": { "type": "string", "minLength": 1 },
+        "stage": { "type": "string", "minLength": 1 },
+        "deprecation_state": { "type": "string", "minLength": 1 },
+        "card_id": { "type": "string", "minLength": 1 },
+        "version_id": { "type": "string", "minLength": 1 },
+        "captured_at_utc": { "type": "string", "minLength": 1 }
+      }
+    },
+    "model_quick_choice": {
+      "type": "object",
+      "required": [
+        "surface",
+        "display_name",
+        "model_ref",
+        "capability_snapshot",
+        "is_active",
+        "inactive_reasons",
+        "evidence_refs",
+        "pinned_version_id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "surface": { "$ref": "#/$defs/surface" },
+        "display_name": { "type": "string", "minLength": 1 },
+        "model_ref": { "$ref": "#/$defs/model_ref" },
+        "capability_snapshot": {
+          "anyOf": [
+            { "$ref": "#/$defs/capability_snapshot" },
+            { "type": "null" }
+          ]
+        },
+        "is_active": { "type": "boolean" },
+        "inactive_reasons": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/inactive_reason" },
+          "uniqueItems": true
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "pinned_version_id": {
+          "anyOf": [
+            { "type": "string", "minLength": 1 },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "is_active": { "const": true } },
+            "required": ["is_active"]
+          },
+          "then": {
+            "properties": { "inactive_reasons": { "maxItems": 0 } }
+          }
+        }
+      ]
+    }
+  }
+}

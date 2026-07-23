@@ -8,6 +8,8 @@
 *.py text eol=lf
 *.pyi text eol=lf
 *.toml text eol=lf
+*.in text eol=lf
+uv.lock text eol=lf
 *.json text eol=lf
 *.jsonl text eol=lf
 *.yaml text eol=lf
@@ -21,6 +23,12 @@
 *.ts text eol=lf
 *.svelte text eol=lf
 *.sh text eol=lf
+MANIFEST.in text eol=lf
+
+# Supplemental license bytes are pinned to immutable upstream digests. Keep
+# Git from rewriting their authoritative byte representation on checkout.
+crates/amw-engine/legal/cargo-supplemental/* -text
+crates/amw-engine/legal/converter-supplemental/* -text
 
 # Windows launchers keep CRLF for maximum compatibility with cmd.exe.
 *.bat text eol=crlf

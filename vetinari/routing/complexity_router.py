@@ -28,6 +28,7 @@ from vetinari.types import AgentType
 
 logger = logging.getLogger(__name__)
 
+
 # Cyclomatic complexity thresholds for the AST-based classifier
 _AST_COMPLEX_THRESHOLD = 10  # McCabe score above this → COMPLEX
 _AST_SIMPLE_THRESHOLD = 3  # McCabe score below this → SIMPLE
@@ -127,34 +128,15 @@ def _infer_task_type(description: str) -> str:
 
 
 def _ast_complexity_from_description(description: str) -> dict[str, Any] | None:
-    """Estimate task complexity via structural AST analysis of the description.
-
-    Measures McCabe-style cyclomatic complexity by counting branching constructs
-    (if/else, loops, try/except, etc.) in any embedded Python code snippets, and
-    applies a word-count and signal-count heuristic for prose descriptions.
-
-    This replaces LLM calls for borderline classification — no model required.
-
-    Args:
-        description: Task description text, which may include Python code snippets.
-
-    Returns:
-        Dict with ``classification`` (SIMPLE/MODERATE/COMPLEX), ``cyclomatic``
-        (int), ``risk`` (LOW/MEDIUM/HIGH), and ``files`` (int) keys, or None if
-        the description is empty.
-    """
+    """Estimate task complexity from embedded code or prose."""
     if not description or not description.strip():
         return None
-
     import ast as _ast
 
-    # ── Step 1: try to parse any embedded Python snippet ─────────────────────
     code_block_re = re.compile(r"```(?:python)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
     snippets = code_block_re.findall(description)
-    # Also try the raw description itself if it looks like Python
     if not snippets and re.search(r"\bdef\s+\w+\s*\(", description):
         snippets = [description]
-
     cyclomatic = 1  # baseline
     for snippet in snippets:
         try:
@@ -162,7 +144,6 @@ def _ast_complexity_from_description(description: str) -> dict[str, Any] | None:
         except SyntaxError:
             logger.warning("Could not parse code snippet for complexity analysis — skipping snippet")
             continue
-        # Count branching nodes (each adds 1 to cyclomatic complexity)
         for node in _ast.walk(tree):
             if isinstance(
                 node,
@@ -178,17 +159,11 @@ def _ast_complexity_from_description(description: str) -> dict[str, Any] | None:
                 ),
             ):
                 cyclomatic += 1
-
-    # ── Step 2: prose-based signal count ─────────────────────────────────────
     desc_lower = description.lower()
     complex_score = sum(1 for p in _COMPLEX_SIGNALS if re.search(p, desc_lower))
     simple_score = sum(1 for p in _SIMPLE_SIGNALS if re.search(p, desc_lower))
     word_count = len(description.split())
-
-    # Boost cyclomatic score by prose signals
     cyclomatic += complex_score * 2
-
-    # ── Step 3: classify ─────────────────────────────────────────────────────
     if cyclomatic >= _AST_COMPLEX_THRESHOLD or (complex_score >= 3 and simple_score == 0):
         classification = "COMPLEX"
         risk = "HIGH"
@@ -198,10 +173,7 @@ def _ast_complexity_from_description(description: str) -> dict[str, Any] | None:
     else:
         classification = "MODERATE"
         risk = "MEDIUM"
-
-    # Rough file estimate from word count
     estimated_files = max(1, word_count // 30)
-
     logger.debug(
         "_ast_complexity_from_description: cyclomatic=%d classification=%s risk=%s",
         cyclomatic,

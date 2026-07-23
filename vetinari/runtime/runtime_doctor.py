@@ -13,90 +13,30 @@ on any blocker so automation scripts can gate on a clean precondition report.
 
 from __future__ import annotations
 
+import importlib
 import logging
 import re
 import sys
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from vetinari.agents.contracts import OutcomeSignal
+from vetinari.runtime.backend_probes import default_probes
+from vetinari.runtime.runtime_doctor_models import RuntimeCheckResult, RuntimeDoctorReport
+
 logger = logging.getLogger(__name__)
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 # Default location of the supported matrix, relative to the repository root.
-DEFAULT_MATRIX_PATH = Path("config/runtime/supported_matrix.yaml")
+DEFAULT_MATRIX_PATH = _REPO_ROOT / "config/runtime/supported_matrix.yaml"
 
 # Default staleness window when the matrix omits one.
 DEFAULT_STALENESS_WINDOW_DAYS = 90
-
-
-@dataclass(frozen=True, slots=True)
-class RuntimeCheckResult:
-    """Outcome of a single matrix-row check.
-
-    Distinct from ``vetinari.validation.prevention.CheckResult`` — both are
-    frozen dataclasses but they describe different things (runtime
-    precondition checks vs. migration-prevention checks) and must not share
-    a name (governance anti-pattern: Same-name classes).
-
-    Attributes:
-        component: Matrix row component name (e.g., "torch", "vllm").
-        passed: True when the detected runtime satisfies the row.
-        detected_version: Version string discovered at runtime, or None if
-            the component could not be detected.
-        reason: Human-readable explanation of the outcome.
-        matrix_sources: URLs from the matrix row used to justify the
-            minimum/known-bad values.
-        is_blocker: When True, ``passed=False`` must flip the overall report
-            to failure. When False, the check is advisory only.
-    """
-
-    component: str
-    passed: bool
-    detected_version: str | None
-    reason: str
-    matrix_sources: tuple[str, ...] = ()
-    is_blocker: bool = True
-
-    def __repr__(self) -> str:
-        """Concise identity showing component, pass status, detected version."""
-        return (
-            f"RuntimeCheckResult(component={self.component!r}, "
-            f"passed={self.passed!r}, detected={self.detected_version!r}, "
-            f"blocker={self.is_blocker!r})"
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class DoctorReport:
-    """Aggregated doctor outcome.
-
-    Attributes:
-        passed: True when no blocker check failed.
-        checks: Per-row check results, in matrix declaration order.
-        blockers: Human-readable list of blocker messages (empty on pass).
-        matrix_verified_at: Parsed ISO date of the matrix's last verification.
-        matrix_staleness_warning: Populated when the matrix is older than
-            the configured staleness window; None otherwise.
-    """
-
-    passed: bool
-    checks: tuple[RuntimeCheckResult, ...]
-    blockers: tuple[str, ...]
-    matrix_verified_at: datetime | None
-    matrix_staleness_warning: str | None = None
-    _advisory_failures: tuple[str, ...] = field(default_factory=tuple)
-
-    def __repr__(self) -> str:
-        """Concise identity for diagnostics."""
-        return (
-            f"DoctorReport(passed={self.passed!r}, "
-            f"checks={len(self.checks)}, "
-            f"blockers={len(self.blockers)}, "
-            f"staleness={self.matrix_staleness_warning is not None})"
-        )
 
 
 def load_matrix(path: Path) -> dict[str, Any]:
@@ -191,58 +131,19 @@ def check_matrix_row(
     detected_version: str | None,
     detected_compute_capability: str | None,
 ) -> RuntimeCheckResult:
-    """Evaluate a single matrix row against detected runtime state.
-
-    Args:
-        row: Parsed matrix row.
-        detected_version: Runtime-detected version string, or None.
-        detected_compute_capability: Runtime-detected compute capability
-            (e.g., ``"12.0"`` for Blackwell), or None.
+    """Evaluate one supported-runtime matrix row.
 
     Returns:
-        RuntimeCheckResult describing whether the row's preconditions hold.
+        Value produced for the caller.
     """
-    component = str(row.get("component", "<unknown>"))
-    minimum = row.get("minimum_version")
-    known_bad_ranges = row.get("known_bad_ranges") or []
-    required_cc = row.get("required_compute_capability")
-    sources = tuple(row.get("verified_sources") or ())
-    optional = bool(row.get("optional"))
+    component, minimum, known_bad_ranges, required_cc, sources, optional = _matrix_row_fields(row)
     platform_skip = row.get("platform_skip") or []
-
     import platform as _platform_mod
 
     if _platform_mod.system() in platform_skip:
-        return RuntimeCheckResult(
-            component=component,
-            passed=True,
-            detected_version=detected_version,
-            reason=(
-                f"{component} is not installed on this platform ({_platform_mod.system()}) per supported-matrix policy — skipping version check."
-            ),
-            matrix_sources=sources,
-            is_blocker=False,
-        )
-
+        return _platform_skip_result(component, detected_version, sources, _platform_mod.system())
     if detected_version is None:
-        if optional:
-            return RuntimeCheckResult(
-                component=component,
-                passed=True,
-                detected_version=None,
-                reason=(f"{component} is optional for this build and is not installed — skipping version check."),
-                matrix_sources=sources,
-                is_blocker=False,
-            )
-        return RuntimeCheckResult(
-            component=component,
-            passed=False,
-            detected_version=None,
-            reason=(f"Could not detect installed version of {component}; the supported matrix lists it as required."),
-            matrix_sources=sources,
-            is_blocker=True,
-        )
-
+        return _missing_version_result(component, sources, optional)
     if minimum and not _version_ge(detected_version, str(minimum)):
         return RuntimeCheckResult(
             component=component,
@@ -255,7 +156,6 @@ def check_matrix_row(
             matrix_sources=sources,
             is_blocker=True,
         )
-
     for bad_spec in known_bad_ranges:
         if _version_matches_range(detected_version, str(bad_spec)):
             return RuntimeCheckResult(
@@ -270,7 +170,6 @@ def check_matrix_row(
                 matrix_sources=sources,
                 is_blocker=True,
             )
-
     if (
         required_cc
         and detected_compute_capability is not None
@@ -289,7 +188,6 @@ def check_matrix_row(
             matrix_sources=sources,
             is_blocker=False,
         )
-
     return RuntimeCheckResult(
         component=component,
         passed=True,
@@ -297,6 +195,53 @@ def check_matrix_row(
         reason=f"{component} {detected_version} satisfies the matrix.",
         matrix_sources=sources,
         is_blocker=True,
+    )
+
+
+def _matrix_row_fields(row: dict[str, Any]) -> tuple[str, Any, Any, Any, tuple[Any, ...], bool]:
+    return (
+        str(row.get("component", "<unknown>")),
+        row.get("minimum_version"),
+        row.get("known_bad_ranges") or [],
+        row.get("required_compute_capability"),
+        tuple(row.get("verified_sources") or ()),
+        bool(row.get("optional")),
+    )
+
+
+def _missing_version_result(component: str, sources: tuple[Any, ...], optional: bool) -> RuntimeCheckResult:
+    if optional:
+        return RuntimeCheckResult(
+            component=component,
+            passed=True,
+            detected_version=None,
+            reason=(f"{component} is optional for this build and is not installed - skipping version check."),
+            matrix_sources=sources,
+            is_blocker=False,
+        )
+    return RuntimeCheckResult(
+        component=component,
+        passed=False,
+        detected_version=None,
+        reason=(f"Could not detect installed version of {component}; the supported matrix lists it as required."),
+        matrix_sources=sources,
+        is_blocker=True,
+    )
+
+
+def _platform_skip_result(
+    component: str,
+    detected_version: str | None,
+    sources: tuple[Any, ...],
+    platform_name: str,
+) -> RuntimeCheckResult:
+    return RuntimeCheckResult(
+        component=component,
+        passed=True,
+        detected_version=detected_version,
+        reason=f"{component} is not installed on this platform ({platform_name}) per supported-matrix policy - skipping version check.",
+        matrix_sources=sources,
+        is_blocker=False,
     )
 
 
@@ -347,7 +292,7 @@ def _detect_compute_capability() -> str | None:
         Compute capability as "<major>.<minor>", or None.
     """
     try:
-        import pynvml  # type: ignore[import-untyped]
+        pynvml = importlib.import_module("pynvml")
 
         pynvml.nvmlInit()
         try:
@@ -409,7 +354,7 @@ def run_doctor(
     now: datetime | None = None,
     version_detector: Any | None = None,
     compute_capability_detector: Any | None = None,
-) -> DoctorReport:
+) -> RuntimeDoctorReport:
     """Run the supported-matrix doctor and return a fail-closed report.
 
     Args:
@@ -423,7 +368,7 @@ def run_doctor(
             the default GPU compute-capability detection (for tests).
 
     Returns:
-        DoctorReport. ``passed=False`` when any blocker check failed or the
+        RuntimeDoctorReport. ``passed=False`` when any blocker check failed or the
         matrix is stale with unknown component versions.
     """
     path = matrix_path or DEFAULT_MATRIX_PATH
@@ -475,7 +420,7 @@ def run_doctor(
         )
 
     passed = not blockers
-    return DoctorReport(
+    return RuntimeDoctorReport(
         passed=passed,
         checks=tuple(checks),
         blockers=blockers,
@@ -485,11 +430,11 @@ def run_doctor(
     )
 
 
-def format_report(report: DoctorReport) -> str:
-    """Format a DoctorReport as a plain-text report suitable for CLI output.
+def format_report(report: RuntimeDoctorReport) -> str:
+    """Format a RuntimeDoctorReport as a plain-text report suitable for CLI output.
 
     Args:
-        report: The DoctorReport to format.
+        report: The RuntimeDoctorReport to format.
 
     Returns:
         Multi-line string with one line per check, plus a final summary.
@@ -503,6 +448,32 @@ def format_report(report: DoctorReport) -> str:
         lines.append(f"[WARN] matrix staleness: {report.matrix_staleness_warning}")
     summary = "Runtime doctor: PASS" if report.passed else "Runtime doctor: FAIL (blockers found)"
     lines.append(summary)
+    return "\n".join(lines)
+
+
+def run_backend_probes() -> tuple[OutcomeSignal, ...]:
+    """Run registered backend probes without changing matrix doctor semantics.
+
+    Backend packages are optional and often live outside the base Python
+    environment, so these probes are exposed as an additive health surface
+    instead of converting missing optional backends into runtime startup
+    blockers.
+    """
+    return tuple(probe.probe_fn() for probe in default_probes().values())
+
+
+def format_backend_probe_report(signals: tuple[OutcomeSignal, ...]) -> str:
+    """Format backend probe outcomes for operator-facing doctor output.
+
+    Returns:
+        Multiline backend probe summary.
+    """
+    lines: list[str] = []
+    for signal in signals:
+        marker = "PASS" if signal.passed else "WARN"
+        reason = "; ".join(signal.issues) or "backend healthy"
+        lines.append(f"[{marker}] backend probe: {reason}")
+    lines.append(f"Backend probes: {sum(1 for signal in signals if signal.passed)}/{len(signals)} passed")
     return "\n".join(lines)
 
 

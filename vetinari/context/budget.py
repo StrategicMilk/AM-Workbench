@@ -17,6 +17,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 # ── Threshold defaults ─────────────────────────────────────────────────
 # These ratios are intentionally generous: warn early, compact before crisis,
 # hard-stop only when the model would silently truncate or refuse.
@@ -326,6 +327,15 @@ class ContextBudget:
         hard_stop_limit = int(self._context_length * self._thresholds.hard_stop_ratio)
         return hard_stop_limit - self._total_tokens
 
+    def compaction_target_tokens(self) -> int:
+        """Return the post-compaction token target for context reducers.
+
+        This is deliberately based on the warning threshold, not on the current
+        hard-stop headroom.  Headroom can be very small once compaction is
+        triggered, and using it as a target would over-compress useful context.
+        """
+        return max(1, int(self._context_length * self._thresholds.warn_ratio))
+
     # ── Mutation API ───────────────────────────────────────────────────
 
     def reset(self) -> None:
@@ -402,7 +412,8 @@ class ContextBudget:
             return BudgetStatus.WARNING
         return BudgetStatus.OK
 
-    def _build_message(self, status: BudgetStatus, ratio: float, remaining: int) -> str:
+    @staticmethod
+    def _build_message(status: BudgetStatus, ratio: float, remaining: int) -> str:
         """Compose a human-readable status message for a BudgetCheck.
 
         Args:

@@ -1,0 +1,198 @@
+{
+  "$id": "https://vetinari.local/schemas/workbench_memory_governance.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AM Workbench memory governance firewall decision",
+  "description": "Fail-closed memory lifecycle and firewall decision payload for agent-generated memory candidates.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "memory_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "state": {
+      "enum": ["proposed", "validated", "active", "superseded", "tombstoned", "quarantined"]
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["source", "reason"]
+    },
+    "scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_trust": {
+      "enum": ["untrusted", "candidate", "trusted"]
+    },
+    "authority": {
+      "enum": ["none", "candidate", "memory", "prompt", "planning", "routing", "policy"]
+    },
+    "policy_state": {
+      "enum": ["approved", "blocked", "unknown"]
+    },
+    "retention": {
+      "enum": ["ephemeral", "retained", "expired", "forget_requested"]
+    },
+    "boundary": {
+      "enum": ["public", "private", "mixed", "unknown"]
+    },
+    "conflict": {
+      "enum": ["clear", "conflict", "unknown"]
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "properties": {
+        "plan_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "strategy": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["plan_id", "strategy"]
+    },
+    "rollback_status": {
+      "enum": ["present", "absent"]
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "properties": {
+        "approval_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approved_by": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["approval_id", "approved_by"]
+    },
+    "approval_state": {
+      "enum": ["approved", "rejected", "missing"]
+    },
+    "taint": {
+      "enum": ["clean", "tainted", "unknown"]
+    },
+    "lineage_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "created_at_utc": {
+      "type": "string",
+      "minLength": 1
+    },
+    "firewall_decision": {
+      "$ref": "#/$defs/firewall_decision"
+    }
+  },
+  "required": [
+    "schema_version",
+    "memory_id",
+    "state",
+    "provenance",
+    "scope",
+    "source_trust",
+    "authority",
+    "policy_state",
+    "retention",
+    "boundary",
+    "conflict",
+    "rollback",
+    "rollback_status",
+    "approval",
+    "approval_state",
+    "taint",
+    "lineage_refs",
+    "created_at_utc",
+    "firewall_decision"
+  ],
+  "$defs": {
+    "firewall_decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "memory_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "result": {
+          "enum": ["accepted", "blocked", "quarantined", "tombstoned", "superseded", "forgotten"]
+        },
+        "state": {
+          "enum": ["proposed", "validated", "active", "superseded", "tombstoned", "quarantined"]
+        },
+        "authority": {
+          "enum": ["none", "candidate", "memory", "prompt", "planning", "routing", "policy"]
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "prompt_eligible": {
+          "type": "boolean"
+        },
+        "planning_eligible": {
+          "type": "boolean"
+        },
+        "routing_eligible": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decision_source": {
+          "const": "memory_firewall"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "memory_id",
+        "result",
+        "state",
+        "authority",
+        "blockers",
+        "prompt_eligible",
+        "planning_eligible",
+        "routing_eligible",
+        "reason",
+        "decision_source",
+        "metadata"
+      ]
+    }
+  }
+}

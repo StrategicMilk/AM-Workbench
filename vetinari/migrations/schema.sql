@@ -3,6 +3,10 @@
 -- Primary store: SQLite (recommended for production)
 -- JSON fallback: vetinari_memory.json (for development/prototyping)
 
+-- vetinari:add-column-if-missing PlanHistory retention_expires_at DATETIME
+-- vetinari:add-column-if-missing SubtaskMemory retention_expires_at DATETIME
+-- vetinari:add-column-if-missing ModelPerformance retention_expires_at DATETIME
+
 -- ==========================================
 -- PlanHistory Table
 -- ==========================================
@@ -19,6 +23,9 @@ CREATE TABLE IF NOT EXISTS PlanHistory (
     plan_explanation_json TEXT,
     chosen_plan_id TEXT,
     plan_justification TEXT,
+    privacy_envelope_json TEXT NOT NULL DEFAULT '{}',
+    subject_id TEXT,
+    retention_expires_at DATETIME,
     risk_score REAL DEFAULT 0.0,
     dry_run INTEGER DEFAULT 0,
     auto_approved INTEGER DEFAULT 0
@@ -42,6 +49,9 @@ CREATE TABLE IF NOT EXISTS SubtaskMemory (
     cost_estimate REAL,
     rationale TEXT,
     subtask_explanation_json TEXT,
+    privacy_envelope_json TEXT NOT NULL DEFAULT '{}',
+    subject_id TEXT,
+    retention_expires_at DATETIME,
     domain TEXT,
     quality_score REAL DEFAULT 0.0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -60,6 +70,8 @@ CREATE TABLE IF NOT EXISTS ModelPerformance (
     success_rate REAL DEFAULT 0.0,
     avg_latency REAL DEFAULT 0.0,
     total_uses INTEGER DEFAULT 0,
+    privacy_envelope_json TEXT NOT NULL DEFAULT '{}',
+    retention_expires_at DATETIME,
     last_used_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (model_id, task_type)
 );
@@ -73,6 +85,11 @@ CREATE INDEX IF NOT EXISTS idx_subtask_plan_id ON SubtaskMemory(plan_id);
 
 -- Index on created_at for retention policy queries
 CREATE INDEX IF NOT EXISTS idx_plan_created_at ON PlanHistory(created_at);
+
+-- Indexes on explicit retention expiries for privacy-envelope cleanup
+CREATE INDEX IF NOT EXISTS idx_plan_retention_expires_at ON PlanHistory(retention_expires_at);
+CREATE INDEX IF NOT EXISTS idx_subtask_retention_expires_at ON SubtaskMemory(retention_expires_at);
+CREATE INDEX IF NOT EXISTS idx_model_perf_retention_expires_at ON ModelPerformance(retention_expires_at);
 
 -- Index on domain for domain-specific queries
 CREATE INDEX IF NOT EXISTS idx_subtask_domain ON SubtaskMemory(domain);
@@ -113,11 +130,11 @@ CREATE INDEX IF NOT EXISTS idx_subtask_status ON SubtaskMemory(status);
 -- 1. Create tables using the CREATE TABLE statements above
 -- 2. Parse the JSON file and insert records:
 --
--- INSERT INTO PlanHistory (plan_id, plan_version, goal, created_at, updated_at, status, plan_json, chosen_plan_id, plan_justification, risk_score, dry_run, auto_approved)
--- VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+-- INSERT INTO PlanHistory (plan_id, plan_version, goal, created_at, updated_at, status, plan_json, chosen_plan_id, plan_justification, privacy_envelope_json, subject_id, retention_expires_at, risk_score, dry_run, auto_approved)
+-- VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 --
--- INSERT INTO SubtaskMemory (subtask_id, plan_id, parent_subtask_id, description, depth, status, assigned_model_id, outcome, duration_seconds, cost_estimate, rationale, domain, created_at, updated_at)
--- VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+-- INSERT INTO SubtaskMemory (subtask_id, plan_id, parent_subtask_id, description, depth, status, assigned_model_id, outcome, duration_seconds, cost_estimate, rationale, privacy_envelope_json, subject_id, retention_expires_at, domain, created_at, updated_at)
+-- VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- ==========================================
 -- Retention Policy

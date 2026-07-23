@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_status.schema.json",
+  "title": "Workbench Status Snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project_id", "overall_state", "generated_at_utc", "state_counts", "results", "config"],
+  "properties": {
+    "project_id": {"type": "string", "minLength": 1},
+    "overall_state": {"$ref": "#/$defs/health_state"},
+    "generated_at_utc": {"type": "string", "minLength": 1},
+    "state_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["configured", "degraded", "broken", "busy", "stale", "approval_required"],
+      "properties": {
+        "configured": {"type": "integer", "minimum": 0},
+        "degraded": {"type": "integer", "minimum": 0},
+        "broken": {"type": "integer", "minimum": 0},
+        "busy": {"type": "integer", "minimum": 0},
+        "stale": {"type": "integer", "minimum": 0},
+        "approval_required": {"type": "integer", "minimum": 0}
+      }
+    },
+    "results": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/health_result"}
+    },
+    "config": {
+      "type": ["object", "null"],
+      "required": ["schema_version", "required_domains", "settings_targets", "fix_actions"],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"const": "1.0"},
+        "required_domains": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/domain"},
+          "minItems": 14,
+          "uniqueItems": true
+        },
+        "settings_targets": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}},
+        "fix_actions": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}}
+      }
+    }
+  },
+  "$defs": {
+    "health_state": {
+      "enum": ["configured", "degraded", "broken", "busy", "stale", "approval_required"]
+    },
+    "domain": {
+      "enum": [
+        "providers",
+        "models",
+        "channels",
+        "memory",
+        "tools",
+        "mcp",
+        "agent_safety",
+        "capability_packs",
+        "scheduler_resources",
+        "active_runs",
+        "queues",
+        "logs_errors",
+        "updates",
+        "settings",
+        "support_bundle"
+      ]
+    },
+    "health_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "domain",
+        "key",
+        "state",
+        "severity",
+        "summary",
+        "evidence_refs",
+        "checked_at_utc",
+        "settings_target",
+        "fix_action",
+        "assistant_visible",
+        "ui_visible",
+        "stale_after_utc",
+        "stale_reason",
+        "informational"
+      ],
+      "properties": {
+        "domain": {"$ref": "#/$defs/domain"},
+        "key": {"type": "string", "minLength": 1},
+        "state": {"$ref": "#/$defs/health_state"},
+        "severity": {"enum": ["info", "warning", "error", "blocking"]},
+        "summary": {"type": "string", "minLength": 1},
+        "evidence_refs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "checked_at_utc": {"type": "string", "minLength": 1},
+        "settings_target": {"type": ["string", "null"]},
+        "fix_action": {"type": ["string", "null"]},
+        "assistant_visible": {"type": "boolean"},
+        "ui_visible": {"type": "boolean"},
+        "stale_after_utc": {"type": ["string", "null"]},
+        "stale_reason": {"type": ["string", "null"]},
+        "informational": {"type": "boolean"}
+      },
+      "anyOf": [
+        {"properties": {"informational": {"const": true}}},
+        {"required": ["settings_target"], "properties": {"settings_target": {"type": "string", "minLength": 1}}},
+        {"required": ["fix_action"], "properties": {"fix_action": {"type": "string", "minLength": 1}}}
+      ]
+    }
+  }
+}

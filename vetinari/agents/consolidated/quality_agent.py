@@ -36,6 +36,7 @@ from vetinari.types import AgentType
 
 logger = logging.getLogger(__name__)
 
+
 # ---------------------------------------------------------------------------
 # Lazy getters for quality_execution — imported once to break circular dep.
 # quality_execution imports vetinari.agents.consolidated which re-imports
@@ -247,15 +248,13 @@ class InspectorAgent(MultiModeAgent):
             # A score field alone is not positive evidence — the inference fallback
             # dict {"score": 0.5, "issues": [], "summary": "Review unavailable"}
             # would otherwise pass this gate despite containing no review content.
-            has_review = bool(
-                output.get("issues")
-                or output.get("findings")
-                or output.get("tests")
-            )
+            has_review = bool(output.get("issues") or output.get("findings") or output.get("tests"))
             if not has_review:
                 return VerificationResult(
                     passed=False,
-                    issues=[{"message": "Review output contains no issues, findings, or tests — likely a fallback response"}],
+                    issues=[
+                        {"message": "Review output contains no issues, findings, or tests — likely a fallback response"}
+                    ],
                     score=0.0,
                 )
             return VerificationResult(passed=True, score=0.8)
@@ -295,7 +294,8 @@ class InspectorAgent(MultiModeAgent):
         """
         return _get_exec_security_audit()(self, task)
 
-    def _perform_root_cause_analysis(self, task: AgentTask, result: AgentResult) -> AgentResult:
+    @staticmethod
+    def _perform_root_cause_analysis(task: AgentTask, result: AgentResult) -> AgentResult:
         """Perform root cause analysis when quality check fails.
 
         Adds root_cause metadata to the result for downstream corrective routing.
@@ -386,6 +386,7 @@ class InspectorAgent(MultiModeAgent):
         Returns:
             List of finding dicts with severity, finding, line, evidence, and source fields.
         """
+        _ = self
         return run_security_scan(code)
 
     def _run_antipattern_scan(self, code: str) -> list[dict[str, Any]]:
@@ -399,6 +400,7 @@ class InspectorAgent(MultiModeAgent):
         Returns:
             List of finding dicts with severity, finding, line, evidence, and source fields.
         """
+        _ = self
         return run_antipattern_scan(code)
 
     # ------------------------------------------------------------------

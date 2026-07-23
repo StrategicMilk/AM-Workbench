@@ -1,0 +1,54 @@
+schema_version: 1
+capability_catalog:
+  - audio_generation
+  - batch
+  - chat
+  - embedding
+  - image_generation
+  - route
+  - specialist_agent
+  - transcription
+  - video_generation
+  - vision
+surfaces:
+  chat:
+    required_capabilities: [chat]
+    disallowed_capabilities: [image_generation, video_generation, audio_generation]
+    provider_priority: [lmstudio, openrouter, local]
+  vision:
+    required_capabilities: [vision]
+    disallowed_capabilities: []
+    provider_priority: [lmstudio, openrouter, local]
+  image:
+    required_capabilities: [image_generation]
+    disallowed_capabilities: []
+    provider_priority: [local, openrouter, lmstudio]
+  video:
+    required_capabilities: [video_generation]
+    disallowed_capabilities: []
+    provider_priority: [local, openrouter, lmstudio]
+  embedding:
+    required_capabilities: [embedding]
+    disallowed_capabilities: []
+    provider_priority: [lmstudio, openrouter, local]
+  batch:
+    required_capabilities: [batch]
+    disallowed_capabilities: []
+    provider_priority: [lmstudio, openrouter, local]
+  route:
+    required_capabilities: [route]
+    disallowed_capabilities: []
+    provider_priority: [lmstudio, openrouter, local]
+  specialist_agent:
+    required_capabilities: [specialist_agent]
+    disallowed_capabilities: []
+    provider_priority: [lmstudio, openrouter, local]
+privacy_substantiation:
+  finding_ids:
+    - FSA-0681
+  known_bad_predicate: "Quick-choice routing can silently route privacy-sensitive surfaces to providers without capability constraints."
+  known_good_predicate: "Every surface declares required_capabilities, disallowed_capabilities, and provider_priority; image/video/audio are disallowed for chat."
+  negative_control_predicate: "A surface missing required_capabilities is rejected by the P04 operator substantiation test."
+  direct_surface_refs:
+    - config/workbench/model_quick_choices.yaml
+    - tests/operator/test_wave3_anchored_mismatch_followup_01_p04.py

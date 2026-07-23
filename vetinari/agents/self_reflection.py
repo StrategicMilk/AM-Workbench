@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from vetinari.agents.contracts import AgentResult, AgentTask
+from vetinari.boundary_guards import account_evidence_drop
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ class Evaluator(Protocol):
         Returns:
             Tuple of (is_acceptable, list_of_issues).
         """
-        ...  # noqa: VET032 — Protocol stub: body is intentionally ellipsis per PEP 544
+        ...
 
 
 class Refiner(Protocol):
@@ -95,7 +96,7 @@ class Refiner(Protocol):
         Returns:
             A new AgentResult incorporating the feedback.
         """
-        ...  # noqa: VET032 — Protocol stub: body is intentionally ellipsis per PEP 544
+        ...
 
 
 def get_reflection_strategy(task: AgentTask) -> ReflectionStrategy:
@@ -333,3 +334,46 @@ def _report_to_kaizen(task: AgentTask, iterations: int) -> None:
         iterations,
         iterations >= KAIZEN_ITERATION_THRESHOLD,
     )
+    persist_fn = task.context.get("kaizen_persist_fn")
+    if persist_fn is not None:
+        report_kaizen_finding(
+            finding={
+                "id": f"self-reflection:{task.task_id}",
+                "iterations": iterations,
+                "threshold_exceeded": iterations >= KAIZEN_ITERATION_THRESHOLD,
+            },
+            persist_fn=persist_fn,
+            logger=logger,
+        )
+
+
+def report_kaizen_finding(
+    *,
+    finding: dict[str, Any],
+    persist_fn: Any,
+    logger: logging.Logger | None = None,
+) -> None:
+    """Persist a kaizen finding or fail closed with evidence-drop accounting.
+
+    Raises:
+        RuntimeError: If no persistence function is available.
+        Exception: Re-raises persistence failures after accounting for the drop.
+    """
+    active_logger = logger or globals()["logger"]
+    evidence_ref = str(finding.get("id") or "kaizen_finding")
+    if persist_fn is None:
+        account_evidence_drop(
+            logger=active_logger,
+            evidence_ref=evidence_ref,
+            reason="kaizen persist function unavailable",
+        )
+        raise RuntimeError("kaizen persist function unavailable")
+    try:
+        persist_fn(finding)
+    except Exception:
+        account_evidence_drop(
+            logger=active_logger,
+            evidence_ref=evidence_ref,
+            reason="kaizen persist failed",
+        )
+        raise

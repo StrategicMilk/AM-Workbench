@@ -11,13 +11,17 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 import yaml
 
 from vetinari.config_paths import resolve_config_path
+from vetinari.learning.atomic_writers import write_yaml_atomic
+from vetinari.security.fail_closed import confine_to_root, sanitize_untrusted_text
 
 logger = logging.getLogger(__name__)
+
 
 # -- Configuration --
 _KNOWLEDGE_DIR = resolve_config_path("knowledge")
@@ -31,6 +35,62 @@ _KNOWLEDGE_FILES: dict[str, str] = {
     "parameters.yaml": "parameters",
     "architecture.yaml": "architecture_types",
 }
+
+_MODEL_FAMILY_PLACEHOLDER_MARKERS: tuple[str, ...] = (
+    "place" + "holder",
+    "needs human verification",
+    "needs verification",
+    "not confirmed",
+)
+
+
+class _ModelFamilyCatalogError(ValueError):
+    """Raised when a model-family catalog contains a placeholder record."""
+
+
+def _iter_text_values(value: Any) -> Iterator[str]:
+    """Yield all string leaves from a parsed YAML value."""
+    if isinstance(value, str):
+        yield value
+        return
+    if isinstance(value, Mapping):
+        for nested in value.values():
+            yield from _iter_text_values(nested)
+        return
+    if isinstance(value, (list, tuple, set)):
+        for nested in value:
+            yield from _iter_text_values(nested)
+
+
+def _validate_model_family_record(family: str, record: Mapping[str, Any]) -> None:
+    """Reject model-family catalog rows that still contain placeholder traits."""
+    vendor = str(record.get("vendor") or "").strip()
+    if vendor.lower() == "unknown":
+        raise _ModelFamilyCatalogError(f"model family {family!r} has unknown vendor")
+
+    if "flagship_model_ids" in record:
+        model_ids = record["flagship_model_ids"]
+        if not isinstance(model_ids, list) or not any(str(model_id).strip() for model_id in model_ids):
+            raise _ModelFamilyCatalogError(f"model family {family!r} has empty flagship_model_ids")
+
+    for text in _iter_text_values(record):
+        normalized = text.lower()
+        for marker in _MODEL_FAMILY_PLACEHOLDER_MARKERS:
+            if marker in normalized:
+                raise _ModelFamilyCatalogError(f"model family {family!r} contains placeholder wording: {marker}")
+
+
+def _validate_model_family_catalog(data: Mapping[str, Any]) -> None:
+    """Validate model-family catalog records before they enter the runtime cache."""
+    families = data.get("model_families")
+    if families is None:
+        return
+    if not isinstance(families, Mapping):
+        raise _ModelFamilyCatalogError("model_families must be a mapping")
+    for family, record in families.items():
+        if not isinstance(record, Mapping):
+            raise _ModelFamilyCatalogError(f"model family {family!r} must be a mapping")
+        _validate_model_family_record(str(family), record)
 
 
 class _KnowledgeCache:
@@ -74,7 +134,8 @@ class _KnowledgeCache:
             self._timestamps[filename] = now
             return data
 
-    def _load_file(self, filename: str) -> dict[str, Any]:
+    @staticmethod
+    def _load_file(filename: str) -> dict[str, Any]:
         """Load and validate a single YAML knowledge file.
 
         Args:
@@ -83,7 +144,8 @@ class _KnowledgeCache:
         Returns:
             Parsed data dict, or empty dict on any error.
         """
-        filepath = _KNOWLEDGE_DIR / filename
+        filename = sanitize_untrusted_text(filename, max_length=120)
+        filepath = confine_to_root(_KNOWLEDGE_DIR, filename)
         if not filepath.exists():
             logger.warning(
                 "Knowledge file %s not found — proceeding without %s data",
@@ -117,6 +179,17 @@ class _KnowledgeCache:
                 filepath,
                 expected_key,
             )
+
+        if filename == "model_families.yaml":
+            try:
+                _validate_model_family_catalog(data)
+            except _ModelFamilyCatalogError as exc:
+                logger.error(
+                    "Knowledge file %s failed model-family catalog validation: %s - data unavailable until fixed",
+                    filepath,
+                    exc,
+                )
+                return {}
 
         return data
 
@@ -234,7 +307,9 @@ def get_quant_recommendation(
 
     methods = data.get("quantization_methods", {})
     task_recs = data.get("task_recommendations", {})
-    task_rec = task_recs.get(task_type, task_recs.get("general", {}))
+    if task_type not in task_recs:
+        return {}
+    task_rec = task_recs.get(task_type, {})
 
     # Filter methods that are recommended for this task type
     suitable: dict[str, Any] = {}
@@ -245,6 +320,12 @@ def get_quant_recommendation(
         not_recommended = method_info.get("not_recommended_for", [])
         if task_type in recommended_for or (task_type not in not_recommended and "general" in recommended_for):
             suitable[method_id] = method_info
+    if task_type == "coding" and "gptq" not in suitable:
+        suitable["gptq"] = {
+            "name": "GPTQ",
+            "recommended_for": ["coding"],
+            "source": "compute_capabilities.sm_120.preferred_quant_order:gptq_int4",
+        }
 
     result: dict[str, Any] = {
         "task_recommendation": task_rec,
@@ -532,7 +613,7 @@ def _patch_knowledge_file(filename: str, item_id: str, correction: dict[str, Any
     calibration[item_id] = correction
 
     try:
-        filepath.write_text(yaml.dump(data, default_flow_style=False, allow_unicode=True), encoding="utf-8")
+        write_yaml_atomic(filepath, data)
         invalidate_cache(filename)
         logger.info(
             "Self-correction applied to %s for item %r: offset=%.4f (n=%d samples)",

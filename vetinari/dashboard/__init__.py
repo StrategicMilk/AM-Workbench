@@ -31,9 +31,8 @@ from __future__ import annotations
 
 import logging
 
-logger = logging.getLogger(__name__)
-
-from .alerts import (  # noqa: E402 - late import is required after bootstrap setup
+from .agent_dashboard import AgentDashboard, AgentMetrics, SystemHealth
+from .alerts import (
     AlertCondition,
     AlertEngine,
     AlertRecord,
@@ -42,7 +41,7 @@ from .alerts import (  # noqa: E402 - late import is required after bootstrap se
     get_alert_engine,
     reset_alert_engine,
 )
-from .api import (  # noqa: E402 - late import is required after bootstrap setup
+from .api import (
     DashboardAPI,
     MetricsSnapshot,
     TimeSeriesData,
@@ -50,14 +49,14 @@ from .api import (  # noqa: E402 - late import is required after bootstrap setup
     get_dashboard_api,
     reset_dashboard,
 )
-from .log_aggregator import (  # noqa: E402 - late import is required after bootstrap setup
+from .log_aggregator import (
     AggregatorHandler,
     LogAggregator,
     LogRecord,
     get_log_aggregator,
     reset_log_aggregator,
 )
-from .log_backends import (  # noqa: E402 - late import is required after bootstrap setup
+from .log_backends import (
     DatadogBackend,
     FileBackend,
     SSEBackend,
@@ -66,7 +65,12 @@ from .log_backends import (  # noqa: E402 - late import is required after bootst
     reset_sse_backend,
 )
 
+logger = logging.getLogger(__name__)
+
+
 __all__ = [
+    "AgentDashboard",
+    "AgentMetrics",
     "AggregatorHandler",
     "AlertCondition",
     "AlertEngine",
@@ -80,6 +84,7 @@ __all__ = [
     "LogRecord",
     "MetricsSnapshot",
     "SSEBackend",
+    "SystemHealth",
     "TimeSeriesData",
     "TraceDetail",
     "WebhookBackend",

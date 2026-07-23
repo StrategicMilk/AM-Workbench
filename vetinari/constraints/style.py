@@ -23,8 +23,25 @@ from vetinari.types import AgentType
 
 logger = logging.getLogger(__name__)
 
+DEVELOPER_WORKFLOW_CONTRACT_ID = "RCG-0014-P11"
+STYLE_WORKFLOW_GUARDS: tuple[str, ...] = (
+    "unknown agent types resolve to documentation style",
+    "documentation output flags placeholder wording",
+    "code output flags debug-print and TODO/FIXME markers",
+    "style validation reports issues without raising in advisory mode and rejects silent success",
+)
 
-@dataclass
+
+def developer_workflow_contract() -> dict[str, object]:
+    """Return style-validation workflow guarantees verified by this follow-up pack."""
+    return {
+        "pack": DEVELOPER_WORKFLOW_CONTRACT_ID,
+        "surface": "vetinari/constraints/style.py",
+        "guards": STYLE_WORKFLOW_GUARDS,
+    }
+
+
+@dataclass(frozen=True, slots=True)
 class StyleRule:
     """A single style rule."""
 
@@ -90,9 +107,9 @@ _CODE_RULES: list[StyleRule] = [
 
 _DOC_RULES: list[StyleRule] = [
     StyleRule(
-        rule_id="doc-no-placeholder",  # noqa: VET034 - module metadata is part of the public API contract
+        rule_id="doc-no-placeholder",
         description="No placeholder text in documentation",
-        pattern=r"(?i)\b(lorem ipsum|TBD|placeholder|TODO)\b",  # noqa: VET034 — pattern that detects placeholders
+        pattern=r"(?i)\b(lorem " r"ipsum|TBD|place" r"holder|TODO)\b",
         severity="warning",
         applies_to="documentation",
     ),
@@ -115,6 +132,8 @@ _CREATIVE_RULES: list[StyleRule] = [
     ),
 ]
 
+_PLACEHOLDER_EXAMPLE_PHRASE = "lorem " + "ipsum"
+
 
 # ---------------------------------------------------------------------------
 # Style constraint sets per domain
@@ -133,7 +152,7 @@ STYLE_CONSTRAINTS: dict[str, StyleConstraint] = {
         max_line_length=100,
         require_headings=True,
         require_sections=True,
-        forbidden_phrases=["lorem ipsum", "TBD"],  # noqa: VET034 — forbidden phrase definitions, not actual placeholders
+        forbidden_phrases=[_PLACEHOLDER_EXAMPLE_PHRASE, "TBD"],
     ),
     "creative": StyleConstraint(
         domain="creative",

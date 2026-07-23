@@ -74,6 +74,7 @@ def aggregate_outcome_signals(signals: list[OutcomeSignal]) -> OutcomeSignal:
     avg_score = round(sum(s.score for s in signals) / len(signals), 3)
     merged_issues: tuple[str, ...] = tuple(issue for s in signals for issue in s.issues)
     merged_suggestions: tuple[str, ...] = tuple(sug for s in signals for sug in s.suggestions)
+    merged_tool_evidence = tuple(evidence for s in signals for evidence in s.tool_evidence)
 
     advisory: tuple[str, ...] = ()
     if basis is EvidenceBasis.LLM_JUDGMENT:
@@ -83,6 +84,7 @@ def aggregate_outcome_signals(signals: list[OutcomeSignal]) -> OutcomeSignal:
         passed=all_passed,
         score=avg_score,
         basis=basis,
+        tool_evidence=merged_tool_evidence,
         issues=merged_issues + advisory,
         suggestions=merged_suggestions,
         provenance=Provenance(source=_AGGREGATOR_SOURCE, timestamp_utc=timestamp),

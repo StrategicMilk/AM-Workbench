@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 import urllib.error
@@ -21,12 +22,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
+from vetinari.boundary_guards import account_evidence_drop
 from vetinari.constants import _PROJECT_ROOT, VETINARI_STATE_DIR
+from vetinari.learning.atomic_writers import write_json_atomic
+from vetinari.utils import privacy_receipt
 
 logger = logging.getLogger(__name__)
+
 
 # -- Configuration --
 _KNOWLEDGE_DIR = _PROJECT_ROOT / "config" / "knowledge"
@@ -39,6 +45,24 @@ _REQUEST_TIMEOUT_SECS = 30  # HTTP request timeout
 _HUGGINGFACE_API = "https://huggingface.co/api/models"
 _LLAMA_CPP_RELEASES = "https://api.github.com/repos/ggerganov/llama.cpp/releases"
 _VLLM_RELEASES = "https://api.github.com/repos/vllm-project/vllm/releases"
+_DEFAULT_USER_AGENT = "model-landscape-monitor/1.0"
+
+
+def _vllm_landscape_tracking_enabled() -> bool:
+    """Return whether vLLM release monitoring is active for this product config."""
+    families_path = _PROJECT_ROOT / "config" / "model_families.yaml"
+    try:
+        with families_path.open(encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+    except OSError:
+        logger.warning("Could not read model family config; disabling vLLM landscape tracking", exc_info=True)
+        return False
+    for row in data.get("endpoint_families", []):
+        if not isinstance(row, dict) or row.get("family") != "vllm":
+            continue
+        status = str(row.get("status", "")).lower()
+        return "disabled" not in status and status not in {"retired", "removed"}
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,19 +212,28 @@ class LandscapeMonitor:
 
         # Call each source check method; use the _fetch_and_parse tuple variant so we
         # can track whether any source fell back to stale cached data.
-        for source_name, fetch_fn in [
+        source_checks = [
             ("huggingface", self.check_huggingface),
             ("llama_cpp", self.check_llama_cpp),
-            ("vllm", self.check_vllm),
-        ]:
+        ]
+        if _vllm_landscape_tracking_enabled():
+            source_checks.append(("vllm", self.check_vllm))
+        else:
+            logger.info("Skipping vLLM landscape tracking because the vLLM backend is disabled by default")
+        for source_name, fetch_fn in source_checks:
             try:
                 releases, used_stale_cache = fetch_fn(with_meta=True)
                 report.releases_found.extend(releases)
-                report.sources_checked.append(source_name)
+                if not used_stale_cache:
+                    report.sources_checked.append(source_name)
+                else:
+                    report.errors.append(f"Source {source_name}: unreachable and no cache - not recorded as checked")
                 if used_stale_cache:
                     report.from_cache = True
-            except Exception:
+            except Exception as exc:
                 logger.warning("Could not check %s — skipping this source", source_name)
+                source_record = {"source": source_name, "error": str(exc)}
+                account_evidence_drop(source_record, "landscape_check", logger=logger)
                 report.errors.append(f"Failed to check {source_name}")
 
         # Check for stale knowledge
@@ -306,7 +339,8 @@ class LandscapeMonitor:
             )
             return [], True
 
-    def _http_get(self, url: str) -> str:
+    @staticmethod
+    def _http_get(url: str) -> str:
         """Perform an HTTP GET request.
 
         Args:
@@ -318,14 +352,19 @@ class LandscapeMonitor:
         Raises:
             urllib.error.URLError: On network failure.
         """
-        req = urllib.request.Request(  # noqa: S310 — URL scheme validated by caller
-            url,
-            headers={"User-Agent": "Vetinari-LandscapeMonitor/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_SECS) as resp:  # noqa: S310 - URL access is constrained by caller policy
-            return resp.read().decode("utf-8")
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise urllib.error.URLError(f"unsupported URL scheme for model landscape source: {url}")
+        user_agent = os.environ.get("VETINARI_LANDSCAPE_USER_AGENT", _DEFAULT_USER_AGENT)
+        request = urllib.request.Request(url, headers={"User-Agent": user_agent})
+        # Use the module-level urlopen so tests can patch
+        # ``vetinari.models.landscape_monitor.urllib.request.urlopen`` and have
+        # the patch take effect on this seam.
+        with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT_SECS) as response:  # nosec B310 - URL scheme validated above
+            return response.read().decode("utf-8")
 
-    def _parse_huggingface(self, source: str, data: list[dict[str, Any]]) -> list[ModelRelease]:
+    @staticmethod
+    def _parse_huggingface(source: str, data: list[dict[str, Any]]) -> list[ModelRelease]:
         """Parse HuggingFace API response into ModelRelease list."""
         releases: list[ModelRelease] = []
         if not isinstance(data, list):
@@ -343,7 +382,8 @@ class LandscapeMonitor:
             )
         return releases
 
-    def _parse_github_releases(self, source: str, data: list[dict[str, Any]]) -> list[ModelRelease]:
+    @staticmethod
+    def _parse_github_releases(source: str, data: list[dict[str, Any]]) -> list[ModelRelease]:
         """Parse GitHub releases API response into ModelRelease list."""
         releases: list[ModelRelease] = []
         if not isinstance(data, list):
@@ -371,7 +411,10 @@ class LandscapeMonitor:
             return None
         try:
             with open(path, encoding="utf-8") as f:
-                return json.load(f)
+                cached = json.load(f)
+                if isinstance(cached, dict) and "data" in cached and "privacy_receipt" in cached:
+                    return cached["data"]
+                return cached
         except (json.JSONDecodeError, OSError):
             logger.warning(
                 "Could not load landscape cache for source %r — corrupted or unreadable file, cache will be skipped",
@@ -381,9 +424,19 @@ class LandscapeMonitor:
 
     def _save_cache(self, source: str, data: Any) -> None:
         with self._lock:
-            self._cache_dir.mkdir(parents=True, exist_ok=True)
-            with open(self._cache_path(source), "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+            write_json_atomic(
+                self._cache_path(source),
+                {
+                    "source": source,
+                    "data": data,
+                    "privacy_receipt": privacy_receipt(
+                        privacy_class="public",
+                        retention_days=DEFAULT_CACHE_TTL_DAYS,
+                        source="landscape_monitor.cache",
+                        redaction_applied=False,
+                    ),
+                },
+            )
 
     def _cache_age(self, source: str) -> float:
         """Return cache age in seconds, or infinity if no cache."""

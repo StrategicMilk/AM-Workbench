@@ -13,11 +13,14 @@ from __future__ import annotations
 import ast
 import importlib.util
 import logging
+import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 logger = logging.getLogger(__name__)
+
 
 _SANDBOX_DENIED_IMPORT_ROOTS = {
     "aiohttp",
@@ -29,6 +32,17 @@ _SANDBOX_DENIED_IMPORT_ROOTS = {
     "sys",
     "urllib",
 }
+
+
+def denied_import_roots() -> frozenset[str]:
+    """Return base sandbox denied roots plus operator-configured extras.
+
+    Returns:
+        Immutable set of denied top-level import roots.
+    """
+    raw_extras = os.environ.get("VETINARI_EXTRA_DENIED_ROOTS", "")
+    extras = frozenset(root.strip() for root in raw_extras.split(",") if root.strip())
+    return frozenset(_SANDBOX_DENIED_IMPORT_ROOTS) | extras
 
 
 # ── Result dataclasses ───────────────────────────────────────────────────────
@@ -156,7 +170,7 @@ def _check_imports(code: str) -> tuple[bool, str | None]:
             unique_names.append(name)
 
     for name in unique_names:
-        if name in _SANDBOX_DENIED_IMPORT_ROOTS:
+        if name in denied_import_roots():
             return False, f"Import '{name}' is blocked by sandbox policy"
 
         try:
@@ -216,38 +230,32 @@ def _run_in_sandbox(code: str, timeout: int) -> tuple[bool, str | None, str | No
 # ── Public API ───────────────────────────────────────────────────────────────
 
 
+class SandboxVerifier:
+    """Compatibility facade for sandbox verification helpers."""
+
+    def denied_import_roots(self) -> frozenset[str]:
+        """Return the active denied import roots."""
+        return denied_import_roots()
+
+
 def verify_code(
     code: str,
     filename: str = "artifact.py",
     run_tests: bool = False,
     timeout: int = 30,
 ) -> SandboxVerification:
-    """Verify a Python code artifact through syntax, import, and execution checks.
-
-    Step 1: ``ast.parse(code)`` for syntax validation.
-    Step 2: Extract all imports and verify each via ``importlib.util.find_spec``.
-    Step 3: If ``run_tests`` is True, execute the code in a ``CodeSandbox``
-            subprocess with the given timeout.
-
-    A result is ``passed=True`` only when every step that ran succeeded.
+    """Verify Python code through syntax, import, and optional execution checks.
 
     Args:
-        code: Python source code to verify.
-        filename: Logical filename for the artifact (used in log messages only).
-        run_tests: When True, execute the code in a subprocess sandbox.
-        timeout: Subprocess execution timeout in seconds (only used when
-            ``run_tests`` is True).
+        code: Code value consumed by verify_code().
+        filename: File path or file-like value consumed by the operation.
+        run_tests: Run tests value consumed by verify_code().
+        timeout: Timeout value controlling how long the operation may wait.
 
     Returns:
-        SandboxVerification describing the outcome of all checks run.
-
-    Raises:
-        PermissionError: If the sandbox temp directory cannot be created.
-            Callers that must never raise should use ``verify_code_safe`` instead.
+        Value produced for the caller.
     """
     checks_run: list[str] = []
-
-    # Step 1 — syntax check
     checks_run.append("syntax")
     syntax_valid, syntax_error = _check_syntax(code)
     if not syntax_valid:
@@ -260,8 +268,6 @@ def verify_code(
             error_message=syntax_error,
             checks_run=tuple(checks_run),
         )
-
-    # Step 2 — import resolution check
     checks_run.append("imports")
     imports_valid, import_error = _check_imports(code)
     if not imports_valid:
@@ -274,8 +280,6 @@ def verify_code(
             error_message=import_error,
             checks_run=tuple(checks_run),
         )
-
-    # Step 3 — optional sandbox execution
     execution_result: str | None = None
     if run_tests:
         checks_run.append("execution")
@@ -291,7 +295,6 @@ def verify_code(
                 error_message=exec_error,
                 checks_run=tuple(checks_run),
             )
-
     logger.debug("All checks passed for %s (checks: %s)", filename, checks_run)
     return SandboxVerification(
         passed=True,
@@ -323,7 +326,15 @@ def verify_code_safe(
         ``error_message`` on any unhandled error.
     """
     try:
-        return verify_code(code, **kwargs)  # type: ignore[arg-type]
+        unsupported_kwargs = sorted(set(kwargs) - {"filename", "run_tests", "timeout"})
+        if unsupported_kwargs:
+            raise TypeError(f"verify_code() got unsupported keyword argument(s): {unsupported_kwargs}")
+        return verify_code(
+            code,
+            filename=cast(str, kwargs.get("filename", "artifact.py")),
+            run_tests=cast(bool, kwargs.get("run_tests", False)),
+            timeout=cast(int, kwargs.get("timeout", 30)),
+        )
     except PermissionError as exc:
         logger.warning(
             "Verifier encountered a permission error — treating as verification failure: %s",
@@ -391,7 +402,9 @@ def cleanup_sandbox_artifacts(directory: Path) -> int:
 __all__ = [
     "SandboxFailure",
     "SandboxVerification",
+    "SandboxVerifier",
     "cleanup_sandbox_artifacts",
+    "denied_import_roots",
     "verify_code",
     "verify_code_safe",
 ]

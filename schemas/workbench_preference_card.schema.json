@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_preference_card.schema.json",
+  "title": "WorkbenchPreferenceCard",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "card_id",
+    "kind",
+    "label",
+    "statement",
+    "status",
+    "scope",
+    "confidence",
+    "evidence",
+    "decay_policy",
+    "downstream_effects",
+    "created_at_utc",
+    "consent",
+    "revoke_path"
+  ],
+  "properties": {
+    "card_id": { "type": "string", "minLength": 1 },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "user_preference",
+        "trust_boundary",
+        "delegation_choice",
+        "expertise_level",
+        "privacy_boundary",
+        "frustration_pattern"
+      ]
+    },
+    "label": { "type": "string", "minLength": 1 },
+    "statement": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["proposed", "active", "revoked", "expired", "rejected"]
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope_type"],
+      "properties": {
+        "scope_type": {
+          "type": "string",
+          "enum": ["global", "project", "workflow", "route", "automation", "ui"]
+        },
+        "project_id": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_-]{1,64}$" },
+        "workflow_id": { "type": ["string", "null"], "minLength": 1 },
+        "route_id": { "type": ["string", "null"], "minLength": 1 },
+        "automation_id": { "type": ["string", "null"], "minLength": 1 },
+        "ui_surface": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["evidence_id", "kind", "summary", "observed_at_utc", "source", "authority"],
+        "properties": {
+          "evidence_id": { "type": "string", "minLength": 1 },
+          "kind": {
+            "type": "string",
+            "enum": ["user_statement", "observed_behavior", "correction", "explicit_consent", "revocation"]
+          },
+          "summary": { "type": "string", "minLength": 1 },
+          "observed_at_utc": { "type": "string", "format": "date-time" },
+          "source": { "type": "string", "minLength": 1 },
+          "authority": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "decay_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_age_days", "half_life_days", "min_confidence"],
+      "properties": {
+        "max_age_days": { "type": "integer", "minimum": 1 },
+        "half_life_days": { "type": "integer", "minimum": 1 },
+        "min_confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "downstream_effects": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": ["prompt", "route", "automation", "ui_default", "review_gate"]
+      }
+    },
+    "created_at_utc": { "type": "string", "format": "date-time" },
+    "last_confirmed_at_utc": { "type": ["string", "null"], "format": "date-time" },
+    "consent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["granted", "granted_at_utc", "source_evidence_id"],
+      "properties": {
+        "granted": { "type": "boolean" },
+        "granted_at_utc": { "type": ["string", "null"], "format": "date-time" },
+        "source_evidence_id": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "revoke_path": { "type": "string", "minLength": 1 },
+    "revoked_at_utc": { "type": ["string", "null"], "format": "date-time" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "active" } } },
+      "then": {
+        "required": ["consent", "last_confirmed_at_utc"],
+        "properties": {
+          "consent": {
+            "properties": {
+              "granted": { "const": true },
+              "granted_at_utc": { "type": "string", "format": "date-time" },
+              "source_evidence_id": { "type": "string", "minLength": 1 }
+            }
+          },
+          "last_confirmed_at_utc": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "revoked" } } },
+      "then": {
+        "required": ["revoked_at_utc", "consent"],
+        "properties": {
+          "revoked_at_utc": { "type": "string", "format": "date-time" },
+          "consent": { "properties": { "granted": { "const": false } } }
+        }
+      }
+    }
+  ]
+}

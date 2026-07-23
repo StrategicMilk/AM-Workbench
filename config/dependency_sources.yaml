@@ -1,0 +1,91 @@
+schema_version: 1
+sources:
+  - name: vllm
+    ecosystem: github
+    package: vllm-project/vllm
+    version_observation: offline_observation_required
+    release_feed: "https://github.com/vllm-project/vllm/releases"
+    source_type: release_notes
+    pinned_surface: config/backend_pins.yaml
+    proposal_tags: [backend_pin, local_runtime, optional_capability]
+  - name: llama_cpp
+    ecosystem: pypi
+    package: llama-cpp-python
+    version_observation: offline_observation_required
+    release_feed: "https://github.com/abetlen/llama-cpp-python/releases"
+    source_type: release_notes
+    pinned_surface: config/backend_pins.yaml
+    proposal_tags: [backend_pin, local_runtime]
+  - name: llama_cpp_core
+    ecosystem: github
+    package: ggml-org/llama.cpp
+    version_observation: offline_observation_required
+    release_feed: "https://github.com/ggml-org/llama.cpp/releases"
+    source_type: release_notes
+    pinned_surface: config/backend_pins.yaml
+    proposal_tags: [local_runtime, overlay]
+  - name: sglang
+    ecosystem: github
+    package: sgl-project/sglang
+    version_observation: offline_observation_required
+    release_feed: "https://github.com/sgl-project/sglang/releases"
+    source_type: release_notes
+    pinned_surface: config/backend_pins.yaml
+    proposal_tags: [backend_pin, local_runtime, optional_capability]
+  - name: transformers
+    ecosystem: pypi
+    package: transformers
+    version_observation: offline_observation_required
+    release_feed: "https://github.com/huggingface/transformers/releases"
+    source_type: release_notes
+    pinned_surface: config/capabilities.yaml
+    proposal_tags: [model_support, optional_capability]
+  - name: cloud_adapters
+    ecosystem: pypi
+    package:
+      # LiteLLM migration: direct clients selected by project_capability_gap_exploration_2026_06_11.
+      - openai
+      - anthropic
+    version_observation: offline_observation_required
+    release_feed:
+      - "https://github.com/openai/openai-python/releases"
+      - "https://github.com/anthropics/anthropic-sdk-python/releases"
+    source_type: release_notes
+    pinned_surface: config/capabilities.yaml
+    proposal_tags: [cloud, search_adapter]
+  - name: faster_whisper
+    ecosystem: pypi
+    package: faster-whisper
+    version_pin_policy: manual
+    version_observation: offline_observation_required
+    release_feed: "https://github.com/SYSTRAN/faster-whisper/releases"
+    source_type: release_notes
+    pinned_surface: config/capabilities.yaml
+    proposal_tags: [audio, transcription]
+  - name: comfyui
+    ecosystem: github
+    package: comfyanonymous/ComfyUI
+    version_pin_policy: manual
+    version_observation: offline_observation_required
+    release_feed: "https://github.com/comfyanonymous/ComfyUI/releases"
+    source_type: release_notes
+    pinned_surface: config/capabilities.yaml
+    proposal_tags: [image_generation, video_generation]
+  - name: speculators
+    ecosystem: config
+    package: prompt-lookup-and-draft-model
+    version_pin_policy: manual
+    version_observation: offline_observation_required
+    release_feed: "config/models.yaml#speculative_decoding"
+    source_type: local_config
+    pinned_surface: config/models.yaml
+    proposal_tags: [speculative_decoding]
+  - name: openai_server
+    ecosystem: openapi
+    package: openai-compatible-server
+    version_pin_policy: manual
+    version_observation: offline_observation_required
+    release_feed: "config/models.yaml#openai_compatible_server"
+    source_type: adapter_contract
+    pinned_surface: config/models.yaml
+    proposal_tags: [server_runtime]

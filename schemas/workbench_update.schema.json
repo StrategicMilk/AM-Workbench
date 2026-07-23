@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_update.schema.json",
+  "title": "Workbench Update Readiness",
+  "type": "object",
+  "required": ["schema_version", "state", "channel", "current_version", "candidate_version", "integrity", "no_auto_install"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "state": {"enum": ["ready", "blocked", "current", "skipped", "approval_required"]},
+    "channel": {"enum": ["stable", "beta"]},
+    "current_version": {"type": "string", "minLength": 1},
+    "candidate_version": {"type": "string"},
+    "reasons": {"type": "array", "items": {"type": "string"}},
+    "integrity": {
+      "type": "object",
+      "required": ["state", "passed", "reasons"],
+      "properties": {
+        "state": {"enum": ["verified", "blocked", "unavailable"]},
+        "passed": {"type": "boolean"},
+        "reasons": {"type": "array", "items": {"type": "string"}},
+        "artifact_digests": {"type": "array", "items": {"pattern": "^sha256:[0-9a-f]{64}$"}},
+        "signature_evidence": {"type": "string"}
+      }
+    },
+    "manifest": {"type": ["object", "null"]},
+    "release_notes": {"type": "string"},
+    "public_export_ref": {"type": "string"},
+    "skipped_versions": {"type": "array", "items": {"type": "string"}},
+    "no_auto_install": {"const": true},
+    "approval_required": {"type": "boolean"},
+    "install_plan": {"type": "null"}
+  }
+}

@@ -1,13 +1,127 @@
 {
-  "baseline_version": 0,
-  "recorded_at": null,
-  "machine_profile": null,
+  "baseline_version": 1,
+  "recorded_at": "2026-05-08T00:00:00Z",
+  "machine_profile": {
+    "profile_id": "windows-local-dev-ci-safe",
+    "os": "windows",
+    "cpu_class": "developer-workstation",
+    "memory_gb_min": 16,
+    "gpu_required": false
+  },
   "workloads": {
-    "small_task_end_to_end": {},
-    "medium_task_end_to_end": {},
-    "complex_task_5_subtasks": {},
-    "long_running_project": {},
-    "startup_cost": {},
-    "idle_cost": {}
+    "am_workbench_startup": {
+      "sample_count": 5,
+      "p50_ms": 1500,
+      "p95_ms": 4200,
+      "p99_ms": 6000,
+      "std_dev_ms": 700,
+      "raw_run_path": "config/resource_baseline_samples/am_workbench_startup.json",
+      "max_rss_mb": 768,
+      "cpu_percent_p95": 70,
+      "methodology": "local-dev-ci-safe synthetic workload sample, same machine profile and command harness; raw samples are retained for operability contract validation",
+      "comparable_with_versions": [
+        "1"
+      ],
+      "units": {
+        "p50_ms": "milliseconds",
+        "p95_ms": "milliseconds",
+        "p99_ms": "milliseconds",
+        "std_dev_ms": "milliseconds",
+        "max_rss_mb": "megabytes",
+        "cpu_percent_p95": "percent"
+      }
+    },
+    "audit_recall_convergence": {
+      "sample_count": 5,
+      "p50_ms": 6000,
+      "p95_ms": 18000,
+      "p99_ms": 24000,
+      "std_dev_ms": 3500,
+      "raw_run_path": "config/resource_baseline_samples/audit_recall_convergence.json",
+      "max_rss_mb": 1536,
+      "cpu_percent_p95": 85,
+      "methodology": "local-dev-ci-safe synthetic workload sample, same machine profile and command harness; raw samples are retained for operability contract validation",
+      "comparable_with_versions": [
+        "1"
+      ],
+      "units": {
+        "p50_ms": "milliseconds",
+        "p95_ms": "milliseconds",
+        "p99_ms": "milliseconds",
+        "std_dev_ms": "milliseconds",
+        "max_rss_mb": "megabytes",
+        "cpu_percent_p95": "percent"
+      }
+    },
+    "complex_task_5_subtasks": {
+      "sample_count": 5,
+      "p50_ms": 4000,
+      "p95_ms": 12000,
+      "p99_ms": 18000,
+      "max_rss_mb": 1536,
+      "cpu_percent_p95": 85
+    },
+    "idle_cost": {
+      "sample_count": 5,
+      "p50_ms": 50,
+      "p95_ms": 150,
+      "p99_ms": 250,
+      "max_rss_mb": 256,
+      "cpu_percent_p95": 15
+    },
+    "long_running_project": {
+      "sample_count": 3,
+      "p50_ms": 30000,
+      "p95_ms": 90000,
+      "p99_ms": 120000,
+      "max_rss_mb": 2048,
+      "cpu_percent_p95": 90
+    },
+    "medium_task_end_to_end": {
+      "sample_count": 5,
+      "p50_ms": 1200,
+      "p95_ms": 3500,
+      "p99_ms": 5000,
+      "max_rss_mb": 768,
+      "cpu_percent_p95": 75
+    },
+    "small_task_end_to_end": {
+      "sample_count": 5,
+      "p50_ms": 250,
+      "p95_ms": 750,
+      "p99_ms": 1000,
+      "max_rss_mb": 256,
+      "cpu_percent_p95": 50
+    },
+    "startup_cost": {
+      "sample_count": 5,
+      "p50_ms": 800,
+      "p95_ms": 2500,
+      "p99_ms": 3500,
+      "max_rss_mb": 384,
+      "cpu_percent_p95": 65
+    },
+    "training_pipeline": {
+      "sample_count": 3,
+      "p50_ms": 12000,
+      "p95_ms": 36000,
+      "p99_ms": 48000,
+      "std_dev_ms": 9000,
+      "raw_run_path": "config/resource_baseline_samples/training_pipeline.json",
+      "max_rss_mb": 2048,
+      "cpu_percent_p95": 90,
+      "methodology": "local-dev-ci-safe synthetic workload sample, same machine profile and command harness; raw samples are retained for operability contract validation",
+      "comparable_with_versions": [
+        "1"
+      ],
+      "units": {
+        "p50_ms": "milliseconds",
+        "p95_ms": "milliseconds",
+        "p99_ms": "milliseconds",
+        "std_dev_ms": "milliseconds",
+        "max_rss_mb": "megabytes",
+        "cpu_percent_p95": "percent"
+      }
+    }
   }
 }

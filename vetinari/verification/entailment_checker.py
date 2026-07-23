@@ -21,9 +21,40 @@ import logging
 import re
 from dataclasses import dataclass
 
+from vetinari.boundary_guards import route_enum_error
 from vetinari.verification.claim_extractor import Claim, ClaimType
 
 logger = logging.getLogger(__name__)
+_VERDICT_METHODS = frozenset({
+    "ast",
+    "regex",
+    "structural",
+    "model",
+    "stub",
+    "structural_failure",
+    "entailment_unavailable",
+    "unverified",
+})
+
+
+class EntailmentUnavailableError(RuntimeError):
+    """Raised by adapters when entailment support is temporarily unavailable."""
+
+
+class EntailmentNotSupportedError(RuntimeError):
+    """Raised by adapters when an entailment method is permanently unsupported."""
+
+
+def _validated_method(method: str) -> str:
+    if method not in _VERDICT_METHODS:
+        route_enum_error(
+            field_name="method",
+            received=method,
+            allowed=_VERDICT_METHODS,
+            route_id="entailment-verdict-method",
+        )
+        raise ValueError(f"invalid entailment verdict method: {method}")
+    return method
 
 
 # -- Result types -------------------------------------------------------------
@@ -45,6 +76,9 @@ class ClaimVerdict:
     trust_score: float
     method: str
     explanation: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "method", _validated_method(self.method))
 
     def __repr__(self) -> str:
         """Show claim type, trust score, and method for debugging."""
@@ -72,6 +106,7 @@ class VerificationReport:
     deterministic_count: int
     model_count: int
     unverified_count: int
+    structural_failure_count: int = 0
 
     def __repr__(self) -> str:
         """Show aggregate trust and verification breakdown."""
@@ -80,7 +115,8 @@ class VerificationReport:
             f"claims={self.total_claims}, "
             f"deterministic={self.deterministic_count}, "
             f"model={self.model_count}, "
-            f"unverified={self.unverified_count})"
+            f"unverified={self.unverified_count}, "
+            f"structural_failures={self.structural_failure_count})"
         )
 
 
@@ -228,7 +264,7 @@ def _check_structural_claim(claim: Claim) -> ClaimVerdict:
         return ClaimVerdict(
             claim=claim,
             trust_score=0.0,
-            method="stub",
+            method="structural_failure",
             explanation="Could not extract numeric count from structural claim — reporting as unsupported",
         )
 
@@ -249,7 +285,7 @@ def _check_structural_claim(claim: Claim) -> ClaimVerdict:
     return ClaimVerdict(
         claim=claim,
         trust_score=0.0,
-        method="stub",
+        method="structural_failure",
         explanation=f"Cannot verify structural claim of {expected_count} elements without content — reporting as unsupported",
     )
 
@@ -266,7 +302,7 @@ def _check_factual_claim(claim: Claim) -> ClaimVerdict:
         claim: A Claim with claim_type == ClaimType.FACTUAL.
 
     Returns:
-        ClaimVerdict with trust_score=0.0 and method="stub" while no model is loaded.
+        ClaimVerdict with trust_score=0.0 and method="entailment_unavailable" while no model is loaded.
     """
     # Rule 2 (governance-rules.md): no default-pass verifiers. Until a real
     # bi-encoder/cross-encoder entailment model is wired here, factual claims
@@ -278,7 +314,7 @@ def _check_factual_claim(claim: Claim) -> ClaimVerdict:
     return ClaimVerdict(
         claim=claim,
         trust_score=0.0,
-        method="stub",
+        method="entailment_unavailable",
         explanation="Factual claim requires model-based entailment — model not loaded, reporting as unsupported",
     )
 
@@ -331,12 +367,14 @@ def verify_claims(claims: list[Claim]) -> VerificationReport:
             deterministic_count=0,
             model_count=0,
             unverified_count=0,
+            structural_failure_count=0,
         )
 
     verdicts: list[ClaimVerdict] = []
     deterministic_count = 0
     model_count = 0
     unverified_count = 0
+    structural_failure_count = 0
 
     for claim in claims:
         verdict = verify_claim(claim)
@@ -346,6 +384,8 @@ def verify_claims(claims: list[Claim]) -> VerificationReport:
             deterministic_count += 1
         elif verdict.method == "model":
             model_count += 1
+        elif verdict.method == "structural_failure":
+            structural_failure_count += 1
         else:
             unverified_count += 1
 
@@ -374,11 +414,14 @@ def verify_claims(claims: list[Claim]) -> VerificationReport:
         deterministic_count=deterministic_count,
         model_count=model_count,
         unverified_count=unverified_count,
+        structural_failure_count=structural_failure_count,
     )
 
 
 __all__ = [
     "ClaimVerdict",
+    "EntailmentNotSupportedError",
+    "EntailmentUnavailableError",
     "VerificationReport",
     "verify_claim",
     "verify_claims",

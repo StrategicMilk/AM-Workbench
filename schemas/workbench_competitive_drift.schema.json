@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_competitive_drift.schema.json",
+  "title": "Workbench Competitive Drift Proposal",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "proposal_id",
+    "kind",
+    "gap",
+    "change_default",
+    "support_boundary",
+    "recommendation_ref",
+    "approval_ref"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "description": "Schema version discriminator for migration and reproducibility."
+    },
+    "proposal_id": { "type": "string", "minLength": 1 },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "model_acquisition",
+        "prompt_or_method_change",
+        "training_recipe",
+        "route_policy",
+        "documented_limitation"
+      ]
+    },
+    "change_default": { "type": "boolean" },
+    "support_boundary": { "type": "boolean" },
+    "recommendation_ref": { "type": "string", "minLength": 1 },
+    "approval_ref": { "type": "string", "minLength": 1 },
+    "gap": {
+      "type": "object",
+      "required": ["gap_id", "baseline", "local_result", "baseline_result", "delta", "blockers"],
+      "additionalProperties": false,
+      "properties": {
+        "gap_id": { "type": "string", "minLength": 1 },
+        "delta": { "type": "number", "minimum": 0 },
+        "blockers": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "baseline": {
+          "type": "object",
+          "required": ["baseline_id", "name", "allowed", "source", "authority_ref", "safety_ref", "budget_ref"],
+          "additionalProperties": false,
+          "properties": {
+            "baseline_id": { "type": "string", "minLength": 1 },
+            "name": { "type": "string", "minLength": 1 },
+            "allowed": { "type": "boolean" },
+            "authority_ref": { "type": "string", "minLength": 1 },
+            "safety_ref": { "type": "string", "minLength": 1 },
+            "budget_ref": { "type": "string", "minLength": 1 },
+            "source": {
+              "type": "object",
+              "required": ["source_id", "title", "source_url", "observed_at", "stale_after", "provenance_ref"],
+              "additionalProperties": false,
+              "properties": {
+                "source_id": { "type": "string", "minLength": 1 },
+                "title": { "type": "string", "minLength": 1 },
+                "source_url": { "type": "string", "minLength": 1 },
+                "observed_at": { "type": "string", "minLength": 1 },
+                "stale_after": { "type": "string", "minLength": 1 },
+                "provenance_ref": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        },
+        "local_result": { "$ref": "#/$defs/taskSuiteResult" },
+        "baseline_result": { "$ref": "#/$defs/taskSuiteResult" }
+      }
+    }
+  },
+  "$defs": {
+    "taskSuiteResult": {
+      "type": "object",
+      "required": ["result_id", "task_suite_id", "route_ref", "score", "evidence_ref"],
+      "additionalProperties": false,
+      "properties": {
+        "result_id": { "type": "string", "minLength": 1 },
+        "task_suite_id": { "type": "string", "minLength": 1 },
+        "route_ref": { "type": "string", "minLength": 1 },
+        "score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "evidence_ref": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -165,4 +165,46 @@ class RecycleStore:
         return purged
 
 
-__all__ = ["RecycleStore"]
+def system_internal_recycle(
+    path: Path,
+    reason: str,
+    work_receipt_id: str | None = None,
+) -> LifecycleRecord:
+    """Retire a path via the shared RecycleStore singleton on behalf of the system.
+
+    Use this for cleanup paths that are not triggered directly by a human
+    (e.g. rollback after a failed creation, merge-overwrite cleanup).  The
+    call is recorded in the recycle manifest so it is auditable and
+    recoverable within the grace window.
+
+    The caller must NOT hold a lock on ``path`` when calling this — the
+    RecycleStore acquires its own per-path lock internally.
+
+    Args:
+        path: File or directory to retire.  Must exist.
+        reason: Human-readable reason for the retirement; stored in the
+            manifest and visible in recycle-bin listings.
+        work_receipt_id: Optional receipt identifier to embed in the
+            manifest for cross-referencing with the WorkReceipt audit trail.
+
+    Returns:
+        A ``LifecycleRecord`` describing the retired entity.
+
+    Raises:
+        FileNotFoundError: If ``path`` does not exist.
+        OSError: If the move or manifest write fails (original untouched).
+    """
+    from vetinari.safety.protected_mutation import get_recycle_store
+
+    store = get_recycle_store()
+    record = store.retire(path, reason=reason, work_receipt_id=work_receipt_id)
+    logger.info(
+        "system_internal_recycle: retired %s (reason=%r, record=%s)",
+        path,
+        reason,
+        record.record_id,
+    )
+    return record
+
+
+__all__ = ["RecycleStore", "system_internal_recycle"]

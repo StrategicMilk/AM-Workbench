@@ -22,6 +22,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 # Default thresholds — conservative for local model scenarios
 DEFAULT_FAILURE_THRESHOLD = 3  # consecutive task failures to trip
 DEFAULT_COOLDOWN_SECONDS = 60  # seconds in OPEN before probing
@@ -38,7 +39,7 @@ class CircuitState(Enum):
     HALF_OPEN = "half_open"
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class CircuitStatus:
     """Snapshot of an AgentCircuitBreaker's current state.
 

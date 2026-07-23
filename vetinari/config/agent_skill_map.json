@@ -29,16 +29,6 @@
         {"skill_id": "inspector", "default_capability": "test_generation"},
         {"skill_id": "inspector", "default_capability": "simplification"}
       ]
-    },
-    "general_agent": {
-      "description": "General-purpose agent — routes to appropriate specialist",
-      "default_skills": [
-        {"skill_id": "worker", "default_capability": "feature_implementation"}
-      ],
-      "secondary_skills": [
-        {"skill_id": "foreman", "default_capability": "goal_decomposition"},
-        {"skill_id": "inspector", "default_capability": "code_review"}
-      ]
     }
   },
   "workflows": {

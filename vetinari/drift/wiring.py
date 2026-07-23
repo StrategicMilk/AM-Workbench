@@ -11,7 +11,9 @@ and from background scheduler tasks (schedule_drift_audit, schedule_contract_che
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 from vetinari.drift.contract_registry import get_contract_registry
 from vetinari.drift.goal_tracker import AdherenceResult, GoalTracker, create_goal_tracker
@@ -20,8 +22,43 @@ from vetinari.drift.schema_validator import get_schema_validator
 
 logger = logging.getLogger(__name__)
 
+
 # Adherence score below which a WARNING is emitted.
 _LOW_ADHERENCE_THRESHOLD = 0.4
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SCHEMA_FIXTURE_DIR = _REPO_ROOT / "tests" / "fixtures" / "schema_known_bad"
+_AUDIT_GROUND_TRUTH_SCHEMA = _REPO_ROOT / "schemas" / "audit_ground_truth.schema.json"
+_AUDIT_GROUND_TRUTH_SCHEMA_NAMES = frozenset({
+    "audit_ground_truth",
+    "audit_ground_truth.schema",
+    "audit_ground_truth.schema.json",
+    "schemas/audit_ground_truth.schema.json",
+})
+
+
+def _validate_with_known_bad(validator: object, name: str, fixture_dir: Path) -> tuple[list[str], bool]:
+    """Validate a schema against an adversarial fixture when available."""
+    fixture_path = fixture_dir / f"{name}.json"
+    if not fixture_path.exists():
+        if name in _AUDIT_GROUND_TRUTH_SCHEMA_NAMES:
+            if not _AUDIT_GROUND_TRUTH_SCHEMA.exists():
+                return [f"Required schema file is missing: {_AUDIT_GROUND_TRUTH_SCHEMA}"], False
+            known_bad = {"disposition": "fixed", "closure_evidence": ""}
+            errors = validator.validate(name, known_bad)
+            if not errors:
+                return [f"Known-bad audit ground truth payload validated cleanly: {_AUDIT_GROUND_TRUTH_SCHEMA}"], True
+            return errors, True
+        logger.warning(
+            "startup_drift_validation: no known-bad fixture for schema %r - coverage incomplete",
+            name,
+        )
+        return [f"Missing known-bad fixture for schema {name!r}: {fixture_path}"], False
+
+    known_bad = json.loads(fixture_path.read_text(encoding="utf-8"))
+    errors = validator.validate(name, known_bad)
+    if not errors:
+        return [f"Known-bad fixture for schema {name!r} validated cleanly: {fixture_path}"], True
+    return errors, True
 
 
 def startup_drift_validation() -> bool:
@@ -49,18 +86,30 @@ def startup_drift_validation() -> bool:
         return True
 
     all_valid = True
+    fixture_dir = _SCHEMA_FIXTURE_DIR
     for name in schema_names:
-        # validate() with an empty dict surfaces any required-key violations
-        # for the schema definition itself; real objects are validated at runtime.
-        errors = validator.validate(name, {})
+        errors, exercised_known_bad = _validate_with_known_bad(validator, name, fixture_dir)
         if errors:
-            logger.warning(
-                "startup_drift_validation: schema '%s' has %d issue(s): %s",
-                name,
-                len(errors),
-                errors,
-            )
-            all_valid = False
+            if exercised_known_bad and all(error.startswith("Known-bad fixture") for error in errors):
+                logger.warning(
+                    "startup_drift_validation: schema '%s' known-bad coverage failed: %s",
+                    name,
+                    errors,
+                )
+                all_valid = False
+            elif exercised_known_bad:
+                logger.info(
+                    "startup_drift_validation: schema '%s' rejected known-bad fixture with %d issue(s)",
+                    name,
+                    len(errors),
+                )
+            else:
+                logger.warning(
+                    "startup_drift_validation: schema '%s' validation failed without known-bad fixture: %s",
+                    name,
+                    errors,
+                )
+                all_valid = False
 
     if all_valid:
         logger.info("startup_drift_validation: all %d schemas valid", len(schema_names))

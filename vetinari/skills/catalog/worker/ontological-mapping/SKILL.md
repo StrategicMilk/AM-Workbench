@@ -81,7 +81,7 @@ The skill produces an ontological mapping report:
       {
         "domain_concept": "Foreman",
         "definition": "Plans work, decomposes goals, assigns tasks",
-        "code_representation": "vetinari/agents/consolidated/worker_agent.py (FOREMAN agent type)",
+        "code_representation": "vetinari/agents/planner_agent.py:ForemanAgent",
         "mapping_type": "direct",
         "naming_aligned": true
       },

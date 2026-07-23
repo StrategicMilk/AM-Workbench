@@ -15,6 +15,18 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+CompiledPattern = tuple[re.Pattern[str], str, str]
+
+
+def _compile_patterns(patterns: list[tuple[str, str, str]], *, flags: int = 0) -> list[CompiledPattern]:
+    compiled: list[CompiledPattern] = []
+    for pattern, description, severity in patterns:
+        try:
+            compiled.append((re.compile(pattern, flags), description, severity))
+        except re.error:
+            logger.warning("Invalid regex pattern skipped at compile time: %s", pattern)
+    return compiled
+
 
 # ---------------------------------------------------------------------------
 # Security heuristic patterns (preserved from SecurityAuditorAgent)
@@ -95,8 +107,8 @@ _SECURITY_PATTERNS: list[tuple[str, str, str]] = [
 
 _AI_ANTIPATTERN_CHECKS: list[tuple[str, str, str]] = [
     # (pattern_regex, description, severity)
-    (r"\bdatetime\.now\s*\(\s*\)", "Timezone-naive datetime.now() — use datetime.now(timezone.utc)", "HIGH"),  # noqa: VET103 - timestamp source is part of the compatibility contract
-    (r"\bdatetime\.utcnow\s*\(", "Deprecated datetime.utcnow() — use datetime.now(timezone.utc)", "HIGH"),  # noqa: VET103 - timestamp source is part of the compatibility contract
+    (r"\bdatetime\.now\s*\(\s*\)", "Timezone-naive datetime.now() — use datetime.now(timezone.utc)", "HIGH"),
+    (r"\bdatetime\.utcnow\s*\(", "Deprecated datetime.utcnow() — use datetime.now(timezone.utc)", "HIGH"),
     (
         r"""\blogger\.\w+\s*\(\s*["'](?:entering|exiting|starting function|leaving function)""",
         "Entry/exit logging noise — log meaningful state transitions, not function entry/exit",
@@ -125,6 +137,64 @@ _AI_ANTIPATTERN_CHECKS: list[tuple[str, str, str]] = [
         "MEDIUM",
     ),
 ]
+
+_CORRECTNESS_PATTERNS: list[tuple[str, str, str]] = [
+    (r"except\s*:", "Bare except catches all exceptions including KeyboardInterrupt", "MEDIUM"),
+    (r"def \w+\(.*=\s*\[\s*\]", "Mutable default argument (list) shared across calls", "HIGH"),
+    (r"def \w+\(.*=\s*\{\s*\}", "Mutable default argument (dict) shared across calls", "HIGH"),
+    (r"==\s*None\b", "Use 'is None' instead of '== None' for identity check", "LOW"),
+    (r"!=\s*None\b", "Use 'is not None' instead of '!= None' for identity check", "LOW"),
+    (r"==\s*True\b", "Use 'if x:' instead of '== True' for boolean check", "LOW"),
+    (r"==\s*False\b", "Use 'if not x:' instead of '== False' for boolean check", "LOW"),
+    (r"except\s+Exception\s+as\s+\w+:\s*\n\s*pass", "Silently swallowed exception", "HIGH"),
+    (r"range\(len\(", "Iterate directly over the sequence instead of range(len(...))", "LOW"),
+    (r"(?<!\w)l\s*=\s*\[\s*\].*\n.*\.append", "Building list with append in loop; consider comprehension", "INFO"),
+]
+
+_PERFORMANCE_PATTERNS: list[tuple[str, str, str]] = [
+    (r"for .+ in .+:\s*\n(?:\s+.*\n)*\s+for .+ in .+:", "Nested loop potential O(n^2) pattern", "MEDIUM"),
+    (r"['\"] \+\s*\w|\w\s*\+ ['\"]", "String concatenation with +; use f-string or join()", "LOW"),
+    (
+        r"\.append\(.*\).*#.*comprehension|in \[.*for.*\].*\.append",
+        "List append inside comprehension; use list comp directly",
+        "LOW",
+    ),
+    (r"time\.sleep\(\s*[1-9]\d+", "Long sleep in production code blocks the thread", "MEDIUM"),
+    (r"dict\(.*\)\s*$|list\(.*\)\s*$", "Unnecessary copy in loop; review if copy is needed", "INFO"),
+    (r"\.split\(\).*len\(|len\(.*\.split\(\)", "Using split() for length estimation; use len(text)//4", "LOW"),
+    (r"\.lower\(\).*in.*prompt|prompt.*\.lower\(\)", "Calling .lower() on full prompt in hot path", "LOW"),
+    (r"SELECT.*FROM.*IN\s*\(SELECT", "Nested SELECT; potential N+1 query pattern", "HIGH"),
+    (r"for .+ in .+:\s*\n\s+db\.|for .+ in .+:\s*\n\s+session\.", "DB query inside loop; potential N+1", "HIGH"),
+]
+
+_STANDARDS_PATTERNS: list[tuple[str, str, str]] = [
+    (r"# ?TODO|# ?FIXME|# ?HACK|# ?XXX", "Unresolved code annotation (TODO/FIXME/HACK/XXX)", "LOW"),
+    (r"^\s*print\s*\(", "print() in production code; use logging instead", "MEDIUM"),
+    (r"def \w+\([^)]*\)\s*:", "Function missing return type annotation", "LOW"),
+    (r"def \w+\([^)]*\)\s*->\s*Any\s*:", "Function returns Any; consider a specific return type", "INFO"),
+    (r"#\s*type:\s*ignore", "type: ignore suppresses type checking; review carefully", "INFO"),
+    (r"from __future__ import annotations", "", "INFO"),
+    (r"import \*", "Wildcard import pollutes namespace and hides dependencies", "MEDIUM"),
+    (r"\bstr\(e\)\b", "Converting exception to string; use logger.exception() instead", "LOW"),
+    (
+        r"logging\.info\(|logging\.warning\(|logging\.error\(|logging\.debug\(",
+        "Using root logger; use logging.getLogger(__name__)",
+        "LOW",
+    ),
+    (r"datetime\.utcnow\(\)", "datetime.utcnow() is deprecated; use datetime.now(timezone.utc)", "MEDIUM"),
+    (
+        r"datetime\.now\(\)(?!\s*\(timezone)",
+        "datetime.now() without timezone; use datetime.now(timezone.utc)",
+        "MEDIUM",
+    ),
+]
+
+_SECURITY_PATTERN_REGEXES = _compile_patterns(_SECURITY_PATTERNS, flags=re.IGNORECASE)
+_AI_ANTIPATTERN_REGEXES = _compile_patterns(_AI_ANTIPATTERN_CHECKS, flags=re.IGNORECASE)
+_CORRECTNESS_REGEXES = _compile_patterns(_CORRECTNESS_PATTERNS)
+_PERFORMANCE_REGEXES = _compile_patterns(_PERFORMANCE_PATTERNS)
+_STANDARDS_REGEXES = _compile_patterns(_STANDARDS_PATTERNS)
+_INDENTED_IMPORT_PATTERN = re.compile(r"^import\s+\w+|^from\s+\w+\s+import")
 
 
 # ---------------------------------------------------------------------------
@@ -195,18 +265,15 @@ def run_security_scan(code: str) -> list[dict[str, Any]]:
     findings = []
     lines = code.split("\n")
     for line_num, line in enumerate(lines, 1):
-        for pattern, finding_name, severity in _SECURITY_PATTERNS:
-            try:
-                if re.search(pattern, line, re.IGNORECASE):
-                    findings.append({
-                        "severity": severity,
-                        "finding": finding_name,
-                        "line": line_num,
-                        "evidence": line.strip()[:120],
-                        "source": "heuristic",
-                    })
-            except re.error:
-                logger.warning("Invalid regex in security pattern: %s", pattern)
+        for pattern, finding_name, severity in _SECURITY_PATTERN_REGEXES:
+            if pattern.search(line):
+                findings.append({
+                    "severity": severity,
+                    "finding": finding_name,
+                    "line": line_num,
+                    "evidence": line.strip()[:120],
+                    "source": "heuristic",
+                })
     return findings
 
 
@@ -228,19 +295,16 @@ def run_antipattern_scan(code: str) -> list[dict[str, Any]]:
         stripped = line.strip()
         if stripped.startswith("#"):
             continue
-        for pattern, description, severity in _AI_ANTIPATTERN_CHECKS:
-            try:
-                if re.search(pattern, line, re.IGNORECASE):
-                    findings.append({
-                        "severity": severity,
-                        "finding": description,
-                        "line": line_num,
-                        "evidence": stripped[:120],
-                        "source": "antipattern",
-                    })
-                    break  # One finding per line per scan pass
-            except re.error:
-                logger.warning("Invalid regex in anti-pattern check: %s", pattern)
+        for pattern, description, severity in _AI_ANTIPATTERN_REGEXES:
+            if pattern.search(line):
+                findings.append({
+                    "severity": severity,
+                    "finding": description,
+                    "line": line_num,
+                    "evidence": stripped[:120],
+                    "source": "antipattern",
+                })
+                break  # One finding per line per scan pass
     return findings
 
 
@@ -257,37 +321,22 @@ def _run_correctness_scan(code: str) -> list[dict[str, Any]]:
     Returns:
         List of finding dicts with finding, severity, line, evidence, and source fields.
     """
-    patterns: list[tuple[str, str, str]] = [
-        (r"except\s*:", "Bare except catches all exceptions including KeyboardInterrupt", "MEDIUM"),
-        (r"def \w+\(.*=\s*\[\s*\]", "Mutable default argument (list) — shared across calls", "HIGH"),
-        (r"def \w+\(.*=\s*\{\s*\}", "Mutable default argument (dict) — shared across calls", "HIGH"),
-        (r"==\s*None\b", "Use 'is None' instead of '== None' for identity check", "LOW"),
-        (r"!=\s*None\b", "Use 'is not None' instead of '!= None' for identity check", "LOW"),
-        (r"==\s*True\b", "Use 'if x:' instead of '== True' for boolean check", "LOW"),
-        (r"==\s*False\b", "Use 'if not x:' instead of '== False' for boolean check", "LOW"),
-        (r"except\s+Exception\s+as\s+\w+:\s*\n\s*pass", "Silently swallowed exception", "HIGH"),
-        (r"range\(len\(", "Iterate directly over the sequence instead of range(len(...))", "LOW"),
-        (r"(?<!\w)l\s*=\s*\[\s*\].*\n.*\.append", "Building list with append in loop — consider comprehension", "INFO"),
-    ]
     findings: list[dict[str, Any]] = []
     lines = code.split("\n")
     for line_num, line in enumerate(lines, 1):
         stripped = line.strip()
         if stripped.startswith("#"):
             continue
-        for pattern, description, severity in patterns:
-            try:
-                if re.search(pattern, line):
-                    findings.append({
-                        "severity": severity,
-                        "finding": description,
-                        "line": line_num,
-                        "evidence": stripped[:120],
-                        "source": "correctness_heuristic",
-                    })
-                    break  # One finding per line per scan
-            except re.error:
-                logger.warning("Invalid regex in correctness pattern: %s", pattern)
+        for pattern, description, severity in _CORRECTNESS_REGEXES:
+            if pattern.search(line):
+                findings.append({
+                    "severity": severity,
+                    "finding": description,
+                    "line": line_num,
+                    "evidence": stripped[:120],
+                    "source": "correctness_heuristic",
+                })
+                break  # One finding per line per scan
     return findings
 
 
@@ -304,47 +353,27 @@ def _run_performance_scan(code: str) -> list[dict[str, Any]]:
     Returns:
         List of finding dicts with finding, severity, line, evidence, and source fields.
     """
-    patterns: list[tuple[str, str, str]] = [
-        (r"for .+ in .+:\s*\n(?:\s+.*\n)*\s+for .+ in .+:", "Nested loop — potential O(n²) pattern", "MEDIUM"),
-        (r"['\"] \+\s*\w|\w\s*\+ ['\"]", "String concatenation with + — use f-string or join()", "LOW"),
-        (
-            r"\.append\(.*\).*#.*comprehension|in \[.*for.*\].*\.append",
-            "List append inside comprehension — use list comp directly",
-            "LOW",
-        ),
-        (r"time\.sleep\(\s*[1-9]\d+", "Long sleep in production code — blocks the thread", "MEDIUM"),
-        # Import-in-function check is handled below with an indentation guard —
-        # module-level imports (no leading whitespace) must not be flagged.
-        (r"dict\(.*\)\s*$|list\(.*\)\s*$", "Unnecessary copy in loop — review if copy is needed", "INFO"),
-        (r"\.split\(\).*len\(|len\(.*\.split\(\)", "Using split() for length estimation — use len(text)//4", "LOW"),
-        (r"\.lower\(\).*in.*prompt|prompt.*\.lower\(\)", "Calling .lower() on full prompt in hot path", "LOW"),
-        (r"SELECT.*FROM.*IN\s*\(SELECT", "Nested SELECT — potential N+1 query pattern", "HIGH"),
-        (r"for .+ in .+:\s*\n\s+db\.|for .+ in .+:\s*\n\s+session\.", "DB query inside loop — potential N+1", "HIGH"),
-    ]
     findings: list[dict[str, Any]] = []
     lines = code.split("\n")
     for line_num, line in enumerate(lines, 1):
         stripped = line.strip()
         if stripped.startswith("#"):
             continue
-        for pattern, description, severity in patterns:
-            try:
-                if re.search(pattern, line):
-                    findings.append({
-                        "severity": severity,
-                        "finding": description,
-                        "line": line_num,
-                        "evidence": stripped[:120],
-                        "source": "performance_heuristic",
-                    })
-                    break  # One finding per line per scan
-            except re.error:
-                logger.warning("Invalid regex in performance pattern: %s", pattern)
+        for pattern, description, severity in _PERFORMANCE_REGEXES:
+            if pattern.search(line):
+                findings.append({
+                    "severity": severity,
+                    "finding": description,
+                    "line": line_num,
+                    "evidence": stripped[:120],
+                    "source": "performance_heuristic",
+                })
+                break  # One finding per line per scan
         else:
             # Indented import check — only flag imports inside a function/method body.
             # Module-level imports have no leading whitespace, so line == stripped.
             # We must not flag those — only lines with indentation are in-function imports.
-            if line != stripped and re.search(r"^import\s+\w+|^from\s+\w+\s+import", stripped):
+            if line != stripped and _INDENTED_IMPORT_PATTERN.search(stripped):
                 findings.append({
                     "severity": "LOW",
                     "finding": "Import inside a function body — move to top of file",
@@ -360,7 +389,7 @@ def _run_standards_scan(code: str) -> list[dict[str, Any]]:
 
     Checks for missing type annotations on def statements, unresolved
     TODO/FIXME/HACK comments, print() calls in production code, and
-    other project-specific conventions.
+    other project-specific conventions from the repository quality contract.
 
     Args:
         code: The source code string to scan.
@@ -368,52 +397,28 @@ def _run_standards_scan(code: str) -> list[dict[str, Any]]:
     Returns:
         List of finding dicts with finding, severity, line, evidence, and source fields.
     """
-    patterns: list[tuple[str, str, str]] = [
-        (r"# ?TODO|# ?FIXME|# ?HACK|# ?XXX", "Unresolved code annotation (TODO/FIXME/HACK/XXX)", "LOW"),
-        (r"^\s*print\s*\(", "print() in production code — use logging instead", "MEDIUM"),
-        (r"def \w+\([^)]*\)\s*:", "Function missing return type annotation", "LOW"),
-        (r"def \w+\([^)]*\)\s*->\s*Any\s*:", "Function returns Any — consider a specific return type", "INFO"),
-        (r"#\s*type:\s*ignore", "type: ignore suppresses type checking — review carefully", "INFO"),
-        (r"from __future__ import annotations", "", "INFO"),  # Placeholder to skip false positives
-        (r"import \*", "Wildcard import — pollutes namespace and hides dependencies", "MEDIUM"),
-        (r"\bstr\(e\)\b", "Converting exception to string — use logger.exception() instead", "LOW"),
-        (
-            r"logging\.info\(|logging\.warning\(|logging\.error\(|logging\.debug\(",
-            "Using root logger — use logging.getLogger(__name__)",
-            "LOW",
-        ),
-        (r"datetime\.utcnow\(\)", "datetime.utcnow() is deprecated — use datetime.now(timezone.utc)", "MEDIUM"),  # noqa: VET103 - timestamp source is part of the compatibility contract
-        (
-            r"datetime\.now\(\)(?!\s*\(timezone)",  # noqa: VET103 - timestamp source is part of the compatibility contract
-            "datetime.now() without timezone — use datetime.now(timezone.utc)",  # noqa: VET103 - timestamp source is part of the compatibility contract
-            "MEDIUM",
-        ),
-    ]
     # Patterns that must scan ALL lines including comments (e.g. TODO/FIXME annotations)
-    _comment_inclusive = frozenset({"# ?TODO|# ?FIXME|# ?HACK|# ?XXX"})
+    _comment_inclusive = frozenset({"Unresolved code annotation (TODO/FIXME/HACK/XXX)"})
 
     findings: list[dict[str, Any]] = []
     lines = code.split("\n")
     for line_num, line in enumerate(lines, 1):
         stripped = line.strip()
-        for pattern, description, severity in patterns:
+        for pattern, description, severity in _STANDARDS_REGEXES:
             if not description:  # Skip placeholder entries
                 continue
             # Skip comment lines for most patterns but not for TODO/FIXME checks
-            if stripped.startswith("#") and pattern not in _comment_inclusive:
+            if stripped.startswith("#") and description not in _comment_inclusive:
                 continue
-            try:
-                if re.search(pattern, line):
-                    findings.append({
-                        "severity": severity,
-                        "finding": description,
-                        "line": line_num,
-                        "evidence": stripped[:120],
-                        "source": "standards_heuristic",
-                    })
-                    break  # One finding per line per scan
-            except re.error:
-                logger.warning("Invalid regex in standards pattern: %s", pattern)
+            if pattern.search(line):
+                findings.append({
+                    "severity": severity,
+                    "finding": description,
+                    "line": line_num,
+                    "evidence": stripped[:120],
+                    "source": "standards_heuristic",
+                })
+                break  # One finding per line per scan
     return findings
 
 

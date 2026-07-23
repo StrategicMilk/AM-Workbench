@@ -27,9 +27,8 @@ from vetinari.constants import (
     DEFAULT_SEARXNG_URL,
     WEB_SEARCH_PROBE_TIMEOUT,
 )
-from vetinari.tools.web_search_types import (  # noqa: F401 - import intentionally probes or re-exports API surface
+from vetinari.tools.web_search_types import (
     SearchResult,
-    SourceCredibility,
 )
 from vetinari.utils.serialization import dataclass_to_dict
 
@@ -133,7 +132,8 @@ class WebSearchTool:
 
         logger.info("WebSearchTool initialized with backend: %s", self.backend_name)
 
-    def _check_searxng_available(self, url: str) -> bool:
+    @staticmethod
+    def _check_searxng_available(url: str) -> bool:
         """Probe the SearXNG instance to confirm it is reachable.
 
         Attempts a lightweight JSON search request with a 2-second timeout so
@@ -218,7 +218,7 @@ class WebSearchTool:
         start_time = time.time()
 
         # Check cache
-        cache_key = f"{query}:{max_results}:{language}:{time_range}"
+        cache_key = f"{self.backend_name}:{query}:{max_results}:{language}:{time_range}"
         if cache_key in self._cache:
             cached_time, cached_response = self._cache[cache_key]
             if time.time() - cached_time < self.cache_ttl:
@@ -327,19 +327,22 @@ class WebSearchTool:
 
         self._request_times.append(now)
 
-    def _search_brave(self, query: str, max_results: int, language: str, time_range: str) -> list[SearchResult]:
+    @staticmethod
+    def _search_brave(query: str, max_results: int, language: str, time_range: str) -> list[SearchResult]:
         """Delegate to web_search_backends.search_brave."""
         from vetinari.tools.web_search_backends import search_brave
 
         return search_brave(query, max_results, language, time_range)
 
-    def _search_duckduckgo(self, query: str, max_results: int, language: str, time_range: str) -> list[SearchResult]:
+    @staticmethod
+    def _search_duckduckgo(query: str, max_results: int, language: str, time_range: str) -> list[SearchResult]:
         """Delegate to web_search_backends.search_duckduckgo."""
         from vetinari.tools.web_search_backends import search_duckduckgo
 
         return search_duckduckgo(query, max_results, language, time_range)
 
-    def _search_duckduckgo_http(self, query: str, max_results: int, language: str) -> list[SearchResult]:
+    @staticmethod
+    def _search_duckduckgo_http(query: str, max_results: int, language: str) -> list[SearchResult]:
         """Delegate to web_search_backends.search_duckduckgo_http (HTTP fallback)."""
         from vetinari.tools.web_search_backends import search_duckduckgo_http
 
@@ -357,13 +360,15 @@ class WebSearchTool:
 
         return search_tavily(query, max_results, language, time_range, self.tavily_key)
 
-    def _search_wikipedia(self, query: str, max_results: int, language: str, time_range: str) -> list[SearchResult]:
+    @staticmethod
+    def _search_wikipedia(query: str, max_results: int, language: str, time_range: str) -> list[SearchResult]:
         """Delegate to web_search_backends.search_wikipedia."""
         from vetinari.tools.web_search_backends import search_wikipedia
 
         return search_wikipedia(query, max_results, language, time_range)
 
-    def _search_arxiv(self, query: str, max_results: int, language: str, time_range: str) -> list[SearchResult]:
+    @staticmethod
+    def _search_arxiv(query: str, max_results: int, language: str, time_range: str) -> list[SearchResult]:
         """Delegate to web_search_backends.search_arxiv."""
         from vetinari.tools.web_search_backends import search_arxiv
 

@@ -24,8 +24,10 @@ from vetinari.benchmarks.runner import (
     BenchmarkSuiteAdapter,
     BenchmarkTier,
 )
+from vetinari.context import count_tokens
 
 logger = logging.getLogger(__name__)
+
 
 # -- Sample SWE-bench-style cases (mock data for local testing) --
 
@@ -243,7 +245,7 @@ class SWEBenchAdapter(BenchmarkSuiteAdapter):
         Returns:
             The BenchmarkResult result.
         """
-        start = time.time()
+        start = time.monotonic()
 
         error: str | None = None
         try:
@@ -254,7 +256,7 @@ class SWEBenchAdapter(BenchmarkSuiteAdapter):
             error = str(exc)
             generated_patch = ""
 
-        latency = (time.time() - start) * 1000
+        latency = (time.monotonic() - start) * 1000
 
         return BenchmarkResult(
             case_id=case.case_id,
@@ -263,7 +265,7 @@ class SWEBenchAdapter(BenchmarkSuiteAdapter):
             passed=False,  # set by evaluate()
             score=0.0,
             latency_ms=round(latency, 2),
-            tokens_consumed=len(case.input_data.get("base_code", "")) * 2,
+            tokens_consumed=count_tokens(str(case.input_data.get("base_code", ""))),
             output={"generated_patch": generated_patch, "benchmark_mode": "unavailable" if error else "orchestrator"},
             error=error,
         )
@@ -280,9 +282,11 @@ class SWEBenchAdapter(BenchmarkSuiteAdapter):
           - 1.0: Exact or near-exact match
 
         Returns:
-            The computed value.
+            float value produced by evaluate().
         """
         if not result.output:
+            return 0.0
+        if result.output.get("benchmark_mode") == "unavailable" or result.error:
             return 0.0
 
         generated = result.output.get("generated_patch", "")
@@ -298,7 +302,7 @@ class SWEBenchAdapter(BenchmarkSuiteAdapter):
                 break
 
         if not expected:
-            return 0.3  # can't verify without expected
+            return 0.0
 
         # Normalise whitespace for comparison
         gen_norm = " ".join(generated.split())
@@ -307,22 +311,15 @@ class SWEBenchAdapter(BenchmarkSuiteAdapter):
         if gen_norm == exp_norm:
             return 1.0
 
-        # Token overlap scoring
-        gen_tokens = set(gen_norm.split())
-        exp_tokens = set(exp_norm.split())
-        if not exp_tokens:
-            return 0.3
+        test_execution = result.output.get("test_execution")
+        if isinstance(test_execution, dict) and test_execution.get("passed") is True:
+            evidence_refs = test_execution.get("evidence_refs")
+            if isinstance(evidence_refs, list) and all(isinstance(ref, str) and ref.strip() for ref in evidence_refs):
+                return 1.0
+        return 0.0
 
-        overlap = len(gen_tokens & exp_tokens) / len(exp_tokens)
-        if overlap > 0.85:
-            return 0.8
-        if overlap > 0.5:
-            return 0.6
-        if overlap > 0.2:
-            return 0.4
-        return 0.3
-
-    def _generate_patch_via_orchestrator(self, case: BenchmarkCase) -> str:
+    @staticmethod
+    def _generate_patch_via_orchestrator(case: BenchmarkCase) -> str:
         """Attempt real patch generation via Vetinari pipeline."""
         from vetinari.orchestration.two_layer import get_two_layer_orchestrator
 
@@ -335,7 +332,8 @@ class SWEBenchAdapter(BenchmarkSuiteAdapter):
         result = orch.generate_and_execute(goal=goal)
         return result.get("final_output", "")
 
-    def _mock_generate_patch(self, case: BenchmarkCase) -> str:
+    @staticmethod
+    def _mock_generate_patch(case: BenchmarkCase) -> str:
         """Compatibility helper retained for tests; not used by run_case."""
         expected = case.expected or {}
         return expected.get("expected_patch", case.input_data.get("base_code", ""))

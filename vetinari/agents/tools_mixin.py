@@ -8,12 +8,14 @@ present (supplied by BaseAgent at runtime).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 
 from vetinari.types import AgentType
 
 logger = logging.getLogger(__name__)
+
 
 # Role-appropriate tool deny list (principle of least privilege)
 _TOOL_DENY: dict[str, set[str]] = {
@@ -30,7 +32,12 @@ _TOOL_DENY: dict[str, set[str]] = {
 }
 
 
-class ToolsMixin:
+def _text_fingerprint(value: str) -> str:
+    digest = hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:12]
+    return f"len={len(value)} sha256={digest}"
+
+
+class AgentToolAccess:
     """Tool access capabilities mixed into BaseAgent.
 
     All methods rely on ``self._web_search``, ``self._tool_registry``, and
@@ -75,11 +82,14 @@ class ToolsMixin:
                 for r in response.results
             ]
         except Exception as e:
-            self._log("warning", "Web search failed for '%s': %s", query, e)
+            query_fingerprint = _text_fingerprint(query)
+            error_type = type(e).__name__
+            self._log("warning", "Web search failed for query %s: %s", query_fingerprint, error_type)
             logger.warning(
-                "Web search for query %r failed: %s — returning empty results, agent will proceed without search data",
-                query,
-                e,
+                "Web search failed; query=%s error_type=%s "
+                "impact=returning empty results and proceeding without search data",
+                query_fingerprint,
+                error_type,
             )
             return []
 
@@ -174,8 +184,8 @@ class ToolsMixin:
     # Code context helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
     def _extract_code_context(
-        self,
         file_paths: list[str],
         keywords: list[str],
         budget_chars: int = 2000,
@@ -206,8 +216,8 @@ class ToolsMixin:
                 remaining -= len(chunk)
         return "\n\n".join(parts)
 
+    @staticmethod
     def _grep_patterns(
-        self,
         file_paths: list[str],
         patterns: list[str],
         context_lines: int = 3,
@@ -228,7 +238,8 @@ class ToolsMixin:
         matches = gc.extract_patterns(file_paths, patterns, context_lines)
         return gc.format_for_prompt(matches)
 
-    def _grep_imports(self, file_path: str) -> str:
+    @staticmethod
+    def _grep_imports(file_path: str) -> str:
         """Extract only the import statements from a source file.
 
         Returns a compact import-only view (~5% of file size) useful when an
@@ -246,7 +257,8 @@ class ToolsMixin:
 
         return get_grep_context().extract_imports(file_path)
 
-    def _grep_security_patterns(self, file_paths: list[str]) -> str:
+    @staticmethod
+    def _grep_security_patterns(file_paths: list[str]) -> str:
         """Extract lines matching common security anti-patterns from source files.
 
         Searches for hardcoded credentials, unsafe eval/exec/pickle, SQL

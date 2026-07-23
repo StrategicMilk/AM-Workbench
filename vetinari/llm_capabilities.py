@@ -16,8 +16,21 @@ import logging
 from typing import Any
 
 from vetinari.config.inference_config import get_inference_config
+from vetinari.security.fail_closed import UntrustedInputError, sanitize_untrusted_text
+from vetinari.security.redaction import redact_text
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_llm_context(value: str, *, max_length: int) -> str:
+    """Return text safe to embed in a prompt, or an empty string when hostile."""
+    if not value:
+        return ""
+    try:
+        return sanitize_untrusted_text(redact_text(value), max_length=max_length)
+    except UntrustedInputError:
+        logger.warning("Rejected unsafe LLM context")
+        return ""
 
 
 def diagnose_error(
@@ -42,13 +55,19 @@ def diagnose_error(
         Dict with ``diagnosis``, ``likely_cause``, ``suggested_fix`` keys,
         or None if LLM is unavailable.
     """
-    from vetinari.llm_helpers import quick_llm_call
+    from vetinari.llm_helpers import quick_llm_call_with_provenance
 
-    prompt = f"Function: {function_name}\nError: {error_message}\n"
-    if source_code:
-        prompt += f"\nSource code:\n```\n{source_code[:2000]}\n```\n"
-    if recent_changes:
-        prompt += f"\nRecent changes:\n{recent_changes[:1000]}\n"
+    safe_function_name = _safe_llm_context(function_name, max_length=200)
+    safe_error_message = _safe_llm_context(error_message, max_length=2000)
+    if not safe_function_name or not safe_error_message:
+        return None
+    prompt = f"Function: {safe_function_name}\nError: {safe_error_message}\n"
+    safe_source_code = _safe_llm_context(source_code[:2000], max_length=2000)
+    safe_recent_changes = _safe_llm_context(recent_changes[:1000], max_length=1000)
+    if safe_source_code:
+        prompt += f"\nSource code:\n```\n{safe_source_code}\n```\n"
+    if safe_recent_changes:
+        prompt += f"\nRecent changes:\n{safe_recent_changes}\n"
     prompt += (
         "\nDiagnose the error. Provide:\n"
         "1. DIAGNOSIS: one-sentence explanation\n"
@@ -57,7 +76,7 @@ def diagnose_error(
     )
 
     _profile = get_inference_config().get_profile("debugging")
-    result = quick_llm_call(
+    llm_result = quick_llm_call_with_provenance(
         prompt=prompt,
         system_prompt=(
             "You are a debugging expert. Analyze the error and provide a precise diagnosis. "
@@ -66,10 +85,21 @@ def diagnose_error(
         max_tokens=_profile.max_tokens,
         temperature=_profile.temperature,
     )
+    result = llm_result.output
     if not result:
         return None
+    result = redact_text(result)
 
-    parsed: dict[str, Any] = {"raw": result}
+    parsed: dict[str, Any] = {
+        "raw": result,
+        "llm_provenance": {
+            "model_id": llm_result.model_id,
+            "status": llm_result.status,
+            "latency_ms": llm_result.latency_ms,
+            "tokens_used": llm_result.tokens_used,
+            "response_metadata": llm_result.response_metadata,
+        },
+    }
     for line in result.split("\n"):
         line = line.strip()
         if line.upper().startswith("DIAGNOSIS:"):
@@ -100,7 +130,14 @@ def generate_changelog(
     """
     from vetinari.llm_helpers import quick_llm_call
 
-    commit_text = "\n".join(f"- {c.get('hash', '')[:8]} {c['message']}" for c in commits[:50])
+    safe_lines = []
+    for c in commits[:50]:
+        safe_message = _safe_llm_context(c.get("message", ""), max_length=300)
+        if safe_message:
+            safe_lines.append(f"- {redact_text(c.get('hash', '')[:8])} {safe_message}")
+    if not safe_lines:
+        return None
+    commit_text = "\n".join(safe_lines)
     prompt = (
         f"Commits:\n{commit_text}\n\n"
         "Generate a changelog in Keep a Changelog format with sections: "
@@ -147,8 +184,8 @@ def explain_complex_function(
         complexity_note = f"\nCyclomatic complexity: {cyclomatic_complexity}"
 
     prompt = (
-        f"Function: {function_name}{complexity_note}\n"
-        f"```python\n{source_code[:3000]}\n```\n\n"
+        f"Function: {_safe_llm_context(function_name, max_length=200)}{complexity_note}\n"
+        f"```python\n{_safe_llm_context(source_code[:3000], max_length=3000)}\n```\n\n"
         "Write a concise 2-3 sentence comment explaining WHY this function uses "
         "this particular approach. Focus on design decisions, trade-offs, and "
         "non-obvious constraints. Do NOT describe what the code does — the code "

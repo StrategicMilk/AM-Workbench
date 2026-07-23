@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_shield_pack.schema.json",
+  "title": "WorkbenchShieldPack",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "pack_id",
+    "version",
+    "risk_domain",
+    "protected_surfaces",
+    "default_mode",
+    "selectable_scopes",
+    "rules",
+    "fixtures",
+    "owner",
+    "rollout_state",
+    "policy_version",
+    "reason_codes"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "pack_id": {"type": "string", "minLength": 1},
+    "version": {"type": "string", "minLength": 1},
+    "risk_domain": {
+      "enum": [
+        "dlp",
+        "shell_safety",
+        "git_release_safety",
+        "browser_network_egress",
+        "package_install",
+        "secrets",
+        "destructive_filesystem",
+        "mcp_prompt_injection",
+        "public_export_boundary",
+        "mobile_remote_control"
+      ]
+    },
+    "protected_surfaces": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/protected_surface"}
+    },
+    "default_mode": {"enum": ["observe", "warn", "strict"]},
+    "selectable_scopes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"enum": ["project", "automation", "governance"]}
+    },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/rule"}
+    },
+    "fixtures": {
+      "type": "array",
+      "minItems": 2,
+      "allOf": [
+        {"contains": {"type": "object", "required": ["kind"], "properties": {"kind": {"const": "known_good"}}}},
+        {"contains": {"type": "object", "required": ["kind"], "properties": {"kind": {"const": "known_bad"}}}}
+      ],
+      "items": {"$ref": "#/$defs/fixture"}
+    },
+    "owner": {"type": "string", "minLength": 1},
+    "rollout_state": {"enum": ["active", "canary", "disabled", "deprecated"]},
+    "policy_version": {"type": "string", "minLength": 1},
+    "reason_codes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "capability_pack_refs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    }
+  },
+  "$defs": {
+    "protected_surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["surface_id", "surface_kind", "authority_refs", "description"],
+      "properties": {
+        "surface_id": {"type": "string", "minLength": 1},
+        "surface_kind": {"type": "string", "minLength": 1},
+        "authority_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "description": {"type": "string", "minLength": 1},
+        "tool_surface_id": {"type": "string"}
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rule_id",
+        "reason_code",
+        "description",
+        "protected_surface_refs",
+        "good_fixture_refs",
+        "bad_fixture_refs",
+        "block_patterns"
+      ],
+      "properties": {
+        "rule_id": {"type": "string", "minLength": 1},
+        "reason_code": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "protected_surface_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "good_fixture_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "bad_fixture_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "block_patterns": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "capability_pack_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixture_id",
+        "kind",
+        "summary",
+        "action_type",
+        "expected_decision",
+        "match_patterns",
+        "evidence_refs"
+      ],
+      "properties": {
+        "fixture_id": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["known_good", "known_bad"]},
+        "summary": {"type": "string", "minLength": 1},
+        "action_type": {"type": "string", "minLength": 1},
+        "expected_decision": {"enum": ["allow", "warn", "block", "escalate", "degraded"]},
+        "match_patterns": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "metadata": {"type": "object"}
+      }
+    }
+  }
+}

@@ -89,16 +89,22 @@ class CreativeWritingHandler(BaseHandler):
             '{"content": "...", "type": "creative", "word_count": 0, "tone": "' + style + '"}'
         )
 
-        fallback: dict[str, Any] = {"content": "", "type": "creative"}
+        fallback: dict[str, Any] = {
+            "content": "",
+            "type": "creative",
+            "_is_fallback": True,
+        }
         infer_json = context.get("infer_json")
         if infer_json is not None:
             result = infer_json(prompt, fallback=fallback)
+            is_fallback = isinstance(result, dict) and result.get("_is_fallback") is True
         else:
             self._logger.warning("No infer_json callable in context, using fallback")
             result = fallback
+            is_fallback = True
 
         return AgentResult(
-            success=True,
+            success=not is_fallback,
             output=result,
-            metadata={"mode": "creative_writing"},
+            metadata={"mode": "creative_writing", "_is_fallback": is_fallback},
         )

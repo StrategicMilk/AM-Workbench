@@ -9,7 +9,6 @@ Pipeline role: Quality Gate — runs weekly to detect model behavior drift.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -20,9 +19,19 @@ from typing import Any
 
 import yaml
 
+from vetinari.boundary_guards import account_evidence_drop, require_nonempty
 from vetinari.constants import _PROJECT_ROOT
+from vetinari.learning.atomic_writers import write_json_atomic
+from vetinari.security.fail_closed import (
+    SchemaOpenError,
+    UntrustedInputError,
+    assert_closed_schema,
+    sanitize_untrusted_text,
+)
+from vetinari.security.redaction import redact_text
 
 logger = logging.getLogger(__name__)
+
 
 # -- Configuration --
 _CORPUS_PATH = _PROJECT_ROOT / "config" / "testing" / "canary_corpus.yaml"
@@ -112,21 +121,39 @@ class CanaryTestSuite:
 
         with open(self._corpus_path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
+        if not isinstance(data, dict):
+            raise ValueError(f"Canary corpus root must be a mapping, got: {type(data)}")
+        try:
+            assert_closed_schema(data, allowed_keys=("canary_pairs",), required_keys=("canary_pairs",))
+        except SchemaOpenError as exc:
+            raise ValueError(f"Canary corpus schema is not closed: {exc}") from exc
 
         raw_pairs = data.get("canary_pairs")
         if not raw_pairs or not isinstance(raw_pairs, list):
             raise ValueError(f"Canary corpus must have a 'canary_pairs' list, got: {type(raw_pairs)}")
 
-        self._pairs = [
-            CanaryPair(
-                id=p["id"],
-                category=p["category"],
-                prompt=p["prompt"],
-                expected_output=p["expected_output"],
-                similarity_threshold=p.get("similarity_threshold", self._default_threshold),
-            )
-            for p in raw_pairs
-        ]
+        pairs: list[CanaryPair] = []
+        for index, p in enumerate(raw_pairs):
+            if not isinstance(p, dict):
+                raise ValueError(f"canary_pairs[{index}] must be a mapping")
+            try:
+                assert_closed_schema(
+                    p,
+                    allowed_keys=("id", "category", "prompt", "expected_output", "similarity_threshold"),
+                    required_keys=("id", "category", "prompt", "expected_output"),
+                )
+                pairs.append(
+                    CanaryPair(
+                        id=sanitize_untrusted_text(p["id"], max_length=120),
+                        category=sanitize_untrusted_text(p["category"], max_length=120),
+                        prompt=sanitize_untrusted_text(p["prompt"], max_length=2000),
+                        expected_output=sanitize_untrusted_text(p["expected_output"], max_length=4000),
+                        similarity_threshold=p.get("similarity_threshold", self._default_threshold),
+                    )
+                )
+            except (SchemaOpenError, UntrustedInputError) as exc:
+                raise ValueError(f"canary_pairs[{index}] is unsafe: {exc}") from exc
+        self._pairs = pairs
         logger.info("Loaded %d canary pairs from %s", len(self._pairs), self._corpus_path)
         return self._pairs
 
@@ -172,6 +199,7 @@ class CanaryTestSuite:
                     "Inference failed for canary %s — marking as failed",
                     pair.id,
                 )
+                account_evidence_drop(pair.id, "canary_actual_output", logger=logger)
                 actual = ""
 
             similarity = self.compute_similarity(pair.expected_output, actual)
@@ -181,7 +209,7 @@ class CanaryTestSuite:
                 category=pair.category,
                 similarity=similarity,
                 passed=passed,
-                actual_output=actual,
+                actual_output=redact_text(actual),
             )
             report.scores.append(result)
             report.pairs_tested += 1
@@ -222,10 +250,10 @@ class CanaryTestSuite:
                     "category": s.category,
                     "similarity": round(s.similarity, 4),
                     "passed": s.passed,
+                    "actual_output": require_nonempty(s.actual_output, field_name="actual_output"),
                 }
                 for s in report.scores
             ],
         }
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        write_json_atomic(out_path, data)
         logger.info("Canary results written to %s", out_path)

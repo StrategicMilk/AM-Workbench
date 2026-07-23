@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_experiment.schema.json",
+  "title": "WorkbenchExperiment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "experiment_id",
+    "kind",
+    "search_space",
+    "objective",
+    "constraints",
+    "budget",
+    "scheduler",
+    "termination_reason",
+    "metrics",
+    "artifacts",
+    "baseline_ref",
+    "candidate_ref",
+    "confidence_threshold",
+    "promotion_readiness",
+    "rollback"
+  ],
+  "properties": {
+    "experiment_id": { "$ref": "#/$defs/nonEmptyString" },
+    "kind": { "enum": ["sweep", "controlled_comparison"] },
+    "search_space": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/ExperimentVariant" }
+    },
+    "objective": { "$ref": "#/$defs/MetricSpec" },
+    "constraints": { "type": "object" },
+    "budget": { "$ref": "#/$defs/BudgetSpec" },
+    "scheduler": { "enum": ["sequential", "lowest_cost_first"] },
+    "termination_reason": {
+      "enum": [
+        "not_terminated",
+        "budget_exhausted",
+        "objective_met",
+        "max_trials_reached",
+        "no_candidates",
+        "safety_constraints"
+      ]
+    },
+    "metrics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/MetricSpec" }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ArtifactRef" }
+    },
+    "baseline_ref": { "$ref": "#/$defs/nonEmptyString" },
+    "candidate_ref": { "$ref": "#/$defs/nonEmptyString" },
+    "confidence_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+    "promotion_readiness": { "enum": ["blocked", "degraded", "eligible", "rollback_required"] },
+    "cost_limit_usd": { "type": ["number", "null"], "minimum": 0 },
+    "resource_limits": {
+      "type": "object",
+      "additionalProperties": { "type": "number", "minimum": 0 }
+    },
+    "rollback": {
+      "oneOf": [
+        { "$ref": "#/$defs/RollbackMetadata" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "ExperimentVariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["variant_id", "kind", "parameters", "asset_refs"],
+      "properties": {
+        "variant_id": { "$ref": "#/$defs/nonEmptyString" },
+        "kind": { "enum": ["prompt", "model", "retrieval", "route", "backend", "policy", "fine_tune"] },
+        "parameters": { "type": "object" },
+        "asset_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "label": { "type": "string" }
+      }
+    },
+    "MetricSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "target", "unit", "higher_is_better"],
+      "properties": {
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "target": { "type": "number" },
+        "unit": { "type": "string" },
+        "higher_is_better": { "type": "boolean" }
+      }
+    },
+    "BudgetSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_trials", "max_cost_usd", "max_latency_ms"],
+      "properties": {
+        "max_trials": { "type": "integer", "minimum": 1 },
+        "max_cost_usd": { "type": "number", "minimum": 0 },
+        "max_latency_ms": { "type": ["number", "null"], "minimum": 0 }
+      }
+    },
+    "ArtifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "artifact_kind", "revision"],
+      "properties": {
+        "artifact_id": { "$ref": "#/$defs/nonEmptyString" },
+        "artifact_kind": { "$ref": "#/$defs/nonEmptyString" },
+        "revision": { "type": "string" }
+      }
+    },
+    "RollbackMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target_ref", "owner", "tested_at_utc"],
+      "properties": {
+        "target_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "owner": { "$ref": "#/$defs/nonEmptyString" },
+        "tested_at_utc": { "type": "string" }
+      }
+    }
+  }
+}

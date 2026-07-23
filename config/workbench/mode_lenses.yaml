@@ -1,0 +1,237 @@
+schema_version: 1
+lenses:
+- id: casual_chat
+  label: Casual Chat
+  conversation_mode: casual
+  mode_template_id: chat
+  tone: plain, low-ceremony, exploratory
+  memory_defaults:
+    ephemeral_scope:
+    - active_message_buffer
+    persistent_scope:
+    - pinned_context_ids
+    retention_policy: retain only pinned context and explicit conversion manifests
+    provenance_required: true
+  allowed_tools:
+  - conversation_store
+  - evidence_notebook_builder
+  artifact_suggestions:
+  - pinned_context
+  - conversion_manifest
+  rigor_default: just_talk
+  transition_targets:
+  - creative_exploration
+  - professional_assistance
+  - life_admin
+  - research
+  - structured_workbench
+  sensitive_domain_policy:
+    domains:
+    - medical
+    - legal
+    - financial
+    - safety
+    requires_authority: true
+    requires_evidence: true
+    behavior: reject_until_authority_and_evidence
+  authority_ref: roadmap-LW-WORKBENCH-MODE-LENSES
+  provenance_ref: wave-19-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_mode_lenses.py::test_catalog_loads_six_lenses_and_dependency_bindings
+- id: creative_exploration
+  label: Creative Exploration
+  conversation_mode: creative_writing
+  mode_template_id: creative_writing
+  tone: imaginative, branch-friendly, continuity-aware
+  memory_defaults:
+    ephemeral_scope:
+    - scene_draft_text
+    persistent_scope:
+    - story_bible_refs
+    - draft_branch_ids
+    retention_policy: retain bible refs, continuity ledgers, and accepted branch ids
+    provenance_required: true
+  allowed_tools:
+  - story_bible_library
+  - continuity_checker
+  artifact_suggestions:
+  - story_bible
+  - scene_beats
+  - draft_branches
+  rigor_default: make_something
+  transition_targets:
+  - casual_chat
+  - professional_assistance
+  - research
+  - structured_workbench
+  sensitive_domain_policy:
+    domains:
+    - medical
+    - legal
+    - financial
+    - safety
+    requires_authority: true
+    requires_evidence: true
+    behavior: keep_fictional_or_reject_until_proven
+  authority_ref: roadmap-LW-WORKBENCH-MODE-LENSES
+  provenance_ref: wave-19-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_mode_lenses.py::test_catalog_loads_six_lenses_and_dependency_bindings
+- id: professional_assistance
+  label: Professional Assistance
+  conversation_mode: writing
+  mode_template_id: writing
+  tone: concise, practical, reviewer-ready
+  memory_defaults:
+    ephemeral_scope:
+    - current_draft_text
+    persistent_scope:
+    - draft_branch_ids
+    - export_manifest_ids
+    retention_policy: retain verified draft branches and export manifests only
+    provenance_required: true
+  allowed_tools:
+  - evidence_asset_library
+  - redline_reviewer
+  artifact_suggestions:
+  - audience_style_template
+  - redline_plan
+  - export_manifest
+  rigor_default: help_me_think
+  transition_targets:
+  - casual_chat
+  - life_admin
+  - research
+  - structured_workbench
+  sensitive_domain_policy:
+    domains:
+    - legal
+    - financial
+    - employment
+    - safety
+    requires_authority: true
+    requires_evidence: true
+    behavior: reject_advice_without_authority_and_evidence
+  authority_ref: roadmap-LW-WORKBENCH-MODE-LENSES
+  provenance_ref: wave-19-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_mode_lenses.py::test_catalog_loads_six_lenses_and_dependency_bindings
+- id: life_admin
+  label: Life Admin
+  conversation_mode: chat
+  mode_template_id: evidence_intake
+  tone: organized, checklist-oriented, reversible
+  memory_defaults:
+    ephemeral_scope:
+    - pending_source_notes
+    persistent_scope:
+    - accepted_evidence_asset_ids
+    retention_policy: retain accepted evidence ids and user-approved reminders only
+    provenance_required: true
+  allowed_tools:
+  - source_card_library
+  - evidence_asset_library
+  artifact_suggestions:
+  - intake_decision
+  - source_card_ids
+  - evidence_asset_ids
+  rigor_default: help_me_think
+  transition_targets:
+  - casual_chat
+  - professional_assistance
+  - research
+  - structured_workbench
+  sensitive_domain_policy:
+    domains:
+    - medical
+    - legal
+    - financial
+    - housing
+    - safety
+    requires_authority: true
+    requires_evidence: true
+    behavior: collect_facts_only_until_authority_and_evidence_exist
+  authority_ref: roadmap-LW-WORKBENCH-MODE-LENSES
+  provenance_ref: wave-19-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_mode_lenses.py::test_catalog_loads_six_lenses_and_dependency_bindings
+- id: research
+  label: Research
+  conversation_mode: research
+  mode_template_id: research
+  tone: sourced, contradiction-aware, current
+  memory_defaults:
+    ephemeral_scope:
+    - research_questions
+    persistent_scope:
+    - claim_ledger_ids
+    - source_card_ids
+    retention_policy: retain source cards, claim ledgers, freshness checks, and rerun diffs
+    provenance_required: true
+  allowed_tools:
+  - source_card_library
+  - evidence_notebook_builder
+  artifact_suggestions:
+  - source_plan
+  - claim_ledger
+  - contradiction_log
+  - confidence_summary
+  rigor_default: check_it_carefully
+  transition_targets:
+  - casual_chat
+  - professional_assistance
+  - creative_exploration
+  - structured_workbench
+  sensitive_domain_policy:
+    domains:
+    - medical
+    - legal
+    - financial
+    - safety
+    - current_events
+    requires_authority: true
+    requires_evidence: true
+    behavior: require_sources_and_show_uncertainty_before_any_claim
+  authority_ref: roadmap-LW-WORKBENCH-MODE-LENSES
+  provenance_ref: wave-19-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_mode_lenses.py::test_catalog_loads_six_lenses_and_dependency_bindings
+- id: structured_workbench
+  label: Structured Workbench
+  conversation_mode: chat
+  mode_template_id: release_evidence
+  tone: explicit, evidence-backed, operator-safe
+  memory_defaults:
+    ephemeral_scope:
+    - release_notes_draft
+    persistent_scope:
+    - release_evidence_asset_ids
+    - operator_decision_receipts
+    retention_policy: retain verification commands, evidence ids, and signed decisions
+    provenance_required: true
+  allowed_tools:
+  - evidence_asset_library
+  - release_check_runner
+  - metadata_spine
+  artifact_suggestions:
+  - verification_commands
+  - evidence_asset_ids
+  - operator_decision
+  rigor_default: make_it_reusable
+  transition_targets:
+  - casual_chat
+  - professional_assistance
+  - research
+  sensitive_domain_policy:
+    domains:
+    - release
+    - destructive_change
+    - security
+    - safety
+    requires_authority: true
+    requires_evidence: true
+    behavior: fail_closed_until_operator_authority_and_command_evidence
+  authority_ref: roadmap-LW-WORKBENCH-MODE-LENSES
+  provenance_ref: wave-19-charter-bridge
+  evidence_refs:
+  - tests/test_workbench_mode_lenses.py::test_catalog_loads_six_lenses_and_dependency_bindings

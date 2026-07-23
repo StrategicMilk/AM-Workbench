@@ -16,15 +16,22 @@ import subprocess
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Any, cast
 
 from vetinari.constants import CODE_SEARCH_TIMEOUT, INDEX_BUILD_TIMEOUT, TIMEOUT_SHORT
 from vetinari.exceptions import ConfigurationError
 from vetinari.repo_map import ASTIndexer, RepoMap, SymbolInfo, get_ast_indexer, get_repo_map
+from vetinari.utils.bounded_collections import bounded_rglob
 from vetinari.utils.registry import BaseRegistry
 from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
+
+
 _COCOINDEX_PACKAGE_ENV = "VETINARI_COCOINDEX_CODE_PACKAGE"
+_FALLBACK_SEARCH_MAX_DEPTH = 8
+_FALLBACK_SEARCH_MAX_FILES = 10_000
+_FALLBACK_SEARCH_MAX_FILE_BYTES = 1_000_000
 
 
 def _get_pinned_cocoindex_package() -> str | None:
@@ -48,7 +55,7 @@ class SearchBackendStatus(Enum):
     ERROR = "error"
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class CodeSearchResult:
     """Code search result."""
 
@@ -64,9 +71,9 @@ class CodeSearchResult:
     def __repr__(self) -> str:
         return f"CodeSearchResult(file_path={self.file_path!r}, line_start={self.line_start!r}, score={self.score!r})"
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
-        return dataclass_to_dict(self)
+        return cast(dict[str, Any], dataclass_to_dict(self))
 
 
 class CocoIndexAdapter:
@@ -77,9 +84,11 @@ class CocoIndexAdapter:
     def __init__(self, root_path: str | None = None, embedding_model: str | None = None):
         self.root_path = root_path or os.getcwd()
         self.embedding_model = embedding_model
-        self._status = None
+        self._status: SearchBackendStatus | None = None
+        self._last_backend = "unavailable"
 
-    def _check_availability(self) -> bool:
+    @staticmethod
+    def _check_availability() -> bool:
         try:
             _get_pinned_cocoindex_package()
         except ConfigurationError as exc:
@@ -87,10 +96,11 @@ class CocoIndexAdapter:
             return False
         if _get_pinned_cocoindex_package() is None:
             return False
-        if not shutil.which("uvx"):
+        uvx = shutil.which("uvx")
+        if not uvx:
             return False
         try:
-            result = subprocess.run(["uvx", "--version"], capture_output=True, timeout=TIMEOUT_SHORT)  # noqa: S607 - tool name is intentionally resolved by the runtime environment
+            result = subprocess.run([uvx, "--version"], capture_output=True, timeout=TIMEOUT_SHORT)
             return result.returncode == 0
         except (OSError, subprocess.SubprocessError):
             logger.warning("uvx not available on PATH — code search tool check skipped, search will be unavailable")
@@ -112,7 +122,8 @@ class CocoIndexAdapter:
             package = _get_pinned_cocoindex_package()
         except ConfigurationError as exc:
             logger.warning("CocoIndex indexing disabled: %s", exc)
-            return False
+            self._last_backend = "regex_fallback"
+            return self._fallback_search(query, limit)
         if package is None:
             self._last_backend = "regex_fallback"
             return self._fallback_search(query, limit)
@@ -129,7 +140,7 @@ class CocoIndexAdapter:
         ]
 
         try:
-            result = subprocess.run(  # noqa: S603 - argv is controlled and shell interpolation is not used
+            result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=CODE_SEARCH_TIMEOUT, cwd=self.root_path
             )
 
@@ -138,14 +149,14 @@ class CocoIndexAdapter:
                 return self._fallback_search(query, limit)
 
             self._last_backend = "cocoindex"
-            return self._parse_results(result.stdout)
+            return self._parse_results(result.stdout, limit=limit)
 
         except Exception as e:
             logger.error("CocoIndex search error: %s", e)
             self._last_backend = "regex_fallback"
             return self._fallback_search(query, limit)
 
-    def _parse_results(self, output: str) -> list[CodeSearchResult]:
+    def _parse_results(self, output: str, limit: int = 10) -> list[CodeSearchResult]:
         results = []
 
         try:
@@ -178,9 +189,10 @@ class CocoIndexAdapter:
                 if line.strip()
             )
 
-        return results[:10]
+        return results[:limit]
 
-    def _detect_language(self, file_path: str) -> str:
+    @staticmethod
+    def _detect_language(file_path: str) -> str:
         ext_map = {
             ".py": "python",
             ".js": "javascript",
@@ -210,39 +222,45 @@ class CocoIndexAdapter:
         return ext_map.get(ext, "unknown")
 
     def _fallback_search(self, query: str, limit: int) -> list[CodeSearchResult]:
-        """Cross-platform fallback search using Python's os.walk + re."""
+        """Cross-platform fallback search with bounded traversal and file reads."""
+        if limit <= 0:
+            return []
         results = []
         target_extensions = {".py", ".js", ".ts", ".tsx", ".jsx"}
         query_pattern = re.compile(re.escape(query), re.IGNORECASE)
 
         try:
             root = Path(self.root_path) if self.root_path else Path()
-            for dirpath, dirnames, filenames in os.walk(root):
-                # Skip hidden directories and venv
-                dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "venv"]
-                for filename in filenames:
-                    if Path(filename).suffix.lower() not in target_extensions:
-                        continue
-                    filepath = Path(dirpath) / filename
-                    try:
-                        text = filepath.read_text(encoding="utf-8", errors="ignore")
-                        for lineno, line in enumerate(text.splitlines(), 1):
-                            if query_pattern.search(line):
-                                results.append(
-                                    CodeSearchResult(
-                                        file_path=str(filepath),
-                                        language=self._detect_language(str(filepath)),
-                                        content=line.strip()[:200],
-                                        line_start=lineno,
-                                        line_end=lineno,
-                                        score=0.5,
-                                    ),
-                                )
-                                if len(results) >= limit:
-                                    return results
-                    except (OSError, UnicodeDecodeError):
-                        logger.warning("Skipping file %s during fallback search", filepath, exc_info=True)
-                        continue
+            for filepath in bounded_rglob(
+                root,
+                "*",
+                max_depth=_FALLBACK_SEARCH_MAX_DEPTH,
+                max_files=_FALLBACK_SEARCH_MAX_FILES,
+            ):
+                if not filepath.is_file() or filepath.suffix.lower() not in target_extensions:
+                    continue
+                if any(part.startswith(".") or part == "venv" for part in filepath.relative_to(root).parts[:-1]):
+                    continue
+                try:
+                    raw = filepath.read_bytes()[:_FALLBACK_SEARCH_MAX_FILE_BYTES]
+                    text = raw.decode("utf-8", errors="ignore")
+                    for lineno, line in enumerate(text.splitlines(), 1):
+                        if query_pattern.search(line):
+                            results.append(
+                                CodeSearchResult(
+                                    file_path=str(filepath),
+                                    language=self._detect_language(str(filepath)),
+                                    content=line.strip()[:200],
+                                    line_start=lineno,
+                                    line_end=lineno,
+                                    score=0.5,
+                                ),
+                            )
+                            if len(results) >= limit:
+                                return results
+                except (OSError, UnicodeDecodeError, ValueError):
+                    logger.warning("Skipping file %s during fallback search", filepath, exc_info=True)
+                    continue
         except (OSError, re.error) as e:
             logger.warning("Fallback search error: %s", e)
 
@@ -273,7 +291,7 @@ class CocoIndexAdapter:
             cmd.append("--refresh")
 
         try:
-            result = subprocess.run(cmd, capture_output=True, timeout=INDEX_BUILD_TIMEOUT, cwd=project_path)  # noqa: S603 - argv is controlled and shell interpolation is not used
+            result = subprocess.run(cmd, capture_output=True, timeout=INDEX_BUILD_TIMEOUT, cwd=project_path)
             return result.returncode == 0
         except Exception as e:
             logger.error("CocoIndex index error: %s", e)
@@ -311,7 +329,7 @@ class CocoIndexAdapter:
         return indexed
 
 
-class CodeSearchRegistry(BaseRegistry[str, type]):
+class CodeSearchRegistry(BaseRegistry[str, type[Any]]):
     """Registry for code search backends."""
 
     DEFAULT_BACKEND = "cocoindex"
@@ -323,7 +341,7 @@ class CodeSearchRegistry(BaseRegistry[str, type]):
     def _register_defaults(self) -> None:
         self.register("cocoindex", CocoIndexAdapter)
 
-    def unregister(self, name: str) -> type | None:  # type: ignore[override]
+    def unregister(self, name: str) -> type[Any] | None:
         """Remove a registered search backend by name.
 
         The default backend cannot be unregistered.
@@ -337,7 +355,7 @@ class CodeSearchRegistry(BaseRegistry[str, type]):
         """
         if name == self.DEFAULT_BACKEND:
             return None
-        return super().unregister(name)
+        return cast(type[Any] | None, super().unregister(name))
 
     def get_adapter(self, name: str | None = None, **kwargs) -> CocoIndexAdapter:
         """Instantiate and return a registered search backend adapter.
@@ -356,7 +374,7 @@ class CodeSearchRegistry(BaseRegistry[str, type]):
         adapter_class = self.get(name)
         if adapter_class is None:
             raise ConfigurationError(f"Unknown backend: {name}")
-        return adapter_class(**kwargs)
+        return cast(CocoIndexAdapter, adapter_class(**kwargs))
 
     def list_backends(self) -> list[str]:
         """Return the names of all registered search backends.
@@ -364,7 +382,7 @@ class CodeSearchRegistry(BaseRegistry[str, type]):
         Returns:
             List of backend name strings.
         """
-        return self.list_keys()
+        return list(self.list_keys())
 
     def get_backend_info(self, name: str) -> dict:
         """Return availability status and indexed projects for a named backend.
@@ -427,10 +445,10 @@ def get_structural_map(
             task_description[:60],
             max_tokens,
         )
-        return mapper.generate_for_task(root_path, task_description, max_tokens)
+        return str(mapper.generate_for_task(root_path, task_description, max_tokens))
 
     logger.debug("Generating repo map for %s (max_tokens=%d)", root_path, max_tokens)
-    return mapper.generate(root_path, max_tokens, include_private)
+    return str(mapper.generate(root_path, max_tokens, include_private))
 
 
 def find_symbol_definitions(
@@ -457,4 +475,4 @@ def find_symbol_definitions(
     indexer: ASTIndexer = get_ast_indexer(root_path)
     results = indexer.find_symbol(name)
     logger.debug("find_symbol_definitions(%r) -> %d result(s)", name, len(results))
-    return results
+    return cast(list[SymbolInfo], results)

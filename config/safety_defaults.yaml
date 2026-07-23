@@ -10,8 +10,7 @@ archive_policy:
   recent_days: 7    # Records younger than this appear in the "recent" tier
   cooling_days: 30  # Records older than recent_days but younger than this are "cooling"
   archive_root: outputs/archive  # Root directory for archive records
-  # Per-entity-type overrides (not yet implemented — hook for LW-UX-07 followup):
-  # entity_thresholds:
-  #   project:
-  #     recent_days: 14
-  #     cooling_days: 60
+  entity_thresholds:
+    project:
+      recent_days: 14
+      cooling_days: 60

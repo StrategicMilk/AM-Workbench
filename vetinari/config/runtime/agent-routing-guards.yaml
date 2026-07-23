@@ -1,0 +1,31 @@
+schema_version: 1
+purpose: Public runtime guard inputs for Foreman tool-evidence decisions.
+
+protected_files:
+  - AGENTS.md
+  - CLAUDE.md
+  - pyproject.toml
+  - conftest.py
+  - vetinari/types.py
+  - vetinari/agents/contracts.py
+  - vetinari/agents/interfaces.py
+  - vetinari/exceptions.py
+  - vetinari/adr.py
+  - vetinari/security/sandbox.py
+  - vetinari/safety/**
+  - vetinari/constraints/**
+  - config/guardrails/**
+  - .claude/rules/safety.md
+  - .claude/agents/builder.md
+  - .claude/agents/security-reviewer.md
+  - docs/internal/ai-workflows/agent-routing.yaml
+  - docs/internal/ai-workflows/agent-model-routing.md
+  - scripts/check_agent_routing.py
+
+destructive_ownership:
+  - vetinari/safety/protected_mutation.py
+  - vetinari/safety/recycle.py
+  - vetinari/lifecycle/store.py
+  - vetinari/lifecycle/archive.py
+  - vetinari/lifecycle/policies.py
+  - crates/amw-kernel/src/api/routes/workbench_domains.rs

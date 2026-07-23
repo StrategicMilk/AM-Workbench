@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_memory_scope.schema.json",
+  "title": "Workbench Memory Scope Policy",
+  "type": "object",
+  "required": [
+    "scope",
+    "label",
+    "explicit_save_required",
+    "promotion_required",
+    "recall_visible",
+    "deletion_visible",
+    "review_visible",
+    "decay_days",
+    "cross_scope_allowed",
+    "sensitive_categories",
+    "authority_ref",
+    "provenance_ref",
+    "persisted_state_ref"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "scope": {
+      "type": "string",
+      "enum": [
+        "private_personal",
+        "conversation_only",
+        "creative",
+        "professional",
+        "sensitive",
+        "project"
+      ]
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1
+    },
+    "explicit_save_required": {
+      "type": "boolean"
+    },
+    "promotion_required": {
+      "type": "boolean"
+    },
+    "recall_visible": {
+      "type": "boolean",
+      "const": true
+    },
+    "deletion_visible": {
+      "type": "boolean",
+      "const": true
+    },
+    "review_visible": {
+      "type": "boolean",
+      "const": true
+    },
+    "decay_days": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "cross_scope_allowed": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "private_personal",
+          "conversation_only",
+          "creative",
+          "professional",
+          "sensitive",
+          "project"
+        ]
+      }
+    },
+    "sensitive_categories": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "taxes",
+          "finance",
+          "legal",
+          "health",
+          "identity",
+          "family_life_admin"
+        ]
+      }
+    },
+    "authority_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "provenance_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "persisted_state_ref": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

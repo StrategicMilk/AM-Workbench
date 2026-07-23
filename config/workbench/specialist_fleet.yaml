@@ -1,0 +1,92 @@
+members:
+  - role: foreman
+    active_card_id: specialist.route-classifier.v1
+    fallback_chain:
+      - specialist.plan-quality.v1
+    fleet_eval_suite_ref: eval-suite:specialist-fleet-foreman@v1
+    promotion_policy_ref: promotion:specialist-fleet-foreman@v1
+    retirement_policy_ref: retirement:specialist-fleet-foreman@v1
+    negative_knowledge_refs:
+      - negative-knowledge:foreman-routing-ambiguity
+    route_eligible_tasks:
+      - route_classification
+    approval_ref: approval:specialist-fleet-foreman@v1
+    rollback_ref: rollback:specialist-fleet-foreman@v1
+  - role: worker
+    active_card_id: specialist.plan-quality.v1
+    fallback_chain:
+      - specialist.failure-cause.v1
+    fleet_eval_suite_ref: eval-suite:specialist-fleet-worker@v1
+    promotion_policy_ref: promotion:specialist-fleet-worker@v1
+    retirement_policy_ref: retirement:specialist-fleet-worker@v1
+    negative_knowledge_refs:
+      - negative-knowledge:worker-plan-overclaim
+    route_eligible_tasks:
+      - plan_quality_discrimination
+    approval_ref: approval:specialist-fleet-worker@v1
+    rollback_ref: rollback:specialist-fleet-worker@v1
+  - role: inspector
+    active_card_id: specialist.failure-cause.v1
+    fallback_chain:
+      - specialist.plan-quality.v1
+    fleet_eval_suite_ref: eval-suite:specialist-fleet-inspector@v1
+    promotion_policy_ref: promotion:specialist-fleet-inspector@v1
+    retirement_policy_ref: retirement:specialist-fleet-inspector@v1
+    negative_knowledge_refs:
+      - negative-knowledge:inspector-unknown-failure
+    route_eligible_tasks:
+      - failure_cause_classification
+    approval_ref: approval:specialist-fleet-inspector@v1
+    rollback_ref: rollback:specialist-fleet-inspector@v1
+  - role: research
+    active_card_id: specialist.retrieval-reranker.v1
+    fallback_chain:
+      - specialist.source-quality.v1
+    fleet_eval_suite_ref: eval-suite:specialist-fleet-research@v1
+    promotion_policy_ref: promotion:specialist-fleet-research@v1
+    retirement_policy_ref: retirement:specialist-fleet-research@v1
+    negative_knowledge_refs:
+      - negative-knowledge:research-stale-evidence
+    route_eligible_tasks:
+      - retrieval_reranking
+    approval_ref: approval:specialist-fleet-research@v1
+    rollback_ref: rollback:specialist-fleet-research@v1
+  - role: data
+    active_card_id: specialist.source-quality.v1
+    fallback_chain:
+      - specialist.retrieval-reranker.v1
+    fleet_eval_suite_ref: eval-suite:specialist-fleet-data@v1
+    promotion_policy_ref: promotion:specialist-fleet-data@v1
+    retirement_policy_ref: retirement:specialist-fleet-data@v1
+    negative_knowledge_refs:
+      - negative-knowledge:data-source-quality
+    route_eligible_tasks:
+      - source_quality_classification
+    approval_ref: approval:specialist-fleet-data@v1
+    rollback_ref: rollback:specialist-fleet-data@v1
+  - role: security
+    active_card_id: specialist.prompt-injection.v1
+    fallback_chain:
+      - specialist.source-quality.v1
+    fleet_eval_suite_ref: eval-suite:specialist-fleet-security@v1
+    promotion_policy_ref: promotion:specialist-fleet-security@v1
+    retirement_policy_ref: retirement:specialist-fleet-security@v1
+    negative_knowledge_refs:
+      - negative-knowledge:security-obfuscated-prompt
+    route_eligible_tasks:
+      - prompt_injection_detection
+    approval_ref: approval:specialist-fleet-security@v1
+    rollback_ref: rollback:specialist-fleet-security@v1
+  - role: runtime
+    active_card_id: specialist.failure-cause.v1
+    fallback_chain:
+      - specialist.route-classifier.v1
+    fleet_eval_suite_ref: eval-suite:specialist-fleet-runtime@v1
+    promotion_policy_ref: promotion:specialist-fleet-runtime@v1
+    retirement_policy_ref: retirement:specialist-fleet-runtime@v1
+    negative_knowledge_refs:
+      - negative-knowledge:runtime-partial-outage
+    route_eligible_tasks:
+      - failure_cause_classification
+    approval_ref: approval:specialist-fleet-runtime@v1
+    rollback_ref: rollback:specialist-fleet-runtime@v1

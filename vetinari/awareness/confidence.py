@@ -17,6 +17,7 @@ from vetinari.types import ConfidenceAction, ConfidenceLevel
 
 logger = logging.getLogger(__name__)
 
+
 # Logprob thresholds for confidence classification
 # Mean logprob values (more negative = less confident)
 _THRESHOLD_HIGH = -0.5  # Very confident — model is sure of its tokens
@@ -192,10 +193,10 @@ class ConfidenceComputer:
         action = _LEVEL_TO_ACTION[level]
 
         explanations = {
-            ConfidenceLevel.HIGH: f"Model is confident (mean logprob {mean_lp:.2f}) — proceed directly",
-            ConfidenceLevel.MEDIUM: f"Moderate confidence (mean logprob {mean_lp:.2f}) — trigger self-refinement",
-            ConfidenceLevel.LOW: f"Low confidence (mean logprob {mean_lp:.2f}) — sample multiple and pick best",
-            ConfidenceLevel.VERY_LOW: f"Very low confidence (mean logprob {mean_lp:.2f}) — defer to human",
+            ConfidenceLevel.HIGH: "Model confidence is high; proceed directly.",
+            ConfidenceLevel.MEDIUM: "Model confidence is moderate; trigger self-refinement.",
+            ConfidenceLevel.LOW: "Model confidence is low; sample multiple answers and pick the best supported result.",
+            ConfidenceLevel.VERY_LOW: "Model confidence is very low; defer to a human reviewer.",
         }
 
         return ConfidenceResult(

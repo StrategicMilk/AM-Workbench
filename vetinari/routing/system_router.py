@@ -22,6 +22,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 # -- Constants --
 
 # Safety-critical operations that MUST go through System 2 (from US-001 truth table)
@@ -218,6 +219,170 @@ def _track_system_decision(decision: SystemDecision, description: str) -> None:
 # -- Public API --
 
 
+class SystemRouter:
+    """Configurable dual-process routing facade."""
+
+    def __init__(
+        self,
+        min_prior_successes: int = _MIN_PRIOR_SUCCESSES,
+        high_confidence_threshold: float = _HIGH_CONFIDENCE_THRESHOLD,
+        low_confidence_threshold: float = _LOW_CONFIDENCE_THRESHOLD,
+    ) -> None:
+        self.min_prior_successes = min_prior_successes
+        self.high_confidence_threshold = high_confidence_threshold
+        self.low_confidence_threshold = low_confidence_threshold
+
+    def check_inspector_bypass_safety(
+        self,
+        description: str,
+        confidence: float,
+        prior_successes: int = 0,
+        involves_code_generation: bool = False,
+        autonomy_level: int = 2,
+    ) -> InspectorBypassCheck:
+        """Apply the US-001 truth table to determine if Inspector bypass is safe.
+
+        Args:
+            description: Task description to scan for safety-critical patterns.
+            confidence: Router confidence in the System 1 classification.
+            prior_successes: Prior successful runs on similar tasks.
+            involves_code_generation: Whether the task produces executable code.
+            autonomy_level: Pipeline autonomy level.
+
+        Returns:
+            Bypass decision with denial reason and safety flags when blocked.
+        """
+        desc_lower = description.lower()
+        triggered_flags: list[str] = [pattern for pattern in _SAFETY_CRITICAL_PATTERNS if pattern in desc_lower]
+        if triggered_flags:
+            return InspectorBypassCheck(
+                allowed=False,
+                reason=f"Safety-critical operation detected - Inspector required. Triggered patterns: {triggered_flags}",
+                safety_flags=tuple(triggered_flags),
+            )
+        if involves_code_generation:
+            return InspectorBypassCheck(
+                allowed=False,
+                reason="Code generation tasks require Inspector verification",
+            )
+        if confidence < self.high_confidence_threshold:
+            return InspectorBypassCheck(
+                allowed=False,
+                reason=f"Confidence {confidence:.2f} below threshold {self.high_confidence_threshold} - Inspector required",
+            )
+        if autonomy_level < 2:
+            return InspectorBypassCheck(
+                allowed=False,
+                reason=f"Autonomy level L{autonomy_level} insufficient - L2+ required for bypass",
+            )
+        if prior_successes < self.min_prior_successes:
+            return InspectorBypassCheck(
+                allowed=False,
+                reason=(
+                    f"Insufficient prior successes ({prior_successes} < {self.min_prior_successes}) "
+                    "- Inspector required until track record established"
+                ),
+            )
+        return InspectorBypassCheck(
+            allowed=True,
+            reason=(
+                f"All bypass conditions met: confidence={confidence:.2f}, "
+                f"prior_successes={prior_successes}, autonomy_level={autonomy_level}, "
+                "no safety-critical patterns, no code generation"
+            ),
+        )
+
+    def _system_2_reasoning(
+        self,
+        is_complex: bool,
+        is_custom_tier: bool,
+        is_low_confidence: bool,
+        confidence: float,
+    ) -> str:
+        reasons: list[str] = []
+        if is_complex:
+            reasons.append("complexity=COMPLEX")
+        if is_custom_tier:
+            reasons.append("tier=CUSTOM")
+        if is_low_confidence:
+            reasons.append(f"confidence={confidence:.2f} < threshold {self.low_confidence_threshold}")
+        return f"System 2 (full pipeline): {', '.join(reasons)}"
+
+    def route_system(
+        self,
+        description: str,
+        intake_tier: str | None = None,
+        complexity: str | None = None,
+        confidence: float = 0.5,
+        prior_successes: int = 0,
+        involves_code_generation: bool = True,
+        autonomy_level: int = 2,
+    ) -> SystemDecision:
+        """Route a task to System 1 or System 2 processing.
+
+        Args:
+            description: Task description to route.
+            intake_tier: Intake tier classification.
+            complexity: Complexity classification.
+            confidence: Router confidence.
+            prior_successes: Prior successful runs on similar tasks.
+            involves_code_generation: Whether the task produces executable code.
+            autonomy_level: Pipeline autonomy level.
+
+        Returns:
+            System routing decision with model tier and bypass state.
+        """
+        tier_lower = (intake_tier or "").lower()
+        complexity_lower = (complexity or "").lower()
+        routing_signals = _collect_routing_signals(description, intake_tier, complexity, confidence)
+        is_complex = complexity_lower == "complex"
+        is_custom_tier = tier_lower == "custom"
+        is_low_confidence = confidence < self.low_confidence_threshold
+        if is_complex or is_custom_tier or is_low_confidence:
+            bypass_check = self.check_inspector_bypass_safety(
+                description,
+                confidence,
+                prior_successes,
+                involves_code_generation,
+                autonomy_level,
+            )
+            reasoning = self._system_2_reasoning(is_complex, is_custom_tier, is_low_confidence, confidence)
+            return _record_system_decision(
+                _build_system_2_decision(bypass_check, reasoning, routing_signals),
+                description,
+            )
+        is_express_tier = tier_lower == "express"
+        is_simple = complexity_lower == "simple"
+        is_high_confidence = confidence >= self.high_confidence_threshold
+        if (is_express_tier or is_simple) and is_high_confidence:
+            bypass_check = self.check_inspector_bypass_safety(
+                description,
+                confidence,
+                prior_successes,
+                involves_code_generation,
+                autonomy_level,
+            )
+            tier_reason = "tier=EXPRESS" if is_express_tier else "complexity=SIMPLE"
+            reasoning = (
+                f"System 1 (fast path): {tier_reason}, confidence={confidence:.2f} >= {self.high_confidence_threshold}"
+            )
+            return _record_system_decision(
+                _build_system_1_decision(bypass_check, reasoning, routing_signals),
+                description,
+            )
+        bypass_check = self.check_inspector_bypass_safety(
+            description,
+            confidence,
+            prior_successes,
+            involves_code_generation,
+            autonomy_level,
+        )
+        return _record_system_decision(
+            _build_standard_decision(bypass_check, intake_tier, complexity, confidence, routing_signals),
+            description,
+        )
+
+
 def check_inspector_bypass_safety(
     description: str,
     confidence: float,
@@ -225,74 +390,120 @@ def check_inspector_bypass_safety(
     involves_code_generation: bool = False,
     autonomy_level: int = 2,
 ) -> InspectorBypassCheck:
-    """Apply the US-001 truth table to determine if Inspector bypass is safe.
+    """Apply the US-001 truth table to determine if Inspector bypass is safe."""
+    return SystemRouter().check_inspector_bypass_safety(
+        description=description,
+        confidence=confidence,
+        prior_successes=prior_successes,
+        involves_code_generation=involves_code_generation,
+        autonomy_level=autonomy_level,
+    )
 
-    System 1 MAY bypass the Inspector ONLY when ALL of the following hold:
-    - confidence >= _HIGH_CONFIDENCE_THRESHOLD (0.85)
-    - No safety-critical patterns appear in the description
-    - Task does not involve code generation
-    - autonomy_level >= L2 (2)
-    - prior_successes >= _MIN_PRIOR_SUCCESSES (3)
 
-    Args:
-        description: Task description to scan for safety-critical patterns.
-        confidence: Router confidence in the System 1 classification (0.0-1.0).
-        prior_successes: Count of prior successful runs on similar tasks.
-        involves_code_generation: Whether the task produces executable code.
-        autonomy_level: Pipeline autonomy level (L1=manual, L2=semi, L3=full).
+def _collect_routing_signals(
+    description: str,
+    intake_tier: str | None,
+    complexity: str | None,
+    confidence: float,
+) -> dict[str, Any]:
+    routing_signals: dict[str, Any] = {}
+    try:
+        routing_signals["historical_success_rate"] = _get_historical_success_rate(description)
+    except Exception:
+        logger.warning("Historical success rate lookup failed - routing signal omitted")
+    try:
+        routing_signals["skill_library_match"] = _check_skill_library_match(description)
+    except Exception:
+        logger.warning("Skill library match check failed - routing signal omitted")
+    routing_signals["intake_tier"] = intake_tier
+    routing_signals["complexity"] = complexity
+    routing_signals["confidence"] = confidence
+    return routing_signals
 
-    Returns:
-        InspectorBypassCheck with allowed=True only when all conditions pass.
-    """
-    desc_lower = description.lower()
 
-    # Scan for safety-critical keywords
-    triggered_flags: list[str] = [pattern for pattern in _SAFETY_CRITICAL_PATTERNS if pattern in desc_lower]
-    if triggered_flags:
-        return InspectorBypassCheck(
-            allowed=False,
-            reason=(f"Safety-critical operation detected — Inspector required. Triggered patterns: {triggered_flags}"),
-            safety_flags=tuple(triggered_flags),
-        )
+def _inspector_bypass_for_route(
+    description: str,
+    confidence: float,
+    prior_successes: int,
+    involves_code_generation: bool,
+    autonomy_level: int,
+) -> InspectorBypassCheck:
+    return check_inspector_bypass_safety(
+        description=description,
+        confidence=confidence,
+        prior_successes=prior_successes,
+        involves_code_generation=involves_code_generation,
+        autonomy_level=autonomy_level,
+    )
 
-    # Code generation is always System 2
-    if involves_code_generation:
-        return InspectorBypassCheck(
-            allowed=False,
-            reason="Code generation tasks require Inspector verification",
-        )
 
-    # Confidence gate
-    if confidence < _HIGH_CONFIDENCE_THRESHOLD:
-        return InspectorBypassCheck(
-            allowed=False,
-            reason=(f"Confidence {confidence:.2f} below threshold {_HIGH_CONFIDENCE_THRESHOLD} — Inspector required"),
-        )
+def _record_system_decision(decision: SystemDecision, description: str) -> SystemDecision:
+    logger.info("[Router] %s", decision.reasoning)
+    _track_system_decision(decision, description)
+    return decision
 
-    # Autonomy level gate
-    if autonomy_level < 2:
-        return InspectorBypassCheck(
-            allowed=False,
-            reason=f"Autonomy level L{autonomy_level} insufficient — L2+ required for bypass",
-        )
 
-    # Prior success history gate
-    if prior_successes < _MIN_PRIOR_SUCCESSES:
-        return InspectorBypassCheck(
-            allowed=False,
-            reason=(
-                f"Insufficient prior successes ({prior_successes} < {_MIN_PRIOR_SUCCESSES}) "
-                "— Inspector required until track record established"
-            ),
-        )
+def _system_2_reasoning(is_complex: bool, is_custom_tier: bool, is_low_confidence: bool, confidence: float) -> str:
+    reasons: list[str] = []
+    if is_complex:
+        reasons.append("complexity=COMPLEX")
+    if is_custom_tier:
+        reasons.append("tier=CUSTOM")
+    if is_low_confidence:
+        reasons.append(f"confidence={confidence:.2f} < threshold {_LOW_CONFIDENCE_THRESHOLD}")
+    return f"System 2 (full pipeline): {', '.join(reasons)}"
 
-    return InspectorBypassCheck(
-        allowed=True,
-        reason=(
-            f"All bypass conditions met: confidence={confidence:.2f}, "
-            f"prior_successes={prior_successes}, autonomy_level={autonomy_level}, "
-            "no safety-critical patterns, no code generation"
-        ),
+
+def _build_system_2_decision(
+    bypass_check: InspectorBypassCheck,
+    reasoning: str,
+    routing_signals: dict[str, Any],
+) -> SystemDecision:
+    return SystemDecision(
+        system_type=SystemType.SYSTEM_2,
+        model_tier=ModelTier.LARGE,
+        skip_foreman=False,
+        skip_inspector=False,
+        inspector_bypass=bypass_check,
+        reasoning=reasoning,
+        routing_signals=routing_signals,
+    )
+
+
+def _build_system_1_decision(
+    bypass_check: InspectorBypassCheck,
+    reasoning: str,
+    routing_signals: dict[str, Any],
+) -> SystemDecision:
+    return SystemDecision(
+        system_type=SystemType.SYSTEM_1,
+        model_tier=ModelTier.SMALL,
+        skip_foreman=True,
+        skip_inspector=bypass_check.allowed,
+        inspector_bypass=bypass_check,
+        reasoning=reasoning,
+        routing_signals=routing_signals,
+    )
+
+
+def _build_standard_decision(
+    bypass_check: InspectorBypassCheck,
+    intake_tier: str | None,
+    complexity: str | None,
+    confidence: float,
+    routing_signals: dict[str, Any],
+) -> SystemDecision:
+    reasoning = (
+        f"System 2 (standard pipeline): tier={intake_tier!r}, complexity={complexity!r}, confidence={confidence:.2f}"
+    )
+    return SystemDecision(
+        system_type=SystemType.SYSTEM_2,
+        model_tier=ModelTier.MEDIUM,
+        skip_foreman=False,
+        skip_inspector=False,
+        inspector_bypass=bypass_check,
+        reasoning=reasoning,
+        routing_signals=routing_signals,
     )
 
 
@@ -305,145 +516,16 @@ def route_system(
     involves_code_generation: bool = True,
     autonomy_level: int = 2,
 ) -> SystemDecision:
-    """Route a task to System 1 (fast) or System 2 (deliberate) processing.
-
-    Consults intake tier, complexity classification, confidence score, skill
-    library history, and meta-adapter success rates to make the routing call.
-    Logs the decision at INFO level and records it in the tracking list.
-
-    System 1 conditions (ALL must hold):
-    - Intake tier is EXPRESS, OR complexity is SIMPLE
-    - Confidence >= _HIGH_CONFIDENCE_THRESHOLD
-    - Not a COMPLEX task
-
-    System 2 conditions (ANY triggers it):
-    - Intake tier is CUSTOM
-    - Complexity is COMPLEX
-    - Confidence < _LOW_CONFIDENCE_THRESHOLD
-
-    Standard path (neither extreme): System 2 with MEDIUM model.
-
-    Args:
-        description: Task description used for skill lookup and safety checks.
-        intake_tier: Intake classification value ("express", "standard", "custom").
-        complexity: Complexity classification value ("simple", "moderate", "complex").
-        confidence: Router confidence in the classification (0.0-1.0).
-        prior_successes: Count of prior successful completions of similar tasks.
-        involves_code_generation: Whether this task produces executable code.
-        autonomy_level: Pipeline autonomy level (1=manual, 2=semi, 3=full).
-
-    Returns:
-        SystemDecision capturing system type, model tier, skip flags, and reasoning.
-    """
-    tier_lower = (intake_tier or "").lower()  # noqa: VET112 — param is str | None
-    complexity_lower = (complexity or "").lower()  # noqa: VET112 — param is str | None
-
-    # Gather optional routing signals — both degrade gracefully
-    routing_signals: dict[str, Any] = {}
-    try:
-        historical_rate = _get_historical_success_rate(description)
-        routing_signals["historical_success_rate"] = historical_rate
-    except Exception:
-        logger.warning("Historical success rate lookup failed — routing signal omitted")
-
-    try:
-        has_skill_match = _check_skill_library_match(description)
-        routing_signals["skill_library_match"] = has_skill_match
-    except Exception:
-        logger.warning("Skill library match check failed — routing signal omitted")
-
-    routing_signals["intake_tier"] = intake_tier
-    routing_signals["complexity"] = complexity
-    routing_signals["confidence"] = confidence
-
-    # -- Routing logic --
-
-    # Hard System 2 triggers: anything safety-sensitive or explicitly complex
-    is_complex = complexity_lower == "complex"
-    is_custom_tier = tier_lower == "custom"
-    is_low_confidence = confidence < _LOW_CONFIDENCE_THRESHOLD
-
-    if is_complex or is_custom_tier or is_low_confidence:
-        bypass_check = check_inspector_bypass_safety(
-            description=description,
-            confidence=confidence,
-            prior_successes=prior_successes,
-            involves_code_generation=involves_code_generation,
-            autonomy_level=autonomy_level,
-        )
-        reasons: list[str] = []
-        if is_complex:
-            reasons.append("complexity=COMPLEX")
-        if is_custom_tier:
-            reasons.append("tier=CUSTOM")
-        if is_low_confidence:
-            reasons.append(f"confidence={confidence:.2f} < threshold {_LOW_CONFIDENCE_THRESHOLD}")
-        reasoning = f"System 2 (full pipeline): {', '.join(reasons)}"
-
-        decision = SystemDecision(
-            system_type=SystemType.SYSTEM_2,
-            model_tier=ModelTier.LARGE,
-            skip_foreman=False,
-            skip_inspector=False,
-            inspector_bypass=bypass_check,
-            reasoning=reasoning,
-            routing_signals=routing_signals,
-        )
-        logger.info("[Router] %s", reasoning)
-        _track_system_decision(decision, description)
-        return decision
-
-    # System 1 conditions: express or simple, high confidence
-    is_express_tier = tier_lower == "express"
-    is_simple = complexity_lower == "simple"
-    is_high_confidence = confidence >= _HIGH_CONFIDENCE_THRESHOLD
-
-    if (is_express_tier or is_simple) and is_high_confidence:
-        bypass_check = check_inspector_bypass_safety(
-            description=description,
-            confidence=confidence,
-            prior_successes=prior_successes,
-            involves_code_generation=involves_code_generation,
-            autonomy_level=autonomy_level,
-        )
-        tier_reason = "tier=EXPRESS" if is_express_tier else "complexity=SIMPLE"
-        reasoning = f"System 1 (fast path): {tier_reason}, confidence={confidence:.2f} >= {_HIGH_CONFIDENCE_THRESHOLD}"
-        decision = SystemDecision(
-            system_type=SystemType.SYSTEM_1,
-            model_tier=ModelTier.SMALL,
-            skip_foreman=True,
-            skip_inspector=bypass_check.allowed,
-            inspector_bypass=bypass_check,
-            reasoning=reasoning,
-            routing_signals=routing_signals,
-        )
-        logger.info("[Router] %s", reasoning)
-        _track_system_decision(decision, description)
-        return decision
-
-    # Standard path: System 2 with MEDIUM model (moderate complexity or moderate confidence)
-    bypass_check = check_inspector_bypass_safety(
+    """Route a task to System 1 or System 2 processing."""
+    return SystemRouter().route_system(
         description=description,
+        intake_tier=intake_tier,
+        complexity=complexity,
         confidence=confidence,
         prior_successes=prior_successes,
         involves_code_generation=involves_code_generation,
         autonomy_level=autonomy_level,
     )
-    reasoning = (
-        f"System 2 (standard pipeline): tier={intake_tier!r}, complexity={complexity!r}, confidence={confidence:.2f}"
-    )
-    decision = SystemDecision(
-        system_type=SystemType.SYSTEM_2,
-        model_tier=ModelTier.MEDIUM,
-        skip_foreman=False,
-        skip_inspector=False,
-        inspector_bypass=bypass_check,
-        reasoning=reasoning,
-        routing_signals=routing_signals,
-    )
-    logger.info("[Router] %s", reasoning)
-    _track_system_decision(decision, description)
-    return decision
 
 
 def get_system_routing_stats() -> dict[str, Any]:

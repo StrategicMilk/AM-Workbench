@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2024-2026 Vetinari Contributors
+# SPDX-License-Identifier: Apache-2.0
 # model_families.yaml
 #
 # Vetinari Model Family Knowledge Base
@@ -9,6 +11,12 @@
 #
 # Maintainers: update `superseded_by` and `available_sizes` as new generations ship.
 # Do NOT remove families — set superseded_by instead.
+
+currency_mechanism:
+  owner: RCG-0007-P11-FSA-8602
+  last_verified: '2026-04-25'
+  stale_after: '2026-12-31'
+  verification: Capability ratings must be refreshed from model release notes, benchmark evidence, and local routing validation before this date or before promoting a new default model family.
 
 model_families:
 
@@ -808,7 +816,7 @@ model_families:
       - Smaller Western open-source ecosystem and community
       - Creative writing and open-ended generation below average
       - 1.8B size shows significant capability drop — better to use 7B minimum
-      - Less tooling integration (LM Studio, Ollama) than Llama/Qwen
+      - Less tooling integration (LM Studio, OpenAI-compatible local servers) than Llama/Qwen
     capabilities:
       coding:
         python: 0.78
@@ -881,7 +889,7 @@ model_families:
       - Smaller Western ecosystem with fewer community fine-tunes
       - Coding performance moderate — below Qwen Coder at similar size
       - Math reasoning competitive but below InternLM or DeepSeek at same size
-      - Less community tooling support (Ollama, LM Studio) than Llama/Qwen
+      - Less community tooling support (LM Studio, OpenAI-compatible local servers) than Llama/Qwen
     capabilities:
       coding:
         python: 0.72
@@ -928,3 +936,330 @@ model_families:
       where vision capability is needed at the 6B–9B size range. GLM-4V-9B
       is the recommended variant for vision tasks. For pure text tasks at this
       size, Qwen 2.5 7B or Gemma 3 will generally outperform GLM-4.
+
+  gemma_4:
+    display_name: "Gemma 4"
+    vendor: Google
+    license: "Gemma Terms"
+    released_at: 2026-04-25
+    modality: text
+    capabilities: {coding: 0.72, reasoning: 0.84, instruction_following: 0.82, long_context_quality: 0.78, modality_fit: 0.90}
+    flagship_model_ids: ["google/gemma-4-26B-A4B-it"]
+    notable_quants_available: [awq_int4, gptq_int4]
+    notes_2026_04_25: "Foreman planning default candidate for RTX 5090 32GB."
+    recommended_sampling: {temperature: 0.3, top_p: 0.9, top_k: 40, max_tokens: 8192}
+  qwen_3_6:
+    display_name: "Qwen3.6"
+    vendor: Alibaba
+    license: "Apache-2.0 compatible upstream terms"
+    released_at: 2026-04-25
+    modality: text
+    capabilities: {coding: 0.88, reasoning: 0.86, instruction_following: 0.88, long_context_quality: 0.82, modality_fit: 0.92}
+    flagship_model_ids: ["Qwen/Qwen3.6-35B-A3B"]
+    notable_quants_available: [awq_int4, gptq_int4]
+    notes_2026_04_25: "Agentic Worker default candidate with Blackwell int4 serving."
+    recommended_sampling: {temperature: 0.4, top_p: 0.9, top_k: 40, max_tokens: 8192}
+  devstral_2:
+    display_name: "Devstral Small 2"
+    vendor: Mistral
+    license: "Apache-2.0"
+    released_at: 2026-04-25
+    modality: text
+    capabilities: {coding: 0.86, reasoning: 0.74, instruction_following: 0.82, long_context_quality: 0.76, modality_fit: 0.90}
+    flagship_model_ids: ["mistralai/Devstral-Small-2-24B-Instruct-2512"]
+    notable_quants_available: [awq_int4]
+    notes_2026_04_25: "Build-mode coding candidate; requires upstream vLLM image."
+    recommended_sampling: {temperature: 0.15, top_p: 0.9, top_k: 40, max_tokens: 8192}
+  deepseek_r1_distill:
+    display_name: "DeepSeek R1 Distill"
+    vendor: DeepSeek
+    license: "MIT"
+    released_at: 2026-04-25
+    modality: text
+    capabilities: {coding: 0.82, reasoning: 0.92, instruction_following: 0.84, long_context_quality: 0.82, modality_fit: 0.92}
+    flagship_model_ids: ["deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"]
+    notable_quants_available: [gptq_int4, awq_int4]
+    notes_2026_04_25: "Inspector deep-audit default candidate."
+    recommended_sampling: {temperature: 0.6, top_p: 0.95, top_k: 40, max_tokens: 8192}
+  qwen_3_embedding:
+    display_name: "Qwen3 Embedding"
+    vendor: Alibaba
+    license: "Apache-2.0 compatible upstream terms"
+    released_at: 2026-04-25
+    modality: embedding
+    capabilities: {retrieval: 0.86, multilingual: 0.84, code_search: 0.82, dimensional_stability: 0.80, modality_fit: 0.94}
+    flagship_model_ids: ["Qwen/Qwen3-Embedding-8B"]
+    notable_quants_available: [fp16]
+    notes_2026_04_25: "MTEB code and multilingual embedding candidate."
+  qwen_3_reranker:
+    display_name: "Qwen3 Reranker"
+    vendor: Alibaba
+    license: "Apache-2.0 compatible upstream terms"
+    released_at: 2026-04-25
+    modality: reranker
+    capabilities: {reranking: 0.86, relevance_judgment: 0.84, multilingual: 0.82, latency_fit: 0.72, modality_fit: 0.94}
+    flagship_model_ids: ["Qwen/Qwen3-Reranker-8B"]
+    notable_quants_available: [fp16]
+    notes_2026_04_25: "Default reranker candidate."
+  flux_2:
+    display_name: "FLUX.2"
+    vendor: Black Forest Labs
+    license: "blocked:non-commercial-dev-license"
+    released_at: 2026-04-25
+    modality: image_gen
+    capabilities: {image_generation: 0.86, prompt_adherence: 0.78, local_workflow_fit: 0.74, license_readiness: 0.20, modality_fit: 0.90}
+    flagship_model_ids: ["black-forest-labs/FLUX.2-dev"]
+    notable_quants_available: [fp8]
+    notes_2026_04_25: "ComfyUI image generation candidate."
+  hunyuan_video_1_5:
+    display_name: "HunyuanVideo 1.5"
+    vendor: Tencent
+    license: "custom:tencent-proprietary-review-required"
+    released_at: 2026-04-25
+    modality: video_gen
+    capabilities: {video_generation: 0.82, temporal_consistency: 0.74, local_workflow_fit: 0.66, license_readiness: 0.20, modality_fit: 0.88}
+    flagship_model_ids: ["tencent/HunyuanVideo-1.5"]
+    notable_quants_available: [fp8]
+    notes_2026_04_25: "ComfyUI video generation candidate."
+  canary_qwen:
+    display_name: "Canary-Qwen"
+    vendor: NVIDIA
+    license: "custom:nvidia-proprietary-review-required"
+    released_at: 2026-04-25
+    modality: audio
+    capabilities: {speech_recognition: 0.82, multilingual: 0.76, realtime_fit: 0.72, license_readiness: 0.20, modality_fit: 0.86}
+    flagship_model_ids: ["nvidia/canary-qwen-2.5b"]
+    notable_quants_available: [fp16]
+    notes_2026_04_25: "ASR candidate retained in the model catalog; no first-class Riva backend is pinned."
+  hunyuan_3d_2_5:
+    display_name: "Hunyuan3D 2.5"
+    vendor: Tencent
+    license: "custom:tencent-proprietary-review-required"
+    released_at: 2026-04-25
+    modality: three_d
+    capabilities: {three_d_generation: 0.80, geometry_quality: 0.72, local_workflow_fit: 0.64, license_readiness: 0.20, modality_fit: 0.84}
+    flagship_model_ids: ["tencent/Hunyuan3D-2.5"]
+    notable_quants_available: [fp16]
+    notes_2026_04_25: "3D/CAD-adjacent deferred backend candidate."
+
+  # -- Speech Recognition --
+  whisper_large_v3:
+    display_name: "Whisper Large V3"
+    vendor: OpenAI
+    license: "MIT"
+    released_at: 2023-11-06
+    modality: audio
+    capabilities: {speech_recognition: 0.88, multilingual: 0.82, realtime_fit: 0.68, operational_maturity: 0.86, modality_fit: 0.92}
+    flagship_model_ids: ["openai/whisper-large-v3"]
+    notable_quants_available: [fp16, int8]
+    provisional: true
+    notes_2026_04_25: "Widely-used ASR model; needs verified_on refresh."
+
+  parakeet_tdt:
+    display_name: "Parakeet TDT"
+    vendor: NVIDIA
+    license: "CC-BY-4.0"
+    released_at: 2024-04-01
+    modality: audio
+    capabilities: {speech_recognition: 0.84, multilingual: 0.45, realtime_fit: 0.84, operational_maturity: 0.72, modality_fit: 0.88}
+    flagship_model_ids: ["nvidia/parakeet-tdt-1.1b"]
+    notable_quants_available: [fp16]
+    provisional: true
+    notes_2026_04_25: "NVIDIA NeMo ASR; English-only, high throughput. Needs verified_on refresh."
+
+  granite_speech:
+    display_name: "Granite Speech"
+    vendor: IBM
+    license: "Apache-2.0"
+    released_at: 2024-06-01
+    modality: audio
+    capabilities: {speech_recognition: 0.78, multilingual: 0.62, realtime_fit: 0.64, operational_maturity: 0.66, modality_fit: 0.82}
+    flagship_model_ids: ["ibm-granite/granite-speech-3.3-8b"]
+    notable_quants_available: [fp16]
+    provisional: true
+    notes_2026_04_25: "IBM ASR/speech-to-text family. Needs verified_on refresh."
+
+  # -- Text-to-Speech / Voice --
+  kokoro:
+    display_name: "Kokoro"
+    vendor: hexgrad
+    license: "Apache-2.0"
+    released_at: 2025-01-01
+    modality: tts
+    capabilities: {tts_quality: 0.78, realtime_fit: 0.86, voice_control: 0.62, operational_maturity: 0.74, modality_fit: 0.86}
+    flagship_model_ids: ["hexgrad/Kokoro-82M"]
+    notable_quants_available: [fp16]
+    provisional: true
+    notes_2026_04_25: "Lightweight TTS; popular for local voice synthesis. Needs verified_on refresh."
+
+  fish_speech:
+    display_name: "Fish Speech"
+    vendor: FishAudio
+    license: "CC-BY-NC-SA-4.0"
+    released_at: 2024-10-01
+    modality: tts
+    capabilities: {tts_quality: 0.82, realtime_fit: 0.74, voice_control: 0.84, operational_maturity: 0.58, modality_fit: 0.84}
+    flagship_model_ids: ["fishaudio/fish-speech-1.5"]
+    notable_quants_available: [fp16]
+    provisional: true
+    notes_2026_04_25: "Real-time voice cloning TTS. Needs verified_on refresh."
+
+  f5_tts:
+    display_name: "F5-TTS"
+    vendor: SWivid
+    license: "MIT"
+    released_at: 2024-10-01
+    modality: tts
+    capabilities: {tts_quality: 0.84, realtime_fit: 0.66, voice_control: 0.82, operational_maturity: 0.62, modality_fit: 0.84}
+    flagship_model_ids: ["SWivid/F5-TTS"]
+    notable_quants_available: [fp16]
+    provisional: true
+    notes_2026_04_25: "Flow-matching TTS with zero-shot voice cloning. Needs verified_on refresh."
+
+  xtts_v2:
+    display_name: "XTTS v2"
+    vendor: Coqui AI
+    license: "Coqui Public Model License"
+    released_at: 2023-11-01
+    modality: tts
+    capabilities: {tts_quality: 0.82, realtime_fit: 0.62, voice_control: 0.86, operational_maturity: 0.78, modality_fit: 0.84}
+    flagship_model_ids: ["coqui/XTTS-v2"]
+    notable_quants_available: [fp16]
+    provisional: true
+    notes_2026_04_25: "Multilingual zero-shot TTS; widely deployed. Needs verified_on refresh."
+
+  sesame_csm:
+    display_name: "Sesame CSM"
+    vendor: Sesame AI
+    license: "Apache-2.0"
+    released_at: 2025-03-01
+    modality: tts
+    capabilities: {tts_quality: 0.84, realtime_fit: 0.72, voice_control: 0.76, operational_maturity: 0.58, modality_fit: 0.84}
+    flagship_model_ids: ["sesame/csm-1b"]
+    notable_quants_available: [fp16]
+    provisional: true
+    notes_2026_04_25: "Conversational speech model; natural prosody. Needs verified_on refresh."
+
+  # -- Embeddings --
+  llama_embed_nemotron:
+    display_name: "Llama Embed Nemotron"
+    vendor: NVIDIA
+    license: "Llama 3 Community License"
+    released_at: 2025-02-01
+    modality: embedding
+    capabilities: {retrieval: 0.80, multilingual: 0.70, code_search: 0.62, dimensional_stability: 0.78, modality_fit: 0.86}
+    flagship_model_ids: ["nvidia/llama-3.2-nv-embedqa-1b-v2"]
+    notable_quants_available: [fp16]
+    provisional: true
+    notes_2026_04_25: "NVIDIA embedding model on Llama backbone. Needs verified_on refresh."
+
+  bge_m3:
+    display_name: "BGE-M3"
+    vendor: BAAI
+    license: "MIT"
+    released_at: 2024-01-30
+    modality: embedding
+    capabilities: {retrieval: 0.86, multilingual: 0.86, code_search: 0.72, dimensional_stability: 0.84, modality_fit: 0.90}
+    flagship_model_ids: ["BAAI/bge-m3"]
+    notable_quants_available: [fp16, int8]
+    provisional: true
+    notes_2026_04_25: "Multi-lingual multi-function embedding; supports dense + sparse retrieval. Needs verified_on refresh."
+
+  nomic_embed_v2:
+    display_name: "Nomic Embed v2"
+    vendor: Nomic AI
+    license: "Apache-2.0"
+    released_at: 2025-02-01
+    modality: embedding
+    capabilities: {retrieval: 0.84, multilingual: 0.80, code_search: 0.72, dimensional_stability: 0.78, modality_fit: 0.88}
+    flagship_model_ids: ["nomic-ai/nomic-embed-text-v2-moe"]
+    notable_quants_available: [fp16]
+    provisional: true
+    notes_2026_04_25: "MoE-based text embedding with strong MTEB scores. Needs verified_on refresh."
+
+  # -- Rerankers --
+  bge_reranker_v2_m3:
+    display_name: "BGE Reranker v2 M3"
+    vendor: BAAI
+    license: "MIT"
+    released_at: 2024-03-01
+    modality: reranker
+    capabilities: {reranking: 0.86, relevance_judgment: 0.84, multilingual: 0.84, latency_fit: 0.64, modality_fit: 0.90}
+    flagship_model_ids: ["BAAI/bge-reranker-v2-m3"]
+    notable_quants_available: [fp16]
+    provisional: true
+    notes_2026_04_25: "Multilingual cross-encoder reranker from BAAI. Needs verified_on refresh."
+
+  # -- 3D / Generative --
+  trellis:
+    display_name: "Trellis"
+    vendor: Microsoft
+    license: "MIT"
+    released_at: 2024-12-01
+    modality: three_d
+    capabilities: {three_d_generation: 0.82, geometry_quality: 0.78, local_workflow_fit: 0.66, operational_maturity: 0.62, modality_fit: 0.86}
+    flagship_model_ids: ["microsoft/TRELLIS-image-large"]
+    notable_quants_available: [fp16]
+    provisional: true
+    notes_2026_04_25: "Image-to-3D generative model from Microsoft. Needs verified_on refresh."
+
+  # -- Language Models (text generation) --
+  glm_5_1:
+    display_name: "GLM-5.1"
+    vendor: Zhipu AI
+    license: "see upstream"
+    released_at: 2026-01-01
+    modality: text
+    capabilities: {coding: 0.72, reasoning: 0.78, instruction_following: 0.80, long_context_quality: 0.76, modality_fit: 0.84}
+    flagship_model_ids: ["THUDM/glm-4-9b-chat"]
+    notable_quants_available: [awq_int4, gptq_int4]
+    provisional: true
+    notes_2026_04_25: "Next-gen GLM family entry; details provisional. Needs verified_on refresh."
+
+  deepseek_v4:
+    display_name: "DeepSeek V4"
+    vendor: DeepSeek
+    license: "MIT"
+    released_at: 2026-03-01
+    modality: text
+    capabilities: {coding: 0.88, reasoning: 0.92, instruction_following: 0.84, long_context_quality: 0.84, modality_fit: 0.90}
+    flagship_model_ids: ["deepseek-ai/DeepSeek-V4"]
+    notable_quants_available: [awq_int4, gptq_int4]
+    provisional: true
+    notes_2026_04_25: "Successor to DeepSeek V3; details provisional. Needs verified_on refresh."
+
+  llama_4_scout:
+    display_name: "Llama 4 Scout"
+    vendor: Meta
+    license: "Llama 4 Community License"
+    released_at: 2025-04-05
+    modality: text
+    capabilities: {coding: 0.78, reasoning: 0.82, instruction_following: 0.80, long_context_quality: 0.86, modality_fit: 0.88}
+    flagship_model_ids: ["meta-llama/Llama-4-Scout-17B-16E-Instruct"]
+    notable_quants_available: [awq_int4, gptq_int4]
+    provisional: true
+    notes_2026_04_25: "Meta Llama 4 Scout MoE (17B active params). Needs verified_on refresh."
+
+  llama_4_maverick:
+    display_name: "Llama 4 Maverick"
+    vendor: Meta
+    license: "Llama 4 Community License"
+    released_at: 2025-04-05
+    modality: text
+    capabilities: {coding: 0.80, reasoning: 0.84, instruction_following: 0.82, long_context_quality: 0.86, modality_fit: 0.88}
+    flagship_model_ids: ["meta-llama/Llama-4-Maverick-17B-128E-Instruct"]
+    notable_quants_available: [awq_int4, gptq_int4]
+    provisional: true
+    notes_2026_04_25: "Meta Llama 4 Maverick MoE (17B active params, 128 experts). Needs verified_on refresh."
+
+  mistral_small_4:
+    display_name: "Mistral Small 4"
+    vendor: Mistral
+    license: "Apache-2.0"
+    released_at: 2026-03-01
+    modality: text
+    capabilities: {coding: 0.78, reasoning: 0.80, instruction_following: 0.86, long_context_quality: 0.82, modality_fit: 0.88}
+    flagship_model_ids: ["mistralai/Mistral-Small-3.2-24B-Instruct-2506"]
+    notable_quants_available: [awq_int4, gptq_int4]
+    provisional: true
+    notes_2026_04_25: "Mistral Small generation 4; details provisional. Needs verified_on refresh."

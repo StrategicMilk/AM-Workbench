@@ -1,0 +1,163 @@
+schema_version: "1.0"
+catalog_id: "natural-extensions-catalog"
+owner: "audit-suite-pack-0ag-natural-extension-catalog"
+stale_after: "2026-08-25"
+source_rubric: "config/capability_completeness_rubric.yaml"
+purpose: >
+  Declare architecturally implied capability extensions so Wave 10 natural
+  extension audits can distinguish complete systems from isolated features.
+extensions:
+  - capability_id: "agent_factory"
+    implied_extensions:
+      - extension_id: "agent_replay_and_recovery"
+        implied_by: "Agents that execute work need replayable receipts and restart recovery."
+        rubric_dimension: "recovery_flows"
+        expected_surface: "runtime"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#agent_factory"
+      - extension_id: "agent_policy_verdict_bridge"
+        implied_by: "Agent handoffs require policy verdict continuity across planning, execution, and inspection."
+        rubric_dimension: "required_integrations"
+        expected_surface: "api"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#agent_factory"
+  - capability_id: "local_runtime_backends"
+    implied_extensions:
+      - extension_id: "backend_health_doctor"
+        implied_by: "Backend selection implies an operator-facing way to diagnose missing or unhealthy runtimes."
+        rubric_dimension: "error_paths"
+        expected_surface: "cli"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#local_runtime_backends"
+      - extension_id: "backend_resource_lease_preview"
+        implied_by: "Local backend work implies visible lease and resource budget signals before execution."
+        rubric_dimension: "required_integrations"
+        expected_surface: "ui"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#local_runtime_backends"
+  - capability_id: "model_lab"
+    implied_extensions:
+      - extension_id: "promotion_rollback_receipts"
+        implied_by: "Model promotion implies a reversible decision with prior-model evidence."
+        rubric_dimension: "recovery_flows"
+        expected_surface: "runtime"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#model_lab"
+      - extension_id: "comparable_benchmark_gate"
+        implied_by: "Model comparison implies benchmark evidence with shared dataset and scoring versions."
+        rubric_dimension: "required_integrations"
+        expected_surface: "tests"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#model_lab"
+  - capability_id: "prompt_engineering"
+    implied_extensions:
+      - extension_id: "prompt_revision_history"
+        implied_by: "Prompt authoring implies diffable history and revert paths."
+        rubric_dimension: "required_surfaces"
+        expected_surface: "ui"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#prompt_engineering"
+      - extension_id: "prompt_variable_fail_closed_validation"
+        implied_by: "Prompt templates imply unresolved variables cannot reach model execution."
+        rubric_dimension: "error_paths"
+        expected_surface: "runtime"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#prompt_engineering"
+  - capability_id: "evaluation_benchmarking"
+    implied_extensions:
+      - extension_id: "eval_dataset_version_binding"
+        implied_by: "Evaluations imply immutable dataset, scoring, model, prompt, and environment versions."
+        rubric_dimension: "required_surfaces"
+        expected_surface: "runtime"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#evaluation_benchmarking"
+      - extension_id: "meaningless_score_rejection"
+        implied_by: "Benchmark scores imply a measurement definition and threshold before they can pass."
+        rubric_dimension: "completeness_gates"
+        expected_surface: "tests"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#evaluation_benchmarking"
+  - capability_id: "dataset_curation"
+    implied_extensions:
+      - extension_id: "dataset_privacy_filter"
+        implied_by: "Dataset intake implies sensitive records are redacted or rejected before reuse."
+        rubric_dimension: "error_paths"
+        expected_surface: "runtime"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#dataset_curation"
+      - extension_id: "partial_import_recovery"
+        implied_by: "Dataset import implies idempotent resume or rollback from partial writes."
+        rubric_dimension: "recovery_flows"
+        expected_surface: "cli"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#dataset_curation"
+  - capability_id: "training_pipeline"
+    implied_extensions:
+      - extension_id: "training_eval_holdout_promotion_gate"
+        implied_by: "Training produces deployable artifacts, which implies eval holdout and benchmark evidence before promotion."
+        rubric_dimension: "required_integrations"
+        expected_surface: "runtime"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#training_pipeline"
+      - extension_id: "training_partial_checkpoint_recovery"
+        implied_by: "Training writes checkpoints and artifacts, which implies resume or rollback from interrupted partial output."
+        rubric_dimension: "recovery_flows"
+        expected_surface: "runtime"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#training_pipeline"
+  - capability_id: "memory_rag"
+    implied_extensions:
+      - extension_id: "recall_citation_and_omission_receipts"
+        implied_by: "Memory recall implies cited context plus explicit omission reasons."
+        rubric_dimension: "required_integrations"
+        expected_surface: "runtime"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#memory_rag"
+      - extension_id: "corrupt_index_fail_closed_rebuild"
+        implied_by: "Retrieval implies corrupt indexes cannot serve context as truth."
+        rubric_dimension: "recovery_flows"
+        expected_surface: "cli"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#memory_rag"
+  - capability_id: "workflow_orchestration"
+    implied_extensions:
+      - extension_id: "stale_verdict_rejection"
+        implied_by: "Program execution implies completion state cannot advance from stale verdicts."
+        rubric_dimension: "error_paths"
+        expected_surface: "tests"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#workflow_orchestration"
+      - extension_id: "owned_scope_diff_gate"
+        implied_by: "Scoped pack execution implies out-of-scope edits block completion."
+        rubric_dimension: "completeness_gates"
+        expected_surface: "cli"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#workflow_orchestration"
+  - capability_id: "release_certification"
+    implied_extensions:
+      - extension_id: "publication_boundary_proof"
+        implied_by: "Release readiness implies private/internal content cannot leak into public artifacts."
+        rubric_dimension: "required_integrations"
+        expected_surface: "cli"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#release_certification"
+      - extension_id: "rollback_runbook_receipt"
+        implied_by: "Release certification implies rollback is executable or explicitly blocked before shipment."
+        rubric_dimension: "recovery_flows"
+        expected_surface: "docs"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#release_certification"
+  - capability_id: "supportability"
+    implied_extensions:
+      - extension_id: "redacted_support_bundle"
+        implied_by: "Support bundles imply sensitive fields are redacted or export is blocked."
+        rubric_dimension: "error_paths"
+        expected_surface: "api"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#supportability"
+      - extension_id: "guided_retry_contract"
+        implied_by: "Recovery guidance implies retry scope, expected duration, and success/failure evidence."
+        rubric_dimension: "recovery_flows"
+        expected_surface: "ui"
+        traceability:
+          - "config/capability_completeness_rubric.yaml#supportability"

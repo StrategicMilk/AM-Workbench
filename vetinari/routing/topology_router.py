@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from vetinari.routing.complexity_router import Complexity
 from vetinari.types import AgentType
 
 logger = logging.getLogger(__name__)
@@ -40,14 +41,6 @@ class Topology(Enum):
     DEBATE = "debate"  # Multi-agent deliberation
 
 
-class TopologyComplexity(Enum):
-    """Task complexity classification for routing decisions."""
-
-    SIMPLE = "simple"
-    MODERATE = "moderate"
-    COMPLEX = "complex"
-
-
 @dataclass
 class TopologyDecision:
     """Result of topology routing analysis.
@@ -64,7 +57,7 @@ class TopologyDecision:
     """
 
     topology: Topology
-    complexity: TopologyComplexity
+    complexity: Complexity
     skip_stages: list[str]
     add_stages: list[str]
     recommended_agents: list[str]
@@ -116,6 +109,11 @@ _DEBATE_KEYWORDS = re.compile(
 _PARALLEL_KEYWORDS = re.compile(
     r"\b(batch|concurrent|parallel|multiple|several|each|all|"
     r"collection|list of|set of)\b",
+    re.IGNORECASE,
+)
+
+_SCATTER_GATHER_KEYWORDS = re.compile(
+    r"\b(scatter|gather|fan-out|broadcast|parallel fan)\b",
     re.IGNORECASE,
 )
 
@@ -194,7 +192,8 @@ class TopologyRouter:
             execution_strategy=execution_strategy,
         )
 
-    def _assess_complexity(self, text: str, hint: str) -> TopologyComplexity:
+    @staticmethod
+    def _assess_complexity(text: str, hint: str) -> Complexity:
         """Estimate task complexity from text and optional hint.
 
         Args:
@@ -205,25 +204,25 @@ class TopologyRouter:
             Complexity enum value.
         """
         if hint == "simple":
-            return TopologyComplexity.SIMPLE
+            return Complexity.SIMPLE
         if hint == "complex":
-            return TopologyComplexity.COMPLEX
+            return Complexity.COMPLEX
         if hint == "moderate":
-            return TopologyComplexity.MODERATE
+            return Complexity.MODERATE
 
         if _COMPLEX_KEYWORDS.search(text):
-            return TopologyComplexity.COMPLEX
+            return Complexity.COMPLEX
         word_count = len(text.split())
         if word_count > 30:
-            return TopologyComplexity.MODERATE
-        return TopologyComplexity.SIMPLE
+            return Complexity.MODERATE
+        return Complexity.SIMPLE
 
+    @staticmethod
     def _keyword_topology(
-        self,
         original: str,
-        lower: str,
-        complexity: TopologyComplexity,
-    ) -> tuple[Topology, str]:
+        lower: str | None = None,
+        complexity: Complexity | None = None,
+    ) -> Topology | tuple[Topology, str]:
         """Select a topology using keyword heuristics.
 
         Args:
@@ -232,40 +231,38 @@ class TopologyRouter:
             complexity: The assessed complexity level.
 
         Returns:
-            Tuple of (Topology, reasoning string).
+            Topology for legacy one-argument calls, otherwise ``(Topology, reason)``.
         """
-        # Debate: security/compliance/architecture keywords + complex
-        if _DEBATE_KEYWORDS.search(original) and complexity == TopologyComplexity.COMPLEX:
-            return (
+        single_arg_call = lower is None and complexity is None
+        lower = original.lower() if lower is None else lower
+        complexity = Complexity.MODERATE if complexity is None else complexity
+
+        if _DEBATE_KEYWORDS.search(original) and complexity == Complexity.COMPLEX:
+            result = (
                 Topology.DEBATE,
-                "Security/architecture decision with complex scope — debate protocol recommended",
+                "Security/architecture decision with complex scope - debate protocol recommended",
             )
-
-        # Express: simple tasks with no interdependencies
-        if complexity == TopologyComplexity.SIMPLE:
-            return (Topology.EXPRESS, "Simple task — no orchestration overhead needed")
-
-        # Parallel: explicit parallelism signals
-        if _PARALLEL_KEYWORDS.search(original) and complexity != TopologyComplexity.COMPLEX:
-            return (
-                Topology.PARALLEL,
-                "Parallel workload pattern detected — concurrent execution optimal",
-            )
-
-        # Hierarchical: complex orchestration
-        if complexity == TopologyComplexity.COMPLEX:
-            return (
-                Topology.HIERARCHICAL,
-                "Complex task — hierarchical Foreman decomposition recommended",
-            )
-
-        # Sequential: explicit pipeline signals or moderate complexity
+            return result[0] if single_arg_call else result
+        if complexity == Complexity.SIMPLE:
+            result = (Topology.EXPRESS, "Simple task - no orchestration overhead needed")
+            return result[0] if single_arg_call else result
+        if _SCATTER_GATHER_KEYWORDS.search(original):
+            result = (Topology.SCATTER_GATHER, "Scatter/gather workload detected - fan-out and aggregation recommended")
+            return result[0] if single_arg_call else result
+        if _PARALLEL_KEYWORDS.search(original) and complexity != Complexity.COMPLEX:
+            result = (Topology.PARALLEL, "Parallel workload pattern detected - concurrent execution optimal")
+            return result[0] if single_arg_call else result
+        if complexity == Complexity.COMPLEX:
+            result = (Topology.HIERARCHICAL, "Complex task - hierarchical Foreman decomposition recommended")
+            return result[0] if single_arg_call else result
         if _SEQUENTIAL_KEYWORDS.search(original):
-            return (Topology.SEQUENTIAL, "Sequential workflow pattern detected")
+            result = (Topology.SEQUENTIAL, "Sequential workflow pattern detected")
+            return result[0] if single_arg_call else result
+        result = (Topology.SEQUENTIAL, "Default: moderate task executed as sequential pipeline")
+        return result[0] if single_arg_call else result
 
-        return (Topology.SEQUENTIAL, "Default: moderate task executed as sequential pipeline")
-
-    def _stage_adjustments(self, topology: Topology) -> tuple[list[str], list[str]]:
+    @staticmethod
+    def _stage_adjustments(topology: Topology) -> tuple[list[str], list[str]]:
         """Determine stage modifications for a given topology.
 
         Args:
@@ -286,7 +283,8 @@ class TopologyRouter:
             return ([], ["recursive_decomposition"])
         return ([], [])  # SEQUENTIAL: standard pipeline
 
-    def _recommend_agents(self, topology: Topology) -> list[str]:
+    @staticmethod
+    def _recommend_agents(topology: Topology) -> list[str]:
         """Return recommended agent type values for a topology.
 
         Args:

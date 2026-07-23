@@ -1,0 +1,39 @@
+schema_version: "1"
+# Default DPO training hyperparameters.
+# Loaded by vetinari/config/loader.py through the LayeredResolver.
+# Override with VETINARI_TRAINING_* environment variables or user/project YAML.
+
+dpo:
+  beta: 0.1                      # KL regularization coefficient (lower = closer to reference)
+  loss_type: "sigmoid"           # DPO loss variant: sigmoid | hinge | ipo
+  label_smoothing: 0.0           # Label smoothing for loss computation
+  reference_free: false          # Skip reference model (use implicit uniform reference)
+
+training:
+  learning_rate: 1.0e-6          # AdamW learning rate
+  weight_decay: 0.01             # L2 regularization weight
+  warmup_ratio: 0.1              # Fraction of steps used for LR warmup
+  lr_scheduler_type: "cosine"    # LR scheduler: cosine | linear | constant
+  num_train_epochs: 1            # Number of training epochs per data refresh
+  per_device_train_batch_size: 2 # Training batch size per GPU
+  gradient_accumulation_steps: 4 # Accumulate gradients over N steps before update
+  max_grad_norm: 1.0             # Gradient clipping threshold
+
+data:
+  max_length: 1024               # Maximum sequence length for training samples
+  max_prompt_length: 512         # Maximum length of the prompt portion
+  truncation_mode: "keep_start"  # How to truncate: keep_start | keep_end
+  fixture_integrity:
+    duplicate_policy: "quarantine"
+    canonical_dpo_fixture: "dpo_general_20260419_1254.jsonl"
+    min_chosen_score: 0.8
+    min_score_gap: 0.2
+    quarantined_duplicate_fixtures: []
+
+checkpointing:
+  save_steps: 500                # Save checkpoint every N steps
+  save_total_limit: 3            # Maximum checkpoints to retain on disk
+  logging_steps: 50              # Log metrics every N steps
+  eval_steps: 500                # Evaluate on held-out set every N steps
+  eval_dataset: "data/eval/dpo_holdout.jsonl"
+  eval_dataset_required: true

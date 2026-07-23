@@ -18,6 +18,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 # Minimum tasks before tuning triggers
 _DEFAULT_TUNING_THRESHOLD = 100
 
@@ -125,27 +126,7 @@ class ConfigSelfTuner:
         if not thompson_values:
             return TuningResult(task_type=task_type, tuned=False, changes={}, task_count=task_count)
 
-        # Compare temperature
-        if "temperature" in thompson_values:
-            learned_temp = float(thompson_values["temperature"])
-            divergence = self._compute_divergence(profile.temperature, learned_temp)
-            if divergence > _DIVERGENCE_THRESHOLD:
-                changes["temperature"] = {
-                    "old": profile.temperature,
-                    "new": learned_temp,
-                    "divergence_pct": round(divergence * 100, 1),
-                }
-
-        # Compare context_window_size as max_tokens proxy
-        if "context_window_size" in thompson_values:
-            learned_ctx = int(thompson_values["context_window_size"])
-            divergence = self._compute_divergence(profile.max_tokens, learned_ctx)
-            if divergence > _DIVERGENCE_THRESHOLD:
-                changes["max_tokens"] = {
-                    "old": profile.max_tokens,
-                    "new": learned_ctx,
-                    "divergence_pct": round(divergence * 100, 1),
-                }
+        changes = self._collect_profile_changes(profile, thompson_values)
 
         if not changes:
             logger.info(
@@ -172,7 +153,25 @@ class ConfigSelfTuner:
             task_count=task_count,
         )
 
-    def _get_thompson_learned_values(self, task_type: str) -> dict[str, Any]:
+    def _collect_profile_changes(self, profile: Any, thompson_values: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        changes: dict[str, dict[str, Any]] = {}
+        if "temperature" in thompson_values:
+            learned_temp = float(thompson_values["temperature"])
+            divergence = self._compute_divergence(profile.temperature, learned_temp)
+            if divergence > _DIVERGENCE_THRESHOLD:
+                changes["temperature"] = {
+                    "old": profile.temperature,
+                    "new": learned_temp,
+                    "divergence_pct": round(divergence * 100, 1),
+                }
+        if "context_window_size" in thompson_values:
+            logger.info(
+                "Self-tuning: learned context_window_size is advisory; output max_tokens is not changed",
+            )
+        return changes
+
+    @staticmethod
+    def _get_thompson_learned_values(task_type: str) -> dict[str, Any]:
         """Query Thompson strategy selectors for learned optimal values.
 
         Checks each strategy key (temperature, context_window_size) and returns
@@ -269,17 +268,11 @@ class ConfigSelfTuner:
             changes: Dict of param_name -> {old, new, divergence_pct}.
             config_mgr: The InferenceConfigManager instance.
         """
-        try:
-            with config_mgr._lock:
-                profile_data = config_mgr._profiles.get(task_type, {})
-                for param_name, change in changes.items():
-                    profile_data[param_name] = change["new"]
-                config_mgr._profiles[task_type] = profile_data
-        except Exception:
-            logger.warning(
-                "Could not apply self-tuning changes for %s — profile unchanged",
-                task_type,
-            )
+        updates = {param_name: change["new"] for param_name, change in changes.items()}
+        if hasattr(config_mgr, "update_profile_parameters"):
+            config_mgr.update_profile_parameters(task_type, updates)
+            return
+        raise TypeError("config manager does not expose update_profile_parameters")
 
     @staticmethod
     def _log_tuning_decision(

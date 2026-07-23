@@ -1,0 +1,239 @@
+schema_version: governance-language-coverage.v1
+scanner_registry:
+  python-ruff:
+    command: "ruff check vetinari tests scripts conftest.py"
+    workflow: ".github/workflows/vetinari-ci.yml"
+    ci_contains: "ruff check vetinari tests scripts conftest.py"
+    languages: ["python"]
+  rust-workspace-tests:
+    command: "cargo test --workspace"
+    workflow: ".github/workflows/rust.yml"
+    ci_contains: "cargo test --workspace"
+    languages: ["rust", "grammar"]
+  frontend-playwright:
+    command: "npx playwright test"
+    workflow: ".github/workflows/vetinari-ci.yml"
+    ci_contains: "npx playwright test"
+    languages: ["svelte", "typescript-javascript"]
+  native-engine-build:
+    command: "cmake --build build/llama"
+    workflow: ".github/workflows/engine.yml"
+    ci_contains: "cmake --build build/llama"
+    languages: ["native", "make"]
+  native-engine-cuda-build:
+    command: "cmake --build build/llama"
+    workflow: ".github/workflows/engine.yml"
+    ci_contains: "cmake --build build/llama"
+    ci_contains_all: ['cmake_cuda: "ON"', '-DGGML_CUDA=${{ matrix.cmake_cuda }}']
+    languages: ["gpu-shaders"]
+    extensions: [".cu", ".cuh"]
+  vetinari-rules:
+    command: "python scripts/check_vetinari_rules.py"
+    workflow: ".github/workflows/governance.yml"
+    ci_contains: "python scripts/check_vetinari_rules.py"
+    languages: ["bash", "powershell", "yaml", "markdown", "sql", "json", "toml", "html", "css", "batch", "colang", "dockerfile"]
+    extensions: [".bat", ".cmd", ".co", ".css", ".csv", ".diff", ".dockerfile", ".example", ".html", ".htm", ".in", ".js", ".jinja", ".json", ".jsonl", ".lock", ".md", ".mdx", ".mjs", ".patch", ".ps1", ".py", ".pyi", ".rs", ".service", ".sh", ".sql", ".superseded", ".svelte", ".toml", ".txt", ".ts", ".tsx", ".typed", ".yaml", ".yml"]
+  structured-assets:
+    command: "python scripts/check_governance_language_coverage.py --strict"
+    workflow: ".github/workflows/governance.yml"
+    ci_contains: "python scripts/check_governance_language_coverage.py --strict"
+    languages: ["xml", "config-data"]
+languages:
+  python:
+    file_globs: ["vetinari/**/*.py", "scripts/**/*.py", "tests/**/*.py"]
+    anti_pattern_rules: ["VET001", "VET041", "VET240", "VET249", "vet-atomic-writes"]
+    scanners: ["python-ruff"]
+  rust:
+    file_globs: ["crates/**/*.rs", "src-tauri/src/**/*.rs", "src-tauri/build.rs"]
+    anti_pattern_rules: ["VET321", "VET322", "VET323"]
+    scanners: ["rust-workspace-tests"]
+  svelte:
+    file_globs: ["ui/svelte/**/*.svelte"]
+    anti_pattern_rules: ["VET249"]
+    scanners: ["frontend-playwright"]
+  typescript-javascript:
+    file_globs: ["ui/svelte/**/*.js", "ui/svelte/**/*.ts", "tests/**/*.ts"]
+    anti_pattern_rules: ["VET249"]
+    scanners: ["frontend-playwright"]
+  bash:
+    file_globs: ["examples/**/*.sh", "scripts/**/*.sh", "*.sh", "tests/**/*.sh"]
+    anti_pattern_rules: ["VET300", "VET301"]
+    scanners: ["vetinari-rules"]
+  powershell:
+    file_globs: ["scripts/**/*.ps1", "*.ps1", "tests/**/*.ps1"]
+    anti_pattern_rules: ["VET300", "VET301"]
+    scanners: ["vetinari-rules"]
+  yaml:
+    file_globs: ["config/**/*.yaml", "config/guardrails/config.yml", ".github/workflows/*.yml", ".github/workflows/*.yaml"]
+    anti_pattern_rules: ["VET312", "VET320"]
+    scanners: ["vetinari-rules"]
+  markdown:
+    file_globs: ["README.md", "AGENTS.md", "docs/**/*.md"]
+    anti_pattern_rules: ["VET100", "VET101", "VET102", "VET318", "VET319"]
+    scanners: ["vetinari-rules"]
+  sql:
+    file_globs: ["vetinari/migrations/*.sql", "vetinari/migrations/**/*.sql", "tests/**/*.sql"]
+    anti_pattern_rules: []
+    scanners: ["vetinari-rules"]
+  json:
+    file_globs: ["config/**/*.json", "schemas/**/*.json", "adr/**/*.json", "src-tauri/**/*.json"]
+    anti_pattern_rules: ["VET312"]
+    scanners: ["vetinari-rules"]
+  toml:
+    file_globs: ["Cargo.toml", "pyproject.toml", "crates/**/*.toml", "src-tauri/Cargo.toml"]
+    anti_pattern_rules: ["VET307", "VET308"]
+    scanners: ["vetinari-rules"]
+  html:
+    file_globs: ["ui/**/*.html", "tests/**/*.html"]
+    anti_pattern_rules: ["VET315"]
+    scanners: ["vetinari-rules"]
+  css:
+    file_globs: ["ui/**/*.css", "tests/**/*.css"]
+    anti_pattern_rules: ["VET315"]
+    scanners: ["vetinari-rules"]
+    scanner_excluded_extensions:
+      ".scss": "The only tracked SCSS file belongs to llama.cpp's vendored unsupported web UI and is not shipped by AM Engine."
+  batch:
+    file_globs: ["*.bat", "*.cmd"]
+    anti_pattern_rules: []
+    scanners: ["vetinari-rules"]
+  colang:
+    file_globs: ["config/**/*.co", "vetinari/config/**/*.co"]
+    anti_pattern_rules: []
+    scanners: ["vetinari-rules"]
+  dockerfile:
+    file_globs: ["deploy/Dockerfile", "*.dockerfile"]
+    anti_pattern_rules: []
+    scanners: ["vetinari-rules"]
+  native:
+    file_globs: ["crates/**/*.c", "crates/**/*.cpp", "crates/**/*.h", "crates/**/*.hpp", "crates/**/*.m", "crates/**/*.s", "crates/**/*.ld", "crates/**/*.idl"]
+    anti_pattern_rules: []
+    scanners: ["native-engine-build"]
+  gpu-shaders:
+    file_globs: ["crates/**/*.cu", "crates/**/*.cuh", "crates/**/*.cl", "crates/**/*.comp", "crates/**/*.glsl", "crates/**/*.wgsl", "crates/**/*.metal"]
+    anti_pattern_rules: []
+    scanners: ["native-engine-cuda-build"]
+    scanner_excluded_extensions:
+      ".cl": "Vendored OpenCL backend source is retained upstream context; AM Engine does not enable GGML_OPENCL."
+      ".comp": "Vendored Vulkan compute shaders are retained upstream context; AM Engine does not enable GGML_VULKAN."
+      ".glsl": "Vendored Vulkan GLSL sources are retained upstream context; AM Engine does not enable GGML_VULKAN."
+      ".metal": "Vendored Metal backend source is retained upstream context; AM Engine does not build the Apple Metal backend."
+      ".wgsl": "Vendored WebGPU source is retained upstream context; AM Engine does not enable the WebGPU backend."
+  make:
+    file_globs: ["**/Makefile", "**/CMakeLists.txt", "**/*.cmake", "**/*.mk", "**/*.pro"]
+    anti_pattern_rules: []
+    scanners: ["native-engine-build"]
+  xml:
+    file_globs: ["**/*.xml", "**/*.svg", "**/*.xcworkspacedata"]
+    anti_pattern_rules: []
+    scanners: ["structured-assets"]
+  grammar:
+    file_globs: ["**/*.gbnf"]
+    anti_pattern_rules: []
+    scanners: ["rust-workspace-tests"]
+  config-data:
+    file_globs: ["**/*.ini", "**/*.properties", "**/*.inf", "**/*.rules"]
+    anti_pattern_rules: []
+    scanners: ["structured-assets"]
+unclassified_extensions:
+  policies:
+    ".txt":
+      classification: "audit evidence and operator text output"
+      reason: "Tracked .txt files are durable evidence/log artifacts; they are content-governed rather than compiled."
+      scanners: ["vetinari-rules"]
+    "<none>":
+      classification: "extensionless control/legal/ignore artifacts"
+      reason: "Extensionless tracked files include legal notices, ignore files, and a small number of legacy generated artifacts."
+      scanner_exclusion: "Extensionless legal/control files have no common executable grammar; each remains governed by its owning boundary checker rather than a fabricated generic scanner."
+    ".diff":
+      classification: "unified diff fixture"
+      reason: "Tracked diff files are admission/conformance fixtures and must remain parser-readable known-bad/known-good inputs."
+      scanners: ["vetinari-rules"]
+    ".lock":
+      classification: "dependency lockfile"
+      reason: "Lockfiles are tool-owned but security and reproducibility critical."
+      scanners: ["vetinari-rules"]
+    ".example":
+      classification: "example configuration"
+      reason: "Example files define operator-facing configuration contracts without carrying live secrets."
+      scanners: ["vetinari-rules"]
+    ".in":
+      classification: "packaging manifest template"
+      reason: "MANIFEST.in files control source distribution contents and release boundaries."
+      scanners: ["vetinari-rules"]
+    ".dockerfile":
+      classification: "Dockerfile conformance fixture"
+      reason: "Uppercase .Dockerfile fixtures test Dockerfile governance behavior."
+      scanners: ["vetinari-rules"]
+    ".superseded":
+      classification: "retired config snapshot"
+      reason: "Superseded config snapshots are retained for migration comparison and must not be treated as live runtime config."
+      scanners: ["vetinari-rules"]
+    ".typed":
+      classification: "Python typing marker"
+      reason: "py.typed files advertise typed package surfaces to downstream consumers."
+      scanners: ["vetinari-rules"]
+    ".csv":
+      classification: "tabular fixture data"
+      reason: "CSV files are structured fixture/support data and need parser/data-contract review."
+      scanners: ["vetinari-rules"]
+    ".jinja":
+      classification: "rendered HTML template"
+      reason: "Jinja templates produce user/operator-facing HTML and must be render-tested."
+      scanners: ["vetinari-rules"]
+    ".patch":
+      classification: "patch fixture"
+      reason: "Patch files are backend overlay/rebase fixtures and must remain parser-readable."
+      scanners: ["vetinari-rules"]
+    ".service":
+      classification: "systemd service unit"
+      reason: "Service units define production launch behavior and need operability/security review."
+      scanners: ["vetinari-rules"]
+    ".disabled":
+      classification: "disabled upstream workflow fixture"
+      reason: "The vendored disabled workflow is retained as upstream build-system context and is not executable CI configuration."
+      scanner_exclusion: "Disabled vendored workflow context is non-executable and remains outside first-party scanner coverage."
+    ".farf":
+      classification: "Qualcomm FARF runtime configuration"
+      reason: "The vendored Snapdragon launcher configuration controls native diagnostic verbosity."
+      scanner_exclusion: "Vendored Qualcomm diagnostic data is not a supported Vetinari configuration format."
+    ".inp":
+      classification: "tokenizer vocabulary input fixture"
+      reason: "Vendored GGUF vocabulary inputs are deterministic parser fixtures."
+      scanner_exclusion: "Vendored tokenizer input goldens are opaque test data, not a standalone language."
+    ".out":
+      classification: "tokenizer vocabulary expected-output fixture"
+      reason: "Vendored GGUF vocabulary outputs are golden parser results paired with .inp fixtures."
+      scanner_exclusion: "Vendored tokenizer output goldens are opaque test data, not a standalone language."
+    ".last":
+      classification: "upstream synchronization state marker"
+      reason: "The vendored ggml synchronization marker pins upstream merge state."
+      scanner_exclusion: "Vendored synchronization state is provenance metadata, not executable source."
+    ".pbxproj":
+      classification: "Xcode project configuration"
+      reason: "The vendored Swift example project file controls native example compilation."
+      scanner_exclusion: "Vendored Xcode project metadata belongs to an excluded unsupported mobile example."
+    ".schema":
+      classification: "structured-output schema snapshot"
+      reason: "Vendored schema snapshots are golden outputs for model template conformance."
+      scanner_exclusion: "Vendored expected-output snapshots are opaque golden data, not source syntax."
+    ".seed":
+      classification: "fuzz corpus seed"
+      reason: "Grammar compiler seeds are executable fuzz inputs covering valid and invalid parser paths."
+      scanner_exclusion: "Fuzz corpus seeds are opaque byte/text inputs whose validity is defined by the fuzz target."
+    ".spec":
+      classification: "RPM package specification"
+      reason: "Vendored SRPM specifications define native distribution packaging."
+      scanner_exclusion: "Vendored RPM packaging is not a supported Vetinari release surface."
+    ".template":
+      classification: "model-card content template"
+      reason: "Vendored conversion templates produce model metadata documentation."
+      scanner_exclusion: "Vendored upstream model-card templates are not a supported Vetinari template surface."
+    ".tmpl":
+      classification: "WebGPU shader source template"
+      reason: "Vendored WGSL templates generate runtime GPU shader declarations and kernels."
+      scanner_exclusion: "Vendored shader generator templates are consumed upstream and are not standalone WGSL source."
+    ".vim":
+      classification: "Vim integration source"
+      reason: "The vendored editor integration is example plugin code."
+      scanner_exclusion: "Vendored editor integration source is an unsupported upstream example."

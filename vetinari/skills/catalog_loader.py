@@ -3,28 +3,43 @@
 Discovers and parses all SKILL.md files from the catalog directory,
 extracting YAML frontmatter into typed CatalogEntry dataclasses.
 Provides lookup by agent, mode, capability, and tag.
+
+Portable naming contract: a skill name is the same across every host that
+loads it. The loader rejects names that collide with built-ins or that
+violate the portable-naming contract so two skills cannot register the
+same identifier — see ``docs/product-thesis.md`` Skills and Portable Naming.
 """
 
 from __future__ import annotations
 
 import logging
+import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from vetinari.security.fail_closed import UntrustedInputError, sanitize_untrusted_text
 from vetinari.utils.frontmatter import parse_frontmatter
 from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
 
+
 # Catalog directory relative to this file
 _CATALOG_ROOT = Path(__file__).parent / "catalog"
+_PORTABLE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 # Module-level lazy cache — populated on first access
 _CATALOG: dict[str, CatalogEntry] | None = None
+_CATALOG_LOCK = threading.Lock()
 
 
-@dataclass(frozen=True)
+class SkillCatalogError(ValueError):
+    """Raised when a skill catalog violates portable naming contracts."""
+
+
+@dataclass(frozen=True, slots=True)
 class CatalogEntry:
     """A single skill catalog entry parsed from a SKILL.md file."""
 
@@ -61,6 +76,10 @@ def load_catalog(catalog_root: Path | None = None) -> dict[str, CatalogEntry]:
     Returns:
         Mapping from ``skill_id`` to :class:`CatalogEntry` for every
         successfully parsed SKILL.md file.
+
+    Raises:
+        SkillCatalogError: If a catalog path uses a non-portable agent or skill
+            name, or if two files derive the same skill ID.
     """
     root = catalog_root if catalog_root is not None else _CATALOG_ROOT
     catalog: dict[str, CatalogEntry] = {}
@@ -78,7 +97,12 @@ def load_catalog(catalog_root: Path | None = None) -> dict[str, CatalogEntry]:
             continue
 
         agent_dir, skill_dir = parts[0], parts[1]
+        for label, value in (("agent", agent_dir), ("skill", skill_dir)):
+            if not _PORTABLE_NAME_RE.fullmatch(value):
+                raise SkillCatalogError(f"{skill_md}: non-portable {label} name {value!r}")
         skill_id = f"{agent_dir}/{skill_dir}"
+        if skill_id in catalog:
+            raise SkillCatalogError(f"{skill_md}: duplicate skill id {skill_id!r}")
 
         try:
             content = skill_md.read_text(encoding="utf-8")
@@ -91,16 +115,34 @@ def load_catalog(catalog_root: Path | None = None) -> dict[str, CatalogEntry]:
             logger.warning("Skipping %s — empty or unparseable frontmatter", skill_md)
             continue
 
+        try:
+            name = sanitize_untrusted_text(str(frontmatter.get("name", skill_dir)), max_length=120)
+            description = sanitize_untrusted_text(str(frontmatter.get("description", "")), max_length=1_000)
+            mode = sanitize_untrusted_text(str(frontmatter.get("mode", "")), max_length=80)
+            agent = sanitize_untrusted_text(str(frontmatter.get("agent", agent_dir)), max_length=80)
+            capabilities = [
+                sanitize_untrusted_text(str(value), max_length=120)
+                for value in list(frontmatter.get("capabilities") or [])
+            ]
+            tags = [
+                sanitize_untrusted_text(str(value), max_length=120) for value in list(frontmatter.get("tags") or [])
+            ]
+        except UntrustedInputError as exc:
+            raise SkillCatalogError(f"{skill_md}: unsafe skill frontmatter") from exc
+        for label, value in (("agent", agent), ("mode", mode)):
+            if value and not _PORTABLE_NAME_RE.fullmatch(value):
+                raise SkillCatalogError(f"{skill_md}: non-portable frontmatter {label} {value!r}")
+
         entry = CatalogEntry(
             skill_id=skill_id,
-            name=frontmatter.get("name", skill_dir),
-            description=frontmatter.get("description", ""),
-            mode=frontmatter.get("mode", ""),
-            agent=frontmatter.get("agent", agent_dir),
+            name=name,
+            description=description,
+            mode=mode,
+            agent=agent,
             version=str(frontmatter.get("version", "1.0.0")),
-            capabilities=list(frontmatter.get("capabilities") or []),
-            tags=list(frontmatter.get("tags") or []),
-            file_path=str(skill_md),
+            capabilities=capabilities,
+            tags=tags,
+            file_path=skill_md.relative_to(root).as_posix(),
         )
         catalog[skill_id] = entry
 
@@ -116,7 +158,9 @@ def _ensure_loaded() -> dict[str, CatalogEntry]:
     """
     global _CATALOG
     if _CATALOG is None:
-        _CATALOG = load_catalog()
+        with _CATALOG_LOCK:
+            if _CATALOG is None:
+                _CATALOG = load_catalog()
     return _CATALOG
 
 

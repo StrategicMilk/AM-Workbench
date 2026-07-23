@@ -11,12 +11,16 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from vetinari.learning.atomic_writers import write_json_atomic
+
 logger = logging.getLogger(__name__)
+
 
 # -- Configuration --
 _DEFAULT_RESULTS_DIR = Path(".vetinari") / "testing" / "context_window_results"
@@ -34,6 +38,17 @@ _FILLER_SENTENCE = (
     "Residents are advised to carry an umbrella just in case. "
 )
 _FILLER_TOKENS_APPROX = len(_FILLER_SENTENCE) // 4  # Rough token estimate
+_SAFE_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
+_GLOB_OR_PATH_CHARS = frozenset("*?[]/\\")
+
+
+def _safe_model_id_for_cache(model_id: str) -> str:
+    """Return a filename-safe model id or reject ambiguous cache keys."""
+    if not model_id or any(char in model_id for char in _GLOB_OR_PATH_CHARS):
+        raise ValueError("model_id must not contain path separators or glob metacharacters")
+    if not _SAFE_MODEL_ID_RE.fullmatch(model_id):
+        raise ValueError("model_id contains unsupported cache filename characters")
+    return model_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +158,7 @@ class ContextWindowTester:
         """
         results: list[PositionResult] = []
         effective_window = 0
+        contiguous_retrieval = True
 
         for position_pct in NEEDLE_POSITIONS:
             token_position = int(declared_window * position_pct)
@@ -175,8 +191,10 @@ class ContextWindowTester:
                 )
             )
 
-            if retrieved:
+            if retrieved and contiguous_retrieval:
                 effective_window = token_position
+            elif not retrieved:
+                contiguous_retrieval = False
 
             logger.info(
                 "Needle test %s @ %.0f%%: accuracy=%.2f retrieved=%s",
@@ -203,7 +221,8 @@ class ContextWindowTester:
         """
         self._results_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        out_path = self._results_dir / f"context_window_{report.model_id}_{ts}.json"
+        model_key = _safe_model_id_for_cache(report.model_id)
+        out_path = self._results_dir / f"context_window_{model_key}_{ts}.json"
 
         data = {
             "model_id": report.model_id,
@@ -220,8 +239,7 @@ class ContextWindowTester:
                 for r in report.position_results
             ],
         }
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        write_json_atomic(out_path, data)
         logger.info("Context window results stored at %s", out_path)
 
 
@@ -243,7 +261,8 @@ def get_effective_window(
         return None
 
     # Find the most recent result file for this model
-    pattern = f"context_window_{model_id}_*.json"
+    model_key = _safe_model_id_for_cache(model_id)
+    pattern = f"context_window_{model_key}_*.json"
     files = sorted(search_dir.glob(pattern), reverse=True)
     if not files:
         return None

@@ -78,26 +78,39 @@ def load_document_profiles(config_path: Path | None = None) -> dict[str, Documen
             ``config/document_profiles.yaml`` relative to the project root.
 
     Returns:
-        Mapping of document type name to its DocumentProfile.
+        Mapping of document type name to DocumentProfile objects.
 
     Raises:
-        FileNotFoundError: If the config file does not exist.
+        ValueError: If the profile file is structurally invalid.
     """
     path = config_path or (_get_config_dir() / "document_profiles.yaml")
     if not path.exists():
-        logger.warning("Document profiles config not found at %s", path)
         return {}
 
     with Path(path).open(encoding="utf-8") as f:
-        raw: dict[str, Any] = yaml.safe_load(f)
+        loaded = yaml.safe_load(f)
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ValueError(f"Document profiles config must be a mapping at {path}")
+    raw: dict[str, Any] = loaded
 
     default_section = raw.get("default", {})
+    if not isinstance(default_section, dict):
+        default_section = {}
     default_weights: dict[str, float] = default_section.get("dimension_weights", {})
     default_min = float(default_section.get("min_score", 0.60))
 
     profiles: dict[str, DocumentProfile] = {}
 
-    for name, data in raw.get("profiles", {}).items():
+    raw_profiles = raw.get("profiles", {})
+    if not isinstance(raw_profiles, dict):
+        raise ValueError(f"Document profiles config has non-mapping profiles at {path}")
+
+    for name, data in raw_profiles.items():
+        if not isinstance(data, dict):
+            logger.warning("Skipping non-mapping document profile %s", name)
+            continue
         weights = dict(default_weights)
         weights.update(data.get("dimension_weights", {}))
         profiles[name] = DocumentProfile(

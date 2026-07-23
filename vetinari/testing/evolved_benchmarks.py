@@ -17,9 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from vetinari.constants import get_user_dir
+from vetinari.learning.atomic_writers import write_yaml_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +74,14 @@ class EvolvedPrompt:
     original: str
     transformed: str
     operation: str
+    expected_outcome: str = "response addresses the transformed prompt without unsafe or off-topic behavior"
+    rubric: dict[str, Any] = field(
+        default_factory=lambda: {
+            "must_address_prompt": True,
+            "must_preserve_original_intent": True,
+            "must_not_introduce_unsafe_content": True,
+        }
+    )
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def __repr__(self) -> str:
@@ -99,7 +106,7 @@ class BenchmarkEvolver:
         seed: int = 42,
     ) -> None:
         self._output_dir = output_dir or _default_output_dir()
-        self._rng = random.Random(seed)  # noqa: S311 — deterministic seed for reproducible benchmarks
+        self._rng = random.Random(seed)
 
     def paraphrase(self, prompt: str) -> str:
         """Reword a prompt using synonym substitution.
@@ -258,6 +265,8 @@ class BenchmarkEvolver:
                     "original": ep.original,
                     "transformed": ep.transformed,
                     "operation": ep.operation,
+                    "expected_outcome": ep.expected_outcome,
+                    "rubric": ep.rubric,
                     "timestamp": ep.timestamp,
                 }
                 for ep in evolved
@@ -265,7 +274,6 @@ class BenchmarkEvolver:
             "total": len(evolved),
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
-        with open(out_path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+        write_yaml_atomic(out_path, data)
         logger.info("Evolved corpus stored at %s", out_path)
         return out_path

@@ -1,0 +1,115 @@
+schema_version: 1
+marketplace_posture:
+  runtime_install_authority: workbench_risk_verdict
+  oauth_backed_installation: true
+  oauth_status: metadata_required_for_networked_mcp_servers
+  imported_rows_are_metadata_only: true
+  default_enablement: disabled_until_manual_selection_and_risk_allow
+extensions:
+  - schema_version: "1.0"
+    extension_id: safe-doc-reader
+    source_kind: plugin
+    version: "1.2.0"
+    compatibility: ">=2026.4,<2027.0"
+    declared_tools:
+      - summarize_document
+    requested_secrets: []
+    stdio: false
+    network: false
+    filesystem: false
+    dependencies:
+      - pydantic==2.11.3
+    dependency_findings: []
+    overlap_categories:
+      - document
+    destructive_capabilities: []
+    authority_owner: workbench
+    risk_verdict:
+      status: blocked
+      allowed: false
+      reasons:
+        - native_overlap
+        - manual_selection_required
+      disabled_by_default: true
+      manual_selection_required: true
+      details:
+        overlap: document
+    disabled_by_default: true
+    marketplace_metadata:
+      source_id: curated-local
+      source_url: https://example.invalid/workbench/extensions/safe-doc-reader
+      retrieved_at_utc: "2026-05-03T00:00:00+00:00"
+      published_at_utc: "2026-04-30T00:00:00+00:00"
+      package_pin: safe-doc-reader==1.2.0
+      provenance: curated seed config
+      risk_tags:
+        - document-overlap
+    shell_capable: false
+    import_paths:
+      - safe_doc_reader
+    package_pin: safe-doc-reader==1.2.0
+  - schema_version: "1.0"
+    extension_id: shell-mcp-runner
+    source_kind: mcp_server
+    version: "0.9.0"
+    compatibility: ">=2026.4,<2027.0"
+    declared_tools:
+      - run_shell
+      - delete_path
+    requested_secrets:
+      - name: GITHUB_TOKEN
+        scope: repo:read
+        required: true
+    stdio: true
+    network: true
+    filesystem: true
+    dependencies:
+      - shell-mcp-runner==0.9.0
+      - vulnerable-lib==0.1.0
+    dependency_findings:
+      - vulnerable-lib has blocked advisory
+    overlap_categories:
+      - shell
+      - filesystem
+      - network
+      - destructive
+    destructive_capabilities:
+      - delete_path
+    authority_owner: workbench
+    risk_verdict:
+      status: blocked
+      allowed: false
+      reasons:
+        - shell_or_stdio
+        - network_capability
+        - destructive_capability
+        - native_overlap
+        - unsafe_dependency
+        - manual_selection_required
+      disabled_by_default: true
+      manual_selection_required: true
+      details:
+        dependency: vulnerable-lib has blocked advisory
+    disabled_by_default: true
+    marketplace_metadata:
+      source_id: imported-search-result
+      source_url: https://example.invalid/mcp/shell-mcp-runner
+      retrieved_at_utc: "2026-05-03T00:00:00+00:00"
+      published_at_utc: "2026-04-28T00:00:00+00:00"
+      package_pin: shell-mcp-runner==0.9.0
+      provenance: imported metadata only
+      risk_tags:
+        - stdio
+        - destructive
+        - dependency-conflict
+    shell_capable: true
+    import_paths:
+      - shell_mcp_runner
+    package_pin: shell-mcp-runner==0.9.0
+    oauth:
+      provider: shell-mcp-runner
+      authorization_url: https://example.invalid/oauth/authorize
+      token_url: https://example.invalid/oauth/token
+      scopes:
+        - repo:read
+      pkce_required: true

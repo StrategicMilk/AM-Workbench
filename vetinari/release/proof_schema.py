@@ -25,6 +25,14 @@ from typing import Any
 # Schema version.  Bump when any field is added, removed, or renamed.
 # Consumers must refuse artifacts with a different version.
 PROOF_SCHEMA_VERSION: str = "1"
+LLAMA3_MODEL_MARKERS: tuple[str, ...] = (
+    "llama-3",
+    "llama3",
+    "meta-llama/llama-3",
+    "meta llama 3",
+)
+LLAMA3_LICENSE_NAME_FRAGMENT = "llama 3"
+LLAMA3_LICENSE_URL = "https://github.com/meta-llama/llama-models/tree/main/models"
 
 
 class ClaimKind(str, Enum):
@@ -51,6 +59,15 @@ class ReleaseClaimRecord:
             file evidence was produced.
         kind: Category of evidence backing this claim.
         verified_at: ISO-8601 UTC timestamp when the claim was verified.
+        model_id: Optional model identifier when the claim certifies a model
+            artifact or model-dependent release assertion.
+        model_family: Optional model family name, for example
+            ``"llama-3.1"``.
+        model_license: Optional model license name. Llama 3.x references must
+            populate this with the version-specific Community License.
+        model_license_url: Optional URL to the authoritative model license.
+        model_license_notice: Optional attribution or NOTICE text required by
+            the model license.
 
     Returns:
         Immutable claim record.
@@ -61,6 +78,11 @@ class ReleaseClaimRecord:
     evidence_path: str
     kind: ClaimKind
     verified_at: str  # ISO-8601 UTC, e.g. "2026-04-24T12:00:00+00:00"
+    model_id: str = ""
+    model_family: str = ""
+    model_license: str = ""
+    model_license_url: str = ""
+    model_license_notice: str = ""
 
     def __repr__(self) -> str:
         """Return a compact repr showing id and kind."""
@@ -168,9 +190,17 @@ class ReleaseProof:
                 evidence_path=c["evidence_path"],
                 kind=ClaimKind(c["kind"]),
                 verified_at=c["verified_at"],
+                model_id=c.get("model_id", ""),
+                model_family=c.get("model_family", ""),
+                model_license=c.get("model_license", ""),
+                model_license_url=c.get("model_license_url", ""),
+                model_license_notice=c.get("model_license_notice", ""),
             )
             for c in raw.get("claims", [])
         )
+        raw_signed = raw["signed"]
+        if not isinstance(raw_signed, bool):
+            raise ValueError(f"signed field must be a literal bool, got {type(raw_signed).__name__}")
         return cls(
             schema_version=raw["schema_version"],
             version=raw["version"],
@@ -182,6 +212,58 @@ class ReleaseProof:
             doctor_exit_code=int(raw["doctor_exit_code"]),
             smoke_exit_code=int(raw["smoke_exit_code"]),
             smoke_latency_ms=float(raw["smoke_latency_ms"]),
-            signed=bool(raw["signed"]),
+            signed=raw_signed is True,
             claims=claims,
         )
+
+
+def model_claim_requires_llama3_license(claim: ReleaseClaimRecord) -> bool:
+    """Return whether *claim* references a Llama 3.x model family.
+
+    Returns:
+        True when any claim field references a Llama 3.x marker.
+    """
+    haystack = " ".join((
+        claim.id,
+        claim.text,
+        claim.model_id,
+        claim.model_family,
+    )).lower()
+    normalised = haystack.replace("_", "-")
+    return any(marker in normalised for marker in LLAMA3_MODEL_MARKERS)
+
+
+def validate_model_license_fields(claim: ReleaseClaimRecord) -> tuple[str, ...]:
+    """Return missing or invalid model-license fields for fail-closed ledgers.
+
+    Llama 3.x model references carry custom Meta community-license obligations.
+    Release claims that mention those model families must preserve enough
+    structured license data for NOTICE generation and later release audits.
+
+    Returns:
+        Missing or invalid model-license field names.
+    """
+    if not model_claim_requires_llama3_license(claim):
+        return ()
+
+    failures: list[str] = []
+    required = {
+        "model_id": claim.model_id,
+        "model_family": claim.model_family,
+        "model_license": claim.model_license,
+        "model_license_url": claim.model_license_url,
+        "model_license_notice": claim.model_license_notice,
+    }
+    for field, value in required.items():
+        if not value.strip():
+            failures.append(field)
+
+    license_name = claim.model_license.lower()
+    if claim.model_license and (
+        LLAMA3_LICENSE_NAME_FRAGMENT not in license_name or "community license" not in license_name
+    ):
+        failures.append("model_license")
+    if claim.model_license_url and not claim.model_license_url.startswith(("https://", "http://")):
+        failures.append("model_license_url")
+
+    return tuple(dict.fromkeys(failures))

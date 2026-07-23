@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_data_quality.schema.json",
+  "title": "Workbench Data Quality Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "quality_report_id",
+    "dataset_revision_id",
+    "connector_id",
+    "source_card_id",
+    "captured_at_utc",
+    "policy_ref",
+    "signals"
+  ],
+  "properties": {
+    "quality_report_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "dataset_revision_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "connector_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_card_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "captured_at_utc": {
+      "type": "string",
+      "minLength": 1,
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "policy_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "signals": {
+      "type": "array",
+      "minItems": 6,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "check_kind",
+          "passed",
+          "severity",
+          "evidence_ref",
+          "message"
+        ],
+        "properties": {
+          "check_kind": {
+            "enum": [
+              "freshness",
+              "schema",
+              "completeness",
+              "integrity",
+              "distribution",
+              "sensitive_data"
+            ]
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "severity": {
+            "enum": [
+              "info",
+              "warning",
+              "blocker"
+            ]
+          },
+          "evidence_ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "properties": {
+        "signals": {
+          "contains": {
+            "properties": {
+              "check_kind": {
+                "const": "freshness"
+              }
+            },
+            "required": [
+              "check_kind"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "signals": {
+          "contains": {
+            "properties": {
+              "check_kind": {
+                "const": "schema"
+              }
+            },
+            "required": [
+              "check_kind"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "signals": {
+          "contains": {
+            "properties": {
+              "check_kind": {
+                "const": "completeness"
+              }
+            },
+            "required": [
+              "check_kind"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "signals": {
+          "contains": {
+            "properties": {
+              "check_kind": {
+                "const": "integrity"
+              }
+            },
+            "required": [
+              "check_kind"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "signals": {
+          "contains": {
+            "properties": {
+              "check_kind": {
+                "const": "distribution"
+              }
+            },
+            "required": [
+              "check_kind"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "signals": {
+          "contains": {
+            "properties": {
+              "check_kind": {
+                "const": "sensitive_data"
+              }
+            },
+            "required": [
+              "check_kind"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,136 @@
+schema_version: 1
+domains:
+  - domain_kind: tax
+    requires_jurisdiction: true
+    requires_tax_year: true
+    requires_authority: true
+    requires_evidence: true
+    min_rigor_level: check_it_carefully
+    default_workflow_outcome_kind: organize_documents
+    permitted_promotion_kinds:
+      - checklist
+      - document_packet
+      - evidence_notebook_entry
+  - domain_kind: finance
+    requires_jurisdiction: true
+    requires_tax_year: false
+    requires_authority: true
+    requires_evidence: true
+    min_rigor_level: check_it_carefully
+    default_workflow_outcome_kind: source_backed_note
+    permitted_promotion_kinds:
+      - checklist
+      - document_packet
+      - source_backed_note
+      - evidence_notebook_entry
+  - domain_kind: legal
+    requires_jurisdiction: true
+    requires_tax_year: false
+    requires_authority: true
+    requires_evidence: true
+    min_rigor_level: check_it_carefully
+    default_workflow_outcome_kind: questions_for_professional
+    permitted_promotion_kinds:
+      - source_backed_note
+  - domain_kind: medical
+    requires_jurisdiction: true
+    requires_tax_year: false
+    requires_authority: true
+    requires_evidence: true
+    min_rigor_level: check_it_carefully
+    default_workflow_outcome_kind: questions_for_professional
+    permitted_promotion_kinds:
+      - source_backed_note
+  - domain_kind: employment
+    requires_jurisdiction: true
+    requires_tax_year: false
+    requires_authority: true
+    requires_evidence: true
+    min_rigor_level: check_it_carefully
+    default_workflow_outcome_kind: professional_memo
+    permitted_promotion_kinds:
+      - professional_memo
+      - checklist
+      - source_backed_note
+  - domain_kind: housing
+    requires_jurisdiction: true
+    requires_tax_year: false
+    requires_authority: true
+    requires_evidence: true
+    min_rigor_level: check_it_carefully
+    default_workflow_outcome_kind: source_backed_note
+    permitted_promotion_kinds:
+      - source_backed_note
+      - checklist
+  - domain_kind: safety
+    requires_jurisdiction: true
+    requires_tax_year: false
+    requires_authority: true
+    requires_evidence: true
+    min_rigor_level: check_it_carefully
+    default_workflow_outcome_kind: checklist
+    permitted_promotion_kinds:
+      - checklist
+      - source_backed_note
+  - domain_kind: household_planning
+    requires_jurisdiction: false
+    requires_tax_year: false
+    requires_authority: false
+    requires_evidence: false
+    min_rigor_level: help_me_think
+    default_workflow_outcome_kind: checklist
+    permitted_promotion_kinds:
+      - checklist
+      - reminder
+  - domain_kind: document_organization
+    requires_jurisdiction: false
+    requires_tax_year: false
+    requires_authority: false
+    requires_evidence: false
+    min_rigor_level: help_me_think
+    default_workflow_outcome_kind: organize_documents
+    permitted_promotion_kinds:
+      - document_packet
+      - evidence_notebook_entry
+  - domain_kind: meeting_prep
+    requires_jurisdiction: false
+    requires_tax_year: false
+    requires_authority: false
+    requires_evidence: false
+    min_rigor_level: help_me_think
+    default_workflow_outcome_kind: professional_memo
+    permitted_promotion_kinds:
+      - professional_memo
+      - meeting_prep_brief
+      - checklist
+  - domain_kind: purchase_decision
+    requires_jurisdiction: false
+    requires_tax_year: false
+    requires_authority: false
+    requires_evidence: false
+    min_rigor_level: help_me_think
+    default_workflow_outcome_kind: checklist
+    permitted_promotion_kinds:
+      - checklist
+      - source_backed_note
+  - domain_kind: appointment
+    requires_jurisdiction: false
+    requires_tax_year: false
+    requires_authority: false
+    requires_evidence: false
+    min_rigor_level: help_me_think
+    default_workflow_outcome_kind: reminder
+    permitted_promotion_kinds:
+      - reminder
+      - checklist
+  - domain_kind: general_professional
+    requires_jurisdiction: false
+    requires_tax_year: false
+    requires_authority: false
+    requires_evidence: false
+    min_rigor_level: help_me_think
+    default_workflow_outcome_kind: professional_memo
+    permitted_promotion_kinds:
+      - professional_memo
+      - checklist
+      - source_backed_note

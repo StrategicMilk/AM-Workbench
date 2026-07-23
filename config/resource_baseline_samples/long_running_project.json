@@ -1,0 +1,23 @@
+{
+  "workload": "long_running_project",
+  "_consumer": "config.resource_baseline_samples consumed by scripts/check_vetinari_rules.py resource-baseline validation",
+  "recorded_at": "2026-05-08T00:00:00Z",
+  "machine_profile": "windows-local-dev-ci-safe",
+  "samples": [
+    {
+      "duration_ms": 27000,
+      "max_rss_mb": 1840,
+      "cpu_percent": 82
+    },
+    {
+      "duration_ms": 30000,
+      "max_rss_mb": 1968,
+      "cpu_percent": 87
+    },
+    {
+      "duration_ms": 45000,
+      "max_rss_mb": 2048,
+      "cpu_percent": 90
+    }
+  ]
+}

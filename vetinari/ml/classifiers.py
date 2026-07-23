@@ -18,123 +18,19 @@ from typing import Any
 
 from vetinari.types import GoalCategory
 
+from .classifier_keywords import _DEFECT_KEYWORDS, _GOAL_KEYWORDS, DEFECT_CATEGORIES, GOAL_CATEGORIES
+
 logger = logging.getLogger(__name__)
-
-# Goal categories aligned to GoalCategory enum (M4 ontology unification)
-GOAL_CATEGORIES = [cat.value for cat in GoalCategory]
-
-# Keyword maps for goal classification — keys are GoalCategory values
-_GOAL_KEYWORDS: dict[str, list[str]] = {
-    GoalCategory.CODE.value: [
-        "implement",
-        "create",
-        "build",
-        "write",
-        "add",
-        "function",
-        "class",
-        "module",
-        "api",
-        "endpoint",
-        "feature",
-        "code",
-        "program",
-        "develop",
-        "fix",
-        "bug",
-        "debug",
-        "error",
-        "refactor",
-        "test",
-        "unittest",
-        "pytest",
-    ],
-    GoalCategory.RESEARCH.value: [
-        "research",
-        "investigate",
-        "find",
-        "search",
-        "explore",
-        "evaluate",
-        "compare",
-        "analyze",
-        "study",
-        "learn about",
-        "what is",
-        "how does",
-    ],
-    GoalCategory.DOCS.value: [
-        "document",
-        "readme",
-        "docstring",
-        "comment",
-        "explain",
-        "describe",
-        "markdown",
-        "changelog",
-        "wiki",
-        "manual",
-        "api docs",
-    ],
-    GoalCategory.CREATIVE.value: [
-        "write story",
-        "narrative",
-        "fiction",
-        "campaign",
-        "creative",
-        "blog post",
-        "article",
-    ],
-    GoalCategory.SECURITY.value: [
-        "security",
-        "audit",
-        "vulnerability",
-        "pentest",
-        "review security",
-        "threat",
-        "owasp",
-        "cve",
-    ],
-    GoalCategory.DATA.value: [
-        "database",
-        "schema",
-        "migration",
-        "etl",
-        "sql",
-        "data",
-        "query",
-        "table",
-    ],
-    GoalCategory.DEVOPS.value: [
-        "deploy",
-        "release",
-        "publish",
-        "docker",
-        "ci/cd",
-        "pipeline",
-        "kubernetes",
-        "infrastructure",
-    ],
-    GoalCategory.UI.value: [
-        "ui",
-        "ux",
-        "frontend",
-        "design",
-        "wireframe",
-        "layout",
-        "css",
-        "component",
-    ],
-    GoalCategory.IMAGE.value: [
-        "logo",
-        "icon",
-        "mockup",
-        "diagram",
-        "image",
-        "generate image",
-        "illustration",
-    ],
-}
+__all__ = [
+    "DEFECT_CATEGORIES",
+    "GOAL_CATEGORIES",
+    "AmbiguityDetector",
+    "AmbiguityResult",
+    "DefectClassification",
+    "DefectClassifier",
+    "GoalClassification",
+    "GoalClassifier",
+]
 
 
 @dataclass
@@ -212,86 +108,6 @@ class GoalClassifier:
 # ---------------------------------------------------------------------------
 # Defect Classification
 # ---------------------------------------------------------------------------
-
-# Map to existing DefectCategory values
-DEFECT_CATEGORIES = [
-    "hallucinated_import",
-    "ambiguous_spec",
-    "model_limitation",
-    "insufficient_context",
-    "integration_error",
-    "logic_error",
-    "style_violation",
-]
-
-_DEFECT_KEYWORDS: dict[str, list[str]] = {
-    "hallucinated_import": [
-        "import",
-        "module not found",
-        "no module named",
-        "cannot import",
-        "importerror",
-        "modulenotfounderror",
-        "undefined name",
-    ],
-    "ambiguous_spec": [
-        "unclear",
-        "ambiguous",
-        "not specified",
-        "missing requirement",
-        "vague",
-        "underspecified",
-        "what do you mean",
-    ],
-    "model_limitation": [
-        "too complex",
-        "context length",
-        "token limit",
-        "cannot handle",
-        "out of scope",
-        "beyond capability",
-        "model struggled",
-    ],
-    "insufficient_context": [
-        "missing context",
-        "need more information",
-        "file not found",
-        "reference not available",
-        "unknown variable",
-        "undeclared",
-    ],
-    "integration_error": [
-        "integration",
-        "compatibility",
-        "api mismatch",
-        "version conflict",
-        "interface",
-        "contract",
-        "type error",
-        "signature",
-    ],
-    "logic_error": [
-        "logic error",
-        "incorrect output",
-        "wrong result",
-        "off by one",
-        "infinite loop",
-        "race condition",
-        "deadlock",
-        "incorrect behavior",
-    ],
-    "style_violation": [
-        "style",
-        "formatting",
-        "naming",
-        "convention",
-        "lint",
-        "ruff",
-        "pep8",
-        "docstring",
-        "type hint",
-    ],
-}
 
 
 @dataclass
@@ -473,11 +289,8 @@ class AmbiguityDetector:
     def detect(self, request_text: str) -> AmbiguityResult:
         """Detect whether a request needs clarification.
 
-        Args:
-            request_text: The user's request text.
-
         Returns:
-            AmbiguityResult with ambiguity assessment and features.
+            Value produced for the caller.
         """
         if not request_text or not request_text.strip():
             return AmbiguityResult(
@@ -485,38 +298,21 @@ class AmbiguityDetector:
                 confidence=0.9,
                 features={"reason": "empty_request"},
             )
-
         text_lower = request_text.lower()
         words = text_lower.split()
         word_count = len(words)
-
-        # Feature 1: Hedge word density
         hedge_count = sum(1 for hw in _HEDGE_WORDS if hw in text_lower)
         hedge_density = hedge_count / max(word_count, 1)
-
-        # Feature 2: Question marks
         question_marks = request_text.count("?")
-
-        # Feature 3: Conditional phrase count
         conditional_count = sum(1 for cp in _CONDITIONAL_PHRASES if cp in text_lower)
-
-        # Feature 4: Specificity score (file refs, function names, concrete terms)
         file_refs = len(re.findall(r"\b[\w/]+\.(?:py|js|ts|yaml|json|md)\b", request_text))
         func_refs = len(re.findall(r"\b\w+\(\)", request_text))
         class_refs = len(re.findall(r"\b[A-Z][a-zA-Z]+\b", request_text))
         specificity = (file_refs + func_refs + class_refs * 0.5) / max(word_count, 1)
-
-        # Feature 5: Request length (very short requests are often ambiguous)
         length_score = 0.0 if word_count < 3 else (0.5 if word_count < 10 else 1.0)
-
-        # Feature 6: Vague pronoun density — unresolved "it/this/that" signals missing subject
         vague_pronoun_count = sum(1 for pat in _VAGUE_PRONOUNS if re.search(pat, text_lower))
         vague_pronoun_density = vague_pronoun_count / max(word_count, 1)
-
-        # Feature 7: Missing subject — imperative verb with no concrete noun target
         has_missing_subject = any(re.search(pat, text_lower.strip()) for pat in _MISSING_SUBJECT_PATTERNS)
-
-        # Compute ambiguity score (higher = more ambiguous)
         ambiguity_score = (
             hedge_density * 3.0  # Hedging is strong signal
             + (question_marks * 0.15)  # Questions need answers
@@ -526,10 +322,7 @@ class AmbiguityDetector:
             + vague_pronoun_density * 2.0  # Feature 6: vague pronouns boost ambiguity
             + (0.15 if has_missing_subject else 0.0)  # Feature 7: missing subject
         )
-
-        # Normalize to 0-1
         ambiguity_score = max(0.0, min(1.0, ambiguity_score))
-
         features = {
             "hedge_count": hedge_count,
             "hedge_density": round(hedge_density, 3),
@@ -544,10 +337,7 @@ class AmbiguityDetector:
             "vague_pronoun_density": round(vague_pronoun_density, 3),
             "has_missing_subject": has_missing_subject,
         }
-
         is_ambiguous = ambiguity_score > self.AMBIGUITY_THRESHOLD
-
-        # ── LLM assist for borderline cases above the tightened threshold ──
         _BORDERLINE_THRESHOLD = 0.25
         if ambiguity_score > _BORDERLINE_THRESHOLD:
             try:
@@ -566,7 +356,6 @@ class AmbiguityDetector:
                     )
             except Exception:
                 logger.warning("LLM ambiguity check unavailable — using heuristic score only for ambiguity detection")
-
         return AmbiguityResult(
             is_ambiguous=is_ambiguous,
             confidence=abs(ambiguity_score - 0.5) * 2,  # confidence highest at extremes

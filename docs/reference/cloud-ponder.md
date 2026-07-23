@@ -1,6 +1,6 @@
-# Cloud-augmented Pondering (Vetinari)
+# Cloud-augmented Pondering
 
-This document describes the cloud-augmented Ponder mechanism within Vetinari, including how local models and cloud providers (HF Inference, Replicate, Claude, Gemini) are scored, how latency and caching are handled, and how auditing is performed to ensure end-to-end traceability.
+This document describes the cloud-augmented Ponder mechanism within AM Workbench, including how local models and cloud providers (HF Inference, Replicate, Claude, Gemini) are scored, how latency and caching are handled, and how auditing is performed to ensure end-to-end traceability.
 
 ## Overview
 - Ponder is the model-selection orchestration engine used to pick best-fit models for each subtask.
@@ -17,15 +17,16 @@ This document describes the cloud-augmented Ponder mechanism within Vetinari, in
 - Tokens for provider access come from environment variables:
   - `HF_HUB_TOKEN` - HuggingFace
   - `REPLICATE_API_TOKEN` - Replicate
-  - `CLAUDE_API_KEY` - Claude (Anthropic)
+  - `ANTHROPIC_API_KEY` - Claude (Anthropic), with `CLAUDE_API_KEY` accepted only as a legacy fallback
   - `GEMINI_API_KEY` - Gemini (Google)
 - No tokens are logged or returned in API responses
 - Fallbacks are used if tokens are missing, with cloud augmentation disabled for those providers
 
 ## Flow and Interactions
 - **Phase 1**: Pre-selection of top-3 models per subtask using both local and cloud candidates
-- **Phase 2**: Re-score incorporating cloud signals; auto-revert to new top-1 if ranking changes
-- Plan-wide ponder is asynchronous by default in production with a plan status you can query
+- **Phase 2**: Re-score incorporating cloud signals; auto-revert to new top-1 if ranking changes.
+- Current Ponder execution is an in-process helper. Do not claim async plan-wide
+  status APIs unless the route implementation and route tests are restored.
 
 ## Observability and Metrics
 - Latency per provider (`cloud_latency_ms`)
@@ -35,7 +36,7 @@ This document describes the cloud-augmented Ponder mechanism within Vetinari, in
 
 ## Rollout and Governance
 - Feature flags:
-  - `ENABLE_PONDER_MODEL_SEARCH` - Enable/disable cloud model search
+  - `ENABLE_PONDER_MODEL_DISCOVERY` - Enable/disable model-discovery scoring
   - `PONDER_CLOUD_WEIGHT` - Weight for cloud signals (default: 0.20)
   - `PLAN_WIDE_PONDER_ASYNC` - Async plan-wide ponder
 - Observability dashboards to monitor provider health and ponder progression

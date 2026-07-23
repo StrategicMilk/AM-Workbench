@@ -16,7 +16,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from vetinari.learning.atomic_writers import write_json_atomic
+from vetinari.security.fail_closed import assert_closed_schema, sanitize_untrusted_text
+
 logger = logging.getLogger(__name__)
+
 
 # -- Configuration --
 _DIVERGENCE_THRESHOLD = 0.15  # Trigger auto-correction when abs(predicted - actual) exceeds this
@@ -74,8 +78,8 @@ class KnowledgeValidator:
     """Compares knowledge-file predictions against actual model performance data.
 
     When divergence on any metric exceeds the threshold (0.15), the validator
-    auto-corrects the in-memory representation and persists a CorrectionRecord
-    to the corrections JSON file for offline review.
+    mutates the ``knowledge_data`` dict in place for divergent metrics and
+    persists a CorrectionRecord to the corrections JSON file for offline review.
 
     The corrections file is append-safe: it reads the existing list, appends
     new records, and writes the full list back atomically via a rename-safe
@@ -122,10 +126,13 @@ class KnowledgeValidator:
         """
         report = ValidationReport(timestamp=datetime.now(timezone.utc).isoformat())
 
+        assert_closed_schema(knowledge_data, allowed_keys=knowledge_data.keys())
+        assert_closed_schema(actual_data, allowed_keys=actual_data.keys())
         # Only examine models present in both datasets
         shared_models = set(knowledge_data.keys()) & set(actual_data.keys())
 
         for model_id in sorted(shared_models):
+            safe_model_id = sanitize_untrusted_text(model_id, max_length=200)
             predicted_metrics: dict[str, Any] = knowledge_data[model_id]
             actual_metrics: dict[str, Any] = actual_data[model_id]
 
@@ -142,6 +149,7 @@ class KnowledgeValidator:
             shared_metrics = set(predicted_metrics.keys()) & set(actual_metrics.keys())
 
             for metric in sorted(shared_metrics):
+                safe_metric = sanitize_untrusted_text(metric, max_length=120)
                 try:
                     predicted = float(predicted_metrics[metric])
                     actual = float(actual_metrics[metric])
@@ -158,12 +166,13 @@ class KnowledgeValidator:
                 divergence = actual - predicted
                 if abs(divergence) > _DIVERGENCE_THRESHOLD:
                     record = self._auto_correct(
-                        model_id=model_id,
-                        metric=metric,
+                        model_id=safe_model_id,
+                        metric=safe_metric,
                         old_value=predicted,
                         new_value=actual,
                     )
                     report.corrections.append(record)
+                    predicted_metrics[metric] = actual
 
         return report
 
@@ -190,6 +199,8 @@ class KnowledgeValidator:
         Returns:
             The CorrectionRecord that was created and persisted.
         """
+        model_id = sanitize_untrusted_text(model_id, max_length=200)
+        metric = sanitize_untrusted_text(metric, max_length=120)
         divergence = new_value - old_value
         record = CorrectionRecord(
             model_id=model_id,
@@ -254,11 +265,7 @@ class KnowledgeValidator:
         })
 
         try:
-            self._corrections_path.parent.mkdir(parents=True, exist_ok=True)
-            self._corrections_path.write_text(
-                json.dumps(existing, indent=2),
-                encoding="utf-8",
-            )
+            write_json_atomic(self._corrections_path, existing)
         except OSError:
             logger.exception(
                 "Could not write corrections to %s — correction for model %r metric %r discarded",

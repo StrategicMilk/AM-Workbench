@@ -18,7 +18,7 @@ import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, get_origin
+from typing import Any, cast, get_origin
 
 from vetinari.execution_context import (
     AGENT_PERMISSION_MAP,
@@ -76,7 +76,7 @@ class ToolParameter:
             return not self.required
 
         # get_origin returns the un-parameterised base (e.g. list for list[str]).
-        # Falls back to self.type when it is already a plain type (get_origin → None).
+        # Falls back to self.type when it is already a plain type (get_origin -> None).
         origin = get_origin(self.type)
         check_type = origin if origin is not None else self.type
         if not isinstance(value, check_type):
@@ -128,7 +128,7 @@ class ToolResult:
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
-        return dataclass_to_dict(self)
+        return cast(dict[str, Any], dataclass_to_dict(self))
 
 
 class Tool(ABC):
@@ -197,163 +197,128 @@ class Tool(ABC):
     def run(self, agent_type: AgentType | None = None, **kwargs) -> ToolResult:
         """Run the tool with safety checks and validation.
 
-        This is the main entry point that enforces mode permissions, optional
-        agent-level permissions, confirmation requirements, and input validation
-        before delegating to :meth:`execute`.
-
-        Args:
-            agent_type: Optional agent type for agent-level permission enforcement.
-                When provided, the tool is checked via ``check_permission_unified``
-                against both the mode policy and the agent permission map —
-                the most-restrictive policy wins.
-            **kwargs: Parameters forwarded to ``execute()``.
-
         Returns:
-            ToolResult with execution status and output. Exceptions from
-            hooks or the audit trail are caught and logged; they never
-            surface as raw exceptions to the caller.
+            Value produced for the caller.
         """
         import time
 
         start_time = time.time()
+        self._apply_optional_defaults(kwargs)
+        failure = self._preflight_run(agent_type, kwargs, start_time)
+        if failure is not None:
+            return failure
 
-        # -- Bug 4: inject defaults for missing optional parameters before validation --
+        filtered_kwargs = self._filtered_tool_kwargs(kwargs)
+        hook_failure = self._run_pre_execution_hooks(filtered_kwargs, start_time)
+        if hook_failure is not None:
+            return hook_failure
+
+        result = self._execute_with_timing(filtered_kwargs, start_time)
+        self._run_post_execution_hooks(filtered_kwargs, result)
+        self._record_tool_operation(filtered_kwargs, result)
+        return result
+
+    @staticmethod
+    def _elapsed_ms(start_time: float) -> int:
+        """Return elapsed milliseconds since ``start_time``."""
+        import time
+
+        return int((time.time() - start_time) * 1000)
+
+    def _failure_result(self, error: str | None, start_time: float) -> ToolResult:
+        """Build a standard failed ToolResult."""
+        return ToolResult(success=False, output=None, error=error, execution_time_ms=self._elapsed_ms(start_time))
+
+    def _apply_optional_defaults(self, kwargs: dict[str, Any]) -> None:
+        """Inject defaults for missing optional parameters before validation."""
         for tool_param in self.metadata.parameters:
             if not tool_param.required and tool_param.name not in kwargs and tool_param.default is not None:
                 kwargs[tool_param.name] = tool_param.default
 
-        # Validate inputs
+    def _preflight_run(
+        self,
+        agent_type: AgentType | None,
+        kwargs: dict[str, Any],
+        start_time: float,
+    ) -> ToolResult | None:
+        """Run validation, mode permissions, agent permissions, and confirmations."""
         is_valid, error_msg = self.validate_inputs(kwargs)
         if not is_valid:
             logger.warning("Input validation failed for %s: %s", self.metadata.name, error_msg)
-            return ToolResult(
-                success=False,
-                output=None,
-                error=error_msg,
-                execution_time_ms=int((time.time() - start_time) * 1000),
-            )
-
-        # Check mode-level permissions
+            return self._failure_result(error_msg, start_time)
         has_perms, error_msg = self.check_permissions()
         if not has_perms:
             logger.warning("Permission check failed for %s: %s", self.metadata.name, error_msg)
-            return ToolResult(
-                success=False,
-                output=None,
-                error=error_msg,
-                execution_time_ms=int((time.time() - start_time) * 1000),
-            )
+            return self._failure_result(error_msg, start_time)
+        return self._check_agent_and_confirmation_permissions(agent_type, start_time)
 
-        # -- Bug 2: unified agent-level permission check (most-restrictive-wins) --
-        # check_permission_unified covers mode policy, AGENT_PERMISSION_MAP, and
-        # PolicyEnforcer in one call — replacing the raw enforce_agent_permissions loop.
+    def _check_agent_and_confirmation_permissions(
+        self,
+        agent_type: AgentType | None,
+        start_time: float,
+    ) -> ToolResult | None:
+        """Enforce agent-level permissions and fail-closed confirmations."""
         if agent_type is not None:
             for permission in self.metadata.required_permissions:
                 if not check_permission_unified(agent_type, permission):
-                    logger.warning(
-                        "Agent permission denied for tool '%s' (agent=%s, permission=%s)",
-                        self.metadata.name,
-                        agent_type.value,
-                        permission.value,
+                    logger.warning("Agent permission denied for tool '%s'", self.metadata.name)
+                    return self._failure_result(
+                        f"Permission {permission.value} denied for agent {agent_type.value}", start_time
                     )
-                    return ToolResult(
-                        success=False,
-                        output=None,
-                        error=f"Permission {permission.value} denied for agent {agent_type.value}",
-                        execution_time_ms=int((time.time() - start_time) * 1000),
-                    )
-
-        # Check if confirmation is required — fail closed: block execution when
-        # confirmation is needed rather than silently proceeding.
         ctx = self._context_manager.current_context
         for permission in self.metadata.required_permissions:
             if ctx.requires_confirmation(permission):
-                logger.warning(
-                    "Tool '%s' requires confirmation for %s — blocking execution (fail-closed)",
-                    self.metadata.name,
-                    permission.value,
+                logger.warning("Tool '%s' requires confirmation for %s", self.metadata.name, permission.value)
+                return self._failure_result(
+                    f"Operation requires confirmation for {permission.value} - not auto-approved", start_time
                 )
-                return ToolResult(
-                    success=False,
-                    output=None,
-                    error=f"Operation requires confirmation for {permission.value} — not auto-approved",
-                    execution_time_ms=int((time.time() - start_time) * 1000),
-                )
+        return None
 
-        # -- Bug 5: filter kwargs to only declared parameter names before execute() --
-        # Undeclared keys are dropped so execute() never receives unexpected arguments.
-        # If no parameters are declared, pass all kwargs through (tool accepts **kwargs).
+    def _filtered_tool_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Drop undeclared parameters unless the tool declares no schema."""
         declared_names = {p.name for p in self.metadata.parameters}
-        if declared_names:
-            filtered_kwargs = {k: v for k, v in kwargs.items() if k in declared_names}
-        else:
-            filtered_kwargs = kwargs
+        return {k: v for k, v in kwargs.items() if k in declared_names} if declared_names else kwargs
 
-        # -- Bug 6: wrap pre-execution hooks — a failing hook returns a bounded result --
-        for hook in ctx.pre_execution_hooks:
+    def _run_pre_execution_hooks(self, filtered_kwargs: dict[str, Any], start_time: float) -> ToolResult | None:
+        """Run pre-execution hooks and return a failure when one blocks."""
+        for hook in self._context_manager.current_context.pre_execution_hooks:
             try:
                 should_proceed = hook(self.metadata.name, filtered_kwargs)
             except Exception as hook_exc:
-                logger.warning(
-                    "Pre-execution hook raised an error for tool '%s' — blocking as fail-closed: %s",
-                    self.metadata.name,
-                    hook_exc,
-                )
-                return ToolResult(
-                    success=False,
-                    output=None,
-                    error=f"Pre-execution hook error: {hook_exc!s}",
-                    execution_time_ms=int((time.time() - start_time) * 1000),
-                )
+                logger.warning("Pre-execution hook raised for tool '%s': %s", self.metadata.name, hook_exc)
+                return self._failure_result(f"Pre-execution hook error: {hook_exc!s}", start_time)
             if not should_proceed:
                 logger.info("Pre-execution hook blocked %s", self.metadata.name)
-                return ToolResult(
-                    success=False,
-                    output=None,
-                    error="Pre-execution hook blocked execution",
-                    execution_time_ms=int((time.time() - start_time) * 1000),
-                )
+                return self._failure_result("Pre-execution hook blocked execution", start_time)
+        return None
 
-        # Execute the tool
+    def _execute_with_timing(self, filtered_kwargs: dict[str, Any], start_time: float) -> ToolResult:
+        """Execute the tool and stamp elapsed time."""
         try:
             logger.info("Executing tool: %s", self.metadata.name)
             result = self.execute(**filtered_kwargs)
-            result.execution_time_ms = max(1, int((time.time() - start_time) * 1000))
-        except Exception as e:
-            logger.error("Error executing tool %s: %s", self.metadata.name, e)
-            return ToolResult(
-                success=False,
-                output=None,
-                error=f"Execution error: {e!s}",
-                execution_time_ms=int((time.time() - start_time) * 1000),
-            )
+            result.execution_time_ms = max(1, self._elapsed_ms(start_time))
+            return result
+        except Exception as exc:
+            logger.error("Error executing tool %s: %s", self.metadata.name, exc)
+            return self._failure_result(f"Execution error: {exc!s}", start_time)
 
-        # -- Bug 7: post-execution hooks and audit trail are best-effort —
-        # failures are logged but the primary result is always returned.
-        for hook in ctx.post_execution_hooks:
+    def _run_post_execution_hooks(self, filtered_kwargs: dict[str, Any], result: ToolResult) -> None:
+        """Run post-execution hooks as best-effort observers."""
+        for hook in self._context_manager.current_context.post_execution_hooks:
             try:
                 hook(self.metadata.name, filtered_kwargs, result)
             except Exception as hook_exc:
-                logger.warning(
-                    "Post-execution hook raised an error for tool '%s' — result preserved, hook skipped: %s",
-                    self.metadata.name,
-                    hook_exc,
-                )
+                logger.warning("Post-execution hook raised for tool '%s': %s", self.metadata.name, hook_exc)
 
+    def _record_tool_operation(self, filtered_kwargs: dict[str, Any], result: ToolResult) -> None:
+        """Record audit operation without failing the primary result."""
         try:
-            ctx.record_operation(
-                self.metadata.name,
-                filtered_kwargs,
-                result.to_dict(),
+            self._context_manager.current_context.record_operation(
+                self.metadata.name, filtered_kwargs, result.to_dict()
             )
         except Exception as audit_exc:
-            logger.warning(
-                "Audit trail recording failed for tool '%s' — result preserved, audit skipped: %s",
-                self.metadata.name,
-                audit_exc,
-            )
-
-        return result
+            logger.warning("Audit trail recording failed for tool '%s': %s", self.metadata.name, audit_exc)
 
     def get_description(self) -> str:
         """Build a formatted multi-line description of the tool for display.
@@ -387,14 +352,29 @@ class Tool(ABC):
 class ToolRegistry(BaseRegistry[str, Tool]):
     """Registry for managing available tools."""
 
-    def register(self, tool: Tool) -> None:  # type: ignore[override]
-        """Register a tool, keying it on its metadata name.
+    def register(self, tool: Tool | str, item: Tool | None = None) -> None:
+        """Register a tool, keying it on its metadata name by default.
 
         Args:
-            tool: The Tool instance to register.
+            tool: The Tool instance to register, or an explicit registry key.
+            item: Optional explicit Tool item for BaseRegistry-compatible calls.
+
+        Raises:
+            TypeError: If called with an invalid key/item shape.
         """
-        super().register(tool.metadata.name, tool)
-        logger.info("Registered tool: %s", tool.metadata.name)
+        if item is None:
+            if not isinstance(tool, Tool):
+                msg = "register(tool) requires a Tool when item is omitted"
+                raise TypeError(msg)
+            super().register(tool.metadata.name, tool)
+            logger.info("Registered tool: %s", tool.metadata.name)
+            return
+
+        if not isinstance(tool, str):
+            msg = "register(key, item) requires a string key"
+            raise TypeError(msg)
+        super().register(tool, item)
+        logger.info("Registered tool: %s", tool)
 
     def list_tools(self) -> list[Tool]:
         """Return a snapshot of all registered tools.
@@ -402,7 +382,7 @@ class ToolRegistry(BaseRegistry[str, Tool]):
         Returns:
             List of all Tool instances currently in the registry.
         """
-        return self.list_all()
+        return cast(list[Tool], self.list_all())
 
     def list_tools_for_mode(self, mode: ExecutionMode, agent_type: AgentType | None = None) -> list[Tool]:
         """List tools available in a specific execution mode, optionally filtered by agent type.

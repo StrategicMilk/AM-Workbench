@@ -18,8 +18,10 @@ from collections.abc import Sized
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
 
 _POLL_INTERVAL_SECONDS = 30  # How often to check health
 
@@ -67,7 +69,7 @@ class HealthSnapshot:
             Dict with status, components, and timestamp.
         """
         return {
-            "status": self.status.value,
+            "status": "ok" if self.status is HealthStatus.HEALTHY else self.status.value,
             "components": [{"name": c.name, "healthy": c.healthy, "detail": c.detail} for c in self.components],
             "checked_at": self.checked_at,
         }
@@ -81,6 +83,7 @@ _latest_snapshot: HealthSnapshot | None = None
 _snapshot_lock = threading.Lock()
 _stop_event = threading.Event()
 _monitor_thread: threading.Thread | None = None
+_dashboard_thread: threading.Thread | None = None
 
 
 # ── Individual health checks ──────────────────────────────────────
@@ -133,25 +136,39 @@ def _check_event_bus() -> ComponentHealth:
         return ComponentHealth(name="event_bus", healthy=False, detail=str(exc))
 
 
-def _check_models() -> ComponentHealth:
-    """Check if any inference models are loaded.
+def register_dashboard_thread(thread: threading.Thread) -> None:
+    """Register the dashboard thread expected to remain alive."""
+    global _dashboard_thread
+    _dashboard_thread = thread
 
-    Returns unhealthy when no adapter manager is present or the adapter
-    manager reports zero available models — an empty model list means
-    no inference can be served, which is a degraded state.
+
+def _check_dashboard_thread() -> ComponentHealth:
+    """Report degraded health when the registered dashboard thread exits."""
+    thread = _dashboard_thread
+    if thread is None:
+        return ComponentHealth(name="dashboard", healthy=True, detail="not registered")
+    if thread.is_alive():
+        return ComponentHealth(name="dashboard", healthy=True, detail="running")
+    return ComponentHealth(name="dashboard", healthy=False, detail="dashboard thread exited")
+
+
+def _check_models() -> ComponentHealth:
+    """Check whether the model subsystem can be queried.
+
+    Empty model inventories are liveness-healthy: release readiness gates cover
+    production serving capability, while this monitor reports process health.
     """
     try:
         from vetinari.adapter_manager import get_adapter_manager
 
         am = get_adapter_manager()
         if am is None:
-            # No adapter manager = no inference capability
-            return ComponentHealth(name="models", healthy=False, detail="adapter manager not initialised")
+            return ComponentHealth(name="models", healthy=True, detail="adapter manager not initialised")
         get_available_models = getattr(am, "get_available_models", None)
         available_models = get_available_models() if callable(get_available_models) else None
         model_count = len(available_models) if isinstance(available_models, Sized) else 0
         if model_count == 0:
-            return ComponentHealth(name="models", healthy=False, detail="no models available")
+            return ComponentHealth(name="models", healthy=True, detail="no models available")
         return ComponentHealth(
             name="models",
             healthy=True,
@@ -170,20 +187,10 @@ _cached_backends: list[str] = []
 
 
 def _check_backends() -> ComponentHealth:
-    """Detect available inference backends and auto-register new ones.
-
-    Checks for vLLM and NVIDIA NIMs availability.  When a new backend is
-    detected that isn't already registered with the AdapterManager, it
-    auto-registers it so models served by that backend become available
-    for inference immediately — no restart needed.
-
-    Runs every 5 minutes (not every 30 seconds like health checks) to
-    avoid unnecessary overhead from import probing and HTTP requests.
-    """
+    """Detect available inference backends and register new ones."""
     import time as _time
 
     global _last_backend_check, _cached_backends
-
     now = _time.monotonic()
     if now - _last_backend_check < _BACKEND_CHECK_INTERVAL_S and _cached_backends:
         return ComponentHealth(
@@ -191,27 +198,11 @@ def _check_backends() -> ComponentHealth:
             healthy=True,
             detail=f"backends={_cached_backends} (cached)",
         )
-
     from vetinari.backend_config import load_backend_runtime_config, resolve_provider_fallback_order
 
     runtime_cfg = load_backend_runtime_config()
     backend_cfg = runtime_cfg.get("inference_backend", {})
     backends = ["llama_cpp"]  # Always available as the GGUF fallback
-
-    def _endpoint_available(endpoint: str, backend_name: str) -> bool:
-        try:
-            import httpx
-
-            resp = httpx.get(f"{endpoint.rstrip('/')}/v1/models", timeout=3)
-            return resp.status_code == 200
-        except Exception:
-            logger.warning(
-                "%s endpoint %s not reachable during backend check",
-                backend_name,
-                endpoint,
-            )
-            return False
-
     vllm_cfg = backend_cfg.get("vllm", {})
     vllm_endpoint = vllm_cfg.get("endpoint", "")
     if isinstance(vllm_cfg, dict) and vllm_cfg.get("enabled") and vllm_endpoint:
@@ -222,7 +213,6 @@ def _check_backends() -> ComponentHealth:
             backends.append("vllm")
         else:
             logger.debug("vLLM backend not available")
-
     nim_cfg = backend_cfg.get("nim", {})
     nim_endpoint = nim_cfg.get("endpoint", "")
     if (
@@ -232,52 +222,77 @@ def _check_backends() -> ComponentHealth:
         and _endpoint_available(str(nim_endpoint), "NIM")
     ):
         backends.append("nim")
-
-    # Auto-register newly detected backends with the AdapterManager
     new_backends = set(backends) - set(_cached_backends) - {"llama_cpp"}
     if new_backends:
-        try:
-            from vetinari.adapter_manager import get_adapter_manager
-            from vetinari.adapters.base import ProviderConfig, ProviderType
-
-            am = get_adapter_manager()
-            if "vllm" in new_backends and am.get_provider("vllm") is None:
-                vllm_config = ProviderConfig(
-                    provider_type=ProviderType.VLLM,
-                    name="vllm",
-                    endpoint=str(vllm_endpoint),
-                    extra_config={"gpu_only": True},
-                )
-                am.register_provider(vllm_config, "vllm")
-                logger.info("Auto-detected and registered vLLM backend")
-
-            if "nim" in new_backends and am.get_provider("nim") is None:
-                nim_config = ProviderConfig(
-                    provider_type=ProviderType.NIM,
-                    name="nim",
-                    endpoint=str(nim_endpoint),
-                    extra_config={"gpu_only": True},
-                )
-                am.register_provider(nim_config, "nim")
-                logger.info("Auto-detected and registered NIM backend at %s", nim_endpoint)
-            fallback_order = resolve_provider_fallback_order(runtime_cfg, available_providers=set(am.list_providers()))
-            if fallback_order:
-                am.set_fallback_order(fallback_order)
-        except Exception as exc:
-            logger.warning("Could not auto-register newly detected backends: %s", exc)
-
+        _register_new_backends(new_backends, vllm_endpoint, nim_endpoint, runtime_cfg, resolve_provider_fallback_order)
     _cached_backends = backends
     _last_backend_check = now
-
-    # llama_cpp is always present; additional backends being absent is still
-    # a valid (if limited) configuration, so healthy=True as long as at least
-    # one backend is reachable. The detail string lists what was found so the
-    # operator can see whether env-off or disabled backends are skipped.
     return ComponentHealth(
         name="backends",
         healthy=len(backends) > 0,
         detail=", ".join(backends) if backends else "no backends available",
     )
+
+
+def _check_engine() -> ComponentHealth:
+    """Report engine state without triggering an on-demand start."""
+    try:
+        from vetinari.engine import get_supervisor
+
+        status = get_supervisor().status()
+        detail = status.user_message or f"state={status.state.value}"
+        if status.endpoint:
+            detail = f"{detail}; endpoint={status.endpoint}"
+        return ComponentHealth(name="engine", healthy=status.healthy, detail=detail)
+    except Exception as exc:
+        logger.warning("AM Engine health probe failed closed: %s", exc)
+        return ComponentHealth(name="engine", healthy=False, detail=f"probe failed: {type(exc).__name__}")
+
+
+def _endpoint_available(endpoint: str, backend_name: str) -> bool:
+    try:
+        import httpx
+
+        resp = httpx.get(f"{endpoint.rstrip('/')}/v1/models", timeout=3)
+        return resp.status_code == 200
+    except Exception:
+        logger.warning("%s endpoint %s not reachable during backend check", backend_name, endpoint)
+        return False
+
+
+def _register_new_backends(
+    new_backends: set[str],
+    vllm_endpoint: str,
+    nim_endpoint: str,
+    runtime_cfg: dict[str, Any],
+    resolve_provider_fallback_order: Any,
+) -> None:
+    try:
+        from vetinari.adapter_manager import get_adapter_manager
+        from vetinari.adapters.base import ProviderConfig, ProviderType
+
+        am = get_adapter_manager()
+        if "vllm" in new_backends and am.get_provider("vllm") is None:
+            am.register_provider(
+                ProviderConfig(
+                    ProviderType.VLLM, name="vllm", endpoint=str(vllm_endpoint), extra_config={"gpu_only": True}
+                ),
+                "vllm",
+            )
+            logger.info("Auto-detected and registered vLLM backend")
+        if "nim" in new_backends and am.get_provider("nim") is None:
+            am.register_provider(
+                ProviderConfig(
+                    ProviderType.NIM, name="nim", endpoint=str(nim_endpoint), extra_config={"gpu_only": True}
+                ),
+                "nim",
+            )
+            logger.info("Auto-detected and registered NIM backend at %s", nim_endpoint)
+        fallback_order = resolve_provider_fallback_order(runtime_cfg, available_providers=set(am.list_providers()))
+        if fallback_order:
+            am.set_fallback_order(fallback_order)
+    except Exception as exc:
+        logger.warning("Could not auto-register newly detected backends: %s", exc)
 
 
 # ── Polling loop ───────────────────────────────────────────────────
@@ -298,8 +313,10 @@ def _run_checks() -> list[ComponentHealth]:
         (_check_disk, "disk"),
         (_check_sqlite, "sqlite"),
         (_check_event_bus, "event_bus"),
+        (_check_dashboard_thread, "dashboard"),
         (_check_models, "models"),
         (_check_backends, "backends"),
+        (_check_engine, "engine"),
     ):
         try:
             results.append(check_fn())
@@ -308,6 +325,11 @@ def _run_checks() -> list[ComponentHealth]:
                 "Health check '%s' raised an unexpected exception — reporting unhealthy: %s",
                 name,
                 exc,
+                exc_info=True,
+                extra={
+                    "action": "run_component_health_check",
+                    "impact": "component reported unhealthy",
+                },
             )
             results.append(ComponentHealth(name=name, healthy=False, detail=f"check raised {type(exc).__name__}"))
     return results
@@ -401,6 +423,11 @@ def get_health_snapshot() -> HealthSnapshot:
         components=components,
         checked_at=datetime.now(timezone.utc).isoformat(),
     )
+
+
+def get_status() -> HealthStatus:
+    """Return the current aggregate health tier for readiness callers."""
+    return get_health_snapshot().status
 
 
 def start_health_monitor() -> threading.Thread:

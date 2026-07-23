@@ -1,8 +1,8 @@
-# Vetinari OpenCode Integration Guide
+# AM Workbench OpenCode Integration Guide
 
 ## Overview
 
-This document describes the integration of OpenCode's advanced LLM orchestration patterns into Vetinari. The integration adds five major components inspired by OpenCode's architecture:
+This document describes the integration of OpenCode's advanced LLM orchestration patterns into AM Workbench. The integration adds five major components inspired by OpenCode's architecture:
 
 1. **Execution Context System** - Agent-based execution modes with permission enforcement
 2. **Standardized Tool Interface** - Unified tool definitions with metadata and safety checks
@@ -23,7 +23,7 @@ This document describes the integration of OpenCode's advanced LLM orchestration
 | `vetinari/execution_context.py` | 450+ | Execution modes and context management |
 | `vetinari/tool_interface.py` | 550+ | Tool base class and registry |
 | `vetinari/adapter_manager.py` | 600+ | Multi-provider orchestration |
-| `vetinari/verification.py` | 700+ | Output verification and validation |
+| `vetinari/verification/claim_verifier.py` | current module | Fail-closed claim verification hooks for Inspector outcome signals |
 | `vetinari/cli.py` and `vetinari/cli_*.py` | current package CLI | Enhanced CLI with global execution mode and subcommands |
 
 ### Capabilities Before vs. After
@@ -45,7 +45,7 @@ This document describes the integration of OpenCode's advanced LLM orchestration
 
 ## 1. Execution Context System
 
-Inspired by OpenCode's agent model (build/plan), Vetinari supports multiple execution modes with distinct permission levels:
+Inspired by OpenCode's agent model (build/plan), AM Workbench supports multiple execution modes with distinct permission levels:
 
 - **PLANNING Mode** (Read-only): For analysis, planning, and code exploration
 - **EXECUTION Mode** (Full access): For implementing tasks and making changes
@@ -56,9 +56,9 @@ Inspired by OpenCode's agent model (build/plan), Vetinari supports multiple exec
 #### `ExecutionMode`
 ```python
 class ExecutionMode(Enum):
-    PLANNING = "planning"      # Read-only exploration
-    EXECUTION = "execution"    # Full access
-    SANDBOX = "sandbox"        # Restricted testing
+    PLANNING = "planning"  # Read-only exploration
+    EXECUTION = "execution"  # Full access
+    SANDBOX = "sandbox"  # Restricted testing
 ```
 
 #### `ToolPermission`
@@ -127,6 +127,7 @@ Tools are the fundamental units of work. The `Tool` base class provides standard
 from vetinari.tool_interface import Tool, ToolMetadata, ToolParameter, ToolCategory, ToolResult
 from vetinari.execution_context import ExecutionMode, ToolPermission
 
+
 class FileReadTool(Tool):
     def __init__(self):
         metadata = ToolMetadata(
@@ -145,7 +146,7 @@ class FileReadTool(Tool):
 
     def execute(self, path: str, encoding: str = "utf-8", **kwargs) -> ToolResult:
         try:
-            with open(path, 'r', encoding=encoding) as f:
+            with open(path, "r", encoding=encoding) as f:
                 content = f.read()
             return ToolResult(success=True, output=content)
         except Exception as e:
@@ -199,7 +200,7 @@ manager.register_provider(config, "openai")
 # Select best provider for task
 provider_name, model_info = manager.select_provider_for_task(
     task_requirements={"required_capabilities": ["code_gen"], "input_tokens": 2000, "max_latency_ms": 10000},
-    preferred_provider="openai"
+    preferred_provider="openai",
 )
 
 # Run inference with automatic fallback
@@ -210,7 +211,15 @@ response = manager.infer(request, provider_name=provider_name, fallback_on_error
 ### Adding a New Provider
 
 ```python
-from vetinari.adapters.base import ProviderAdapter, ProviderConfig, ProviderType, ModelInfo, InferenceRequest, InferenceResponse
+from vetinari.adapters.base import (
+    ProviderAdapter,
+    ProviderConfig,
+    ProviderType,
+    ModelInfo,
+    InferenceRequest,
+    InferenceResponse,
+)
+
 
 class CustomProviderAdapter(ProviderAdapter):
     def discover_models(self) -> List[ModelInfo]: ...
@@ -218,8 +227,10 @@ class CustomProviderAdapter(ProviderAdapter):
     def infer(self, request: InferenceRequest) -> InferenceResponse: ...
     def get_capabilities(self) -> Dict[str, List[str]]: ...
 
+
 # Register
 from vetinari.adapters.registry import AdapterRegistry
+
 AdapterRegistry.register_adapter(ProviderType.CUSTOM, CustomProviderAdapter)
 ```
 
@@ -227,7 +238,7 @@ AdapterRegistry.register_adapter(ProviderType.CUSTOM, CustomProviderAdapter)
 
 ## 4. Enhanced CLI
 
-Vetinari exposes execution mode as a global flag and task execution as a `run` subcommand. Historical top-level flags such as `--task`, `--providers`, `--health-check`, and `--context` are not live entry points.
+AM Workbench exposes execution mode as a global flag and task execution as a `run` subcommand. Historical top-level flags such as `--task`, `--providers`, `--health-check`, and `--context` are not live entry points.
 
 ```bash
 # Run in planning mode (read-only exploration)
@@ -253,41 +264,43 @@ vetinari models list
 
 ## 5. Verification Pipeline
 
-Comprehensive post-execution verification: code syntax validity, security (no secrets, no dangerous patterns), safe imports, JSON structure validation, and custom verification rules.
-
-### Verification Levels
-
-| Level | Description |
-|-------|-------------|
-| NONE | No verification |
-| BASIC | Basic checks only |
-| STANDARD | Standard checks (default) |
-| STRICT | Strict checks |
-| PARANOID | Maximum checks |
-
-### Built-in Verifiers
-
-- **CodeSyntaxVerifier** - Python syntax validation
-- **SecurityVerifier** - Detects secrets and dangerous patterns (11+ secret patterns)
-- **ImportVerifier** - Safe import validation
-- **JSONStructureVerifier** - JSON structure validation
+The live verification surface is the Inspector fail-closed claim verifier. It rejects unsupported, stale, unverifiable, contradictory, bare-attested, or LLM-only high-accuracy outcome signals.
 
 ### Usage
 
 ```python
-from vetinari.verification import get_verifier_pipeline
+from datetime import datetime, timezone
 
-pipeline = get_verifier_pipeline()
-results = pipeline.verify(model_output)
-summary = pipeline.get_summary(results)
+from vetinari.agents.contracts import OutcomeSignal, Provenance, ToolEvidence
+from vetinari.types import EvidenceBasis
+from vetinari.verification.claim_verifier import verify_claim_fail_closed
 
-if summary["overall_status"] == "PASSED":
-    print("Verification passed")
-else:
-    for check_name, check_result in results.items():
-        if check_result.issues:
-            for issue in check_result.issues:
-                print(f"  - {issue.severity}: {issue.message}")
+signal = OutcomeSignal(
+    passed=True,
+    score=1.0,
+    basis=EvidenceBasis.TOOL_EVIDENCE,
+    tool_evidence=(
+        ToolEvidence(
+            tool_name="pytest",
+            command="python -m pytest tests/test_coding_agent.py",
+            exit_code=0,
+            passed=True,
+        ),
+    ),
+    provenance=Provenance(
+        source="local-validation",
+        timestamp_utc=datetime.now(timezone.utc).isoformat(),
+        tool_name="pytest",
+    ),
+)
+
+verified = verify_claim_fail_closed(
+    signal,
+    claimed_path="tests/test_coding_agent.py",
+    claim_text="example test exists and is covered by tool evidence",
+)
+if not verified.passed:
+    raise RuntimeError("; ".join(verified.issues))
 ```
 
 ---
@@ -296,7 +309,7 @@ else:
 
 ```
 +----------------------------------------------------------+
-|                   Vetinari CLI                             |
+|                 AM Workbench CLI                           |
 |         Enhanced with Execution Modes & Status             |
 +--------------------+-------------------------------------+
                      |
@@ -356,16 +369,20 @@ else:
 class MySkill:
     def execute(self, params): ...
 
+
 # NEW:
 from vetinari.tool_interface import Tool, ToolMetadata, ToolCategory
 from vetinari.execution_context import ExecutionMode, ToolPermission
 
+
 class MyTool(Tool):
     def __init__(self):
         metadata = ToolMetadata(
-            name="my_tool", description="My tool description",
+            name="my_tool",
+            description="My tool description",
             category=ToolCategory.CODE_EXECUTION,
-            parameters=[...], required_permissions=[...],
+            parameters=[...],
+            required_permissions=[...],
             allowed_modes=[ExecutionMode.EXECUTION],
         )
         super().__init__(metadata)

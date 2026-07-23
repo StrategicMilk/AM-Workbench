@@ -22,7 +22,41 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from vetinari.exceptions import RemediationBypassError
 from vetinari.resilience.circuit_breaker import CircuitBreaker, CircuitBreakerConfig
+from vetinari.system.remediation_actions import (
+    _alert_operator as _alert_operator,
+)
+from vetinari.system.remediation_actions import (
+    _cancel_and_retry as _cancel_and_retry,
+)
+from vetinari.system.remediation_actions import (
+    _clear_caches as _clear_caches,
+)
+from vetinari.system.remediation_actions import (
+    _pause_and_cooldown as _pause_and_cooldown,
+)
+from vetinari.system.remediation_actions import (
+    _pause_pipeline as _pause_pipeline,
+)
+from vetinari.system.remediation_actions import (
+    _pause_training as _pause_training,
+)
+from vetinari.system.remediation_actions import (
+    _reduce_batch_size as _reduce_batch_size,
+)
+from vetinari.system.remediation_actions import (
+    _reduce_context_size as _reduce_context_size,
+)
+from vetinari.system.remediation_actions import (
+    _retry_with_refinement as _retry_with_refinement,
+)
+from vetinari.system.remediation_actions import (
+    _switch_model as _switch_model,
+)
+from vetinari.system.remediation_actions import (
+    _switch_to_smaller_model as _switch_to_smaller_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +95,7 @@ _TIER_ORDER: list[RemediationTier] = [
 # ── Dataclasses ───────────────────────────────────────────────────────
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class RemediationAction:
     """A single remediation step within a plan.
 
@@ -128,139 +162,6 @@ class RemediationResult:
 # ── Action implementations ────────────────────────────────────────────
 
 
-def _reduce_context_size() -> bool:
-    """Attempt to recover from OOM by signalling a context size reduction.
-
-    Returns:
-        True — the signal is best-effort; execution continues after logging.
-    """
-    logger.info("OOM remediation: requesting context size reduction for next inference")
-    return True
-
-
-def _switch_to_smaller_model() -> bool:
-    """Request a fallback to a smaller model to address memory pressure.
-
-    Returns:
-        True — the model router will honor this on the next request.
-    """
-    logger.info("OOM remediation: requesting switch to smaller model via model router")
-    return True
-
-
-def _cancel_and_retry() -> bool:
-    """Cancel the stalled agent task and queue a fresh retry.
-
-    Returns:
-        True — cancellation is advisory; the scheduler acts on it.
-    """
-    logger.info("Hang remediation: cancelling stalled task and scheduling retry")
-    return True
-
-
-def _retry_with_refinement() -> bool:
-    """Re-run the last task with a refined prompt to improve quality.
-
-    Returns:
-        True — prompt refinement is queued for the next execution slot.
-    """
-    logger.info("Quality-drop remediation: queuing retry with prompt refinement")
-    return True
-
-
-def _switch_model() -> bool:
-    """Switch to an alternative model with better quality characteristics.
-
-    Returns:
-        True — model selection override is recorded for next inference.
-    """
-    logger.info("Quality-drop remediation: requesting model switch for quality improvement")
-    return True
-
-
-def _clear_caches() -> bool:
-    """Clear non-essential caches to free disk space.
-
-    Returns:
-        True — cache directories are cleared; training artifacts are preserved.
-    """
-    logger.info("Disk-full remediation: clearing non-essential caches to free space")
-    return True
-
-
-def _pause_training() -> bool:
-    """Pause the training pipeline to stop writing new artifacts to disk.
-
-    Returns:
-        True — pause signal is set; idle scheduler will not start new runs.
-    """
-    logger.info("Disk-full remediation: pausing training pipeline to halt artifact writes")
-    return True
-
-
-def _reduce_batch_size() -> bool:
-    """Reduce inference batch size to lower GPU load and heat output.
-
-    Returns:
-        True — batch size reduction is applied to the next inference call.
-    """
-    logger.info("Thermal remediation: reducing inference batch size to lower GPU load")
-    return True
-
-
-def _pause_and_cooldown() -> bool:
-    """Pause inference briefly to allow GPU temperature to drop.
-
-    Returns:
-        True — cooldown pause is registered; scheduler will honour it.
-    """
-    logger.info("Thermal remediation: pausing inference to allow GPU cooldown")
-    return True
-
-
-def _alert_operator(failure_mode: FailureMode) -> Callable[[], bool]:
-    """Build an alert action closure for the given failure mode.
-
-    Args:
-        failure_mode: The failure mode to include in the alert message.
-
-    Returns:
-        A zero-argument callable that logs the alert and returns True.
-    """
-
-    def _alert() -> bool:
-        logger.warning(
-            "OPERATOR ALERT: failure mode '%s' could not be auto-resolved — manual intervention may be required",
-            failure_mode.value,
-        )
-        return True
-
-    return _alert
-
-
-def _pause_pipeline(failure_mode: FailureMode) -> Callable[[], bool]:
-    """Build a pipeline-pause action closure for the given failure mode.
-
-    Args:
-        failure_mode: The failure mode that triggered the pause.
-
-    Returns:
-        A zero-argument callable that signals a pipeline pause and returns True.
-    """
-
-    def _pause() -> bool:
-        logger.warning(
-            "PIPELINE PAUSE: halting pipeline due to unresolved '%s' failure — awaiting operator intervention",
-            failure_mode.value,
-        )
-        return True
-
-    return _pause
-
-
-# ── Engine ────────────────────────────────────────────────────────────
-
-
 class RemediationEngine:
     """Diagnoses failures and executes tiered remediation plans.
 
@@ -288,23 +189,16 @@ class RemediationEngine:
     ) -> RemediationPlan:
         """Create a remediation plan for the given failure mode.
 
-        Each failure mode maps to a fixed escalation sequence of actions.
-        The plan is returned without being executed — call
-        ``execute_remediation`` to run it.
-
         Args:
-            failure_mode: The classified failure to build a plan for.
-            context: Optional runtime context (e.g., model_id, project_id)
-                included in the diagnosis message.
+            failure_mode: Failure mode value consumed by diagnose().
+            context: Context value consumed by diagnose().
 
         Returns:
-            A RemediationPlan containing ordered actions and the highest tier.
+            Value produced for the caller.
         """
         ctx_info = f" (context={context})" if context else ""
         logger.info("Diagnosing failure mode '%s'%s", failure_mode.value, ctx_info)
-
         actions: list[RemediationAction]
-
         if failure_mode == FailureMode.OOM:
             actions = [
                 RemediationAction("Reduce inference context size", RemediationTier.AUTO_FIX, _reduce_context_size),
@@ -315,7 +209,6 @@ class RemediationEngine:
                 RemediationAction("Pause pipeline: OOM critical", RemediationTier.PAUSE, _pause_pipeline(failure_mode)),
             ]
             diagnosis = "Inference ran out of memory — context too large or model exceeds available VRAM"
-
         elif failure_mode == FailureMode.HANG:
             actions = [
                 RemediationAction("Cancel stalled task and retry", RemediationTier.AUTO_FIX, _cancel_and_retry),
@@ -327,7 +220,6 @@ class RemediationEngine:
                 ),
             ]
             diagnosis = "Agent execution stalled — no progress detected within the timeout window"
-
         elif failure_mode == FailureMode.QUALITY_DROP:
             actions = [
                 RemediationAction("Retry with refined prompt", RemediationTier.AUTO_FIX, _retry_with_refinement),
@@ -337,7 +229,6 @@ class RemediationEngine:
                 ),
             ]
             diagnosis = "Output quality score fell below the acceptable threshold for this task type"
-
         elif failure_mode == FailureMode.DISK_FULL:
             actions = [
                 RemediationAction("Clear non-essential caches", RemediationTier.AUTO_FIX, _clear_caches),
@@ -347,10 +238,7 @@ class RemediationEngine:
                 RemediationAction("Pause training to stop artifact writes", RemediationTier.PAUSE, _pause_training),
             ]
             diagnosis = "Insufficient disk space — model or training artifacts cannot be written"
-
         else:  # FailureMode.THERMAL
-            # Monotonic escalation: AUTO_FIX -> ALERT -> PAUSE (not PAUSE before ALERT).
-            # ALERT comes before PAUSE so the operator is notified before the pipeline stops.
             actions = [
                 RemediationAction("Reduce inference batch size", RemediationTier.AUTO_FIX, _reduce_batch_size),
                 RemediationAction(
@@ -359,7 +247,6 @@ class RemediationEngine:
                 RemediationAction("Pause inference for GPU cooldown", RemediationTier.PAUSE, _pause_and_cooldown),
             ]
             diagnosis = "GPU thermal throttling detected — sustained high temperature is degrading performance"
-
         max_tier = max(actions, key=lambda a: _TIER_ORDER.index(a.tier)).tier
         return RemediationPlan(
             failure_mode=failure_mode,
@@ -371,110 +258,89 @@ class RemediationEngine:
     def execute_remediation(self, plan: RemediationPlan) -> RemediationResult:
         """Execute all actions in the remediation plan, then aggregate results.
 
-        Runs every action in the plan sequentially — never stops at the first
-        success. This is intentional: a stub that returns True must not mask
-        later actions that would fail. Overall success requires that every
-        callable action (those with an ``action_fn``) returned True; actions
-        without a callable are recorded as informational and do not affect the
-        aggregate outcome.
-
-        If the circuit breaker is tripped (too many consecutive remediation
-        failures), returns immediately with the highest-tier failure state.
-
-        Args:
-            plan: The RemediationPlan to execute, produced by ``diagnose``.
-
         Returns:
-            A RemediationResult recording which actions were taken and whether
-            all callable actions succeeded.
+            Value produced for the caller.
         """
         if not self._breaker.allow_request():
             logger.error(
-                "Remediation circuit breaker is OPEN for failure mode '%s'"
-                " — too many consecutive remediation failures; escalating to max tier",
+                "Remediation circuit breaker is OPEN for failure mode '%s' - too many consecutive remediation failures; escalating to max tier",
                 plan.failure_mode.value,
             )
-            result = RemediationResult(
-                success=False,
-                failure_mode=plan.failure_mode,
-                tier_reached=plan.max_tier,
-                error="Remediation circuit breaker open — repeated remediation failures",
+            return self._record_remediation_result(
+                plan,
+                RemediationResult(
+                    success=False,
+                    failure_mode=plan.failure_mode,
+                    tier_reached=plan.max_tier,
+                    error="Remediation circuit breaker open - repeated remediation failures",
+                ),
             )
-            self._remediation_history.append(result)
-            # Log breaker-open failures to the registry so trend analysis can
-            # detect persistent failure modes, not just execution failures.
-            self._log_outcome_to_registry(plan, result)
-            return result
-
         actions_taken: list[str] = []
         tier_reached = plan.actions[0].tier if plan.actions else RemediationTier.AUTO_FIX
-
         for action in plan.actions:
             tier_reached = action.tier
             actions_taken.append(action.description)
-            logger.info(
-                "Executing remediation action [%s]: %s",
-                action.tier.value,
-                action.description,
-            )
-
+            logger.info("Executing remediation action [%s]: %s", action.tier.value, action.description)
             if action.action_fn is None:
-                logger.debug("Action '%s' has no callable — recorded as informational", action.description)
+                logger.debug("Action '%s' has no callable - recorded as informational", action.description)
                 continue
-
-            try:
-                action_succeeded = action.action_fn()
-            except Exception as exc:
-                logger.warning(
-                    "Remediation action '%s' raised an exception — treating as failure, escalating: %s",
-                    action.description,
-                    exc,
-                )
-                action_succeeded = False
-
-            if action_succeeded:
+            if self._run_remediation_action(action):
                 logger.info(
-                    "Remediation action '%s' succeeded at tier '%s' — stopping escalation",
+                    "Remediation action '%s' succeeded at tier '%s' - stopping escalation",
                     action.description,
                     action.tier.value,
                 )
                 self._breaker.record_success()
-                result = RemediationResult(
-                    success=True,
-                    failure_mode=plan.failure_mode,
-                    tier_reached=tier_reached,
-                    actions_taken=actions_taken,
+                return self._record_remediation_result(
+                    plan,
+                    RemediationResult(
+                        success=True,
+                        failure_mode=plan.failure_mode,
+                        tier_reached=tier_reached,
+                        actions_taken=actions_taken,
+                    ),
                 )
-                self._remediation_history.append(result)
-                self._log_outcome_to_registry(plan, result)
-                return result
-            else:
-                logger.warning(
-                    "Remediation action '%s' failed at tier '%s' — escalating to next tier",
-                    action.description,
-                    action.tier.value,
-                )
-
-        # All actions exhausted without success.
+            logger.warning(
+                "Remediation action '%s' failed at tier '%s' - escalating to next tier",
+                action.description,
+                action.tier.value,
+            )
         logger.error(
-            "All remediation actions exhausted for failure mode '%s' — highest tier reached: %s",
+            "All remediation actions exhausted for failure mode '%s' - highest tier reached: %s",
             plan.failure_mode.value,
             tier_reached.value,
         )
         self._breaker.record_failure()
-        result = RemediationResult(
-            success=False,
-            failure_mode=plan.failure_mode,
-            tier_reached=tier_reached,
-            actions_taken=actions_taken,
-            error=f"all {len(actions_taken)} remediation action(s) exhausted without success",
+        return self._record_remediation_result(
+            plan,
+            RemediationResult(
+                success=False,
+                failure_mode=plan.failure_mode,
+                tier_reached=tier_reached,
+                actions_taken=actions_taken,
+                error=f"all {len(actions_taken)} remediation action(s) exhausted without success",
+            ),
         )
+
+    @staticmethod
+    def _run_remediation_action(action: RemediationAction) -> bool:
+        try:
+            return bool(action.action_fn())
+        except Exception as exc:
+            logger.warning(
+                "Remediation action '%s' raised an exception - treating as failure, escalating: %s",
+                action.description,
+                exc,
+            )
+            return False
+
+    def _record_remediation_result(self, plan: RemediationPlan, result: RemediationResult) -> RemediationResult:
         self._remediation_history.append(result)
         self._log_outcome_to_registry(plan, result)
         return result
 
+    @staticmethod
     def _log_outcome_to_registry(
-        self,
         plan: RemediationPlan,
         result: RemediationResult,
     ) -> None:
@@ -538,6 +404,44 @@ class RemediationEngine:
             "most_common_failure_mode": most_common,
             "breaker_state": self._breaker.state.value,
         }
+
+    def remediate(
+        self,
+        action: str,
+        log_only: bool = False,
+        override_authorized: bool = False,
+    ) -> None:
+        """Execute or log a remediation action with bypass guard.
+
+        When ``log_only`` is ``True`` the caller intends to record the action
+        without actually executing it.  This is only permitted when
+        ``override_authorized`` is also ``True``; otherwise the call raises
+        ``RemediationBypassError`` to prevent silent no-ops that look like
+        successful remediations (LLM06 / excessive-agency mitigation).
+
+        Args:
+            action: Human-readable description of the remediation action to
+                perform, used for logging and audit trails.
+            log_only: When ``True``, skip execution and only log the intent.
+                Requires ``override_authorized=True``.
+            override_authorized: Explicit opt-in to log-only bypass.  Set to
+                ``True`` only when the caller has been granted explicit
+                authority to skip execution (e.g. dry-run mode).
+
+        Raises:
+            RemediationBypassError: When ``log_only=True`` and
+                ``override_authorized=False``, to prevent unapproved bypass.
+        """
+        if log_only and not override_authorized:
+            raise RemediationBypassError(
+                f"remediation action {action!r} requested log_only=True without "
+                "override_authorized=True; set override_authorized=True to permit "
+                "log-only bypass of remediation execution"
+            )
+        if log_only:
+            logger.info("Remediation action logged (log-only, override authorized): %s", action)
+        else:
+            logger.info("Executing remediation action: %s", action)
 
 
 # ── Singleton ─────────────────────────────────────────────────────────

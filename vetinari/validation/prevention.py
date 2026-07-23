@@ -13,6 +13,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 MIN_DESCRIPTION_LENGTH = 20  # characters; shorter descriptions are too vague
@@ -22,7 +23,7 @@ TOKEN_BUDGET_THRESHOLD = 0.9  # fail if estimated tokens exceed 90% of budget
 # ── Dataclasses ────────────────────────────────────────────────────────────────
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class CheckResult:
     """Result of a single prevention check.
 
@@ -110,7 +111,8 @@ class PreventionGate:
 
     # ── Individual checks ──────────────────────────────────────────────────────
 
-    def _check_acceptance_criteria(self, criteria: list[str]) -> CheckResult:
+    @staticmethod
+    def _check_acceptance_criteria(criteria: list[str]) -> CheckResult:
         """Fail if no acceptance criteria are provided.
 
         Args:
@@ -127,7 +129,8 @@ class PreventionGate:
         logger.info("_check_acceptance_criteria: passed (%d criteria)", len(criteria))
         return CheckResult(passed=True)
 
-    def _check_files_exist(self, files: list[str]) -> CheckResult:
+    @staticmethod
+    def _check_files_exist(files: list[str]) -> CheckResult:
         """Fail if any referenced file does not exist on disk.
 
         Args:
@@ -145,8 +148,8 @@ class PreventionGate:
         logger.info("_check_files_exist: all %d files exist", len(files))
         return CheckResult(passed=True)
 
+    @staticmethod
     def _check_context_completeness(
-        self,
         task_description: str,
         acceptance_criteria: list[str],
     ) -> CheckResult:
@@ -172,8 +175,8 @@ class PreventionGate:
         logger.info("_check_context_completeness: passed")
         return CheckResult(passed=True)
 
+    @staticmethod
     def _check_model_capability(
-        self,
         model_caps: set[str],
         required_caps: set[str],
     ) -> CheckResult:
@@ -195,7 +198,8 @@ class PreventionGate:
         logger.info("_check_model_capability: all required capabilities present")
         return CheckResult(passed=True)
 
-    def _check_token_budget(self, estimated: int, budget: int) -> CheckResult:
+    @staticmethod
+    def _check_token_budget(estimated: int, budget: int) -> CheckResult:
         """Fail if estimated token usage exceeds 90% of the token budget.
 
         Args:
@@ -217,8 +221,8 @@ class PreventionGate:
         )
         return CheckResult(passed=True)
 
+    @staticmethod
     def _check_no_concurrent_conflicts(
-        self,
         referenced_files: list[str],
         active_scopes: set[str],
     ) -> CheckResult:
@@ -242,7 +246,8 @@ class PreventionGate:
 
     # ── Recommendation ─────────────────────────────────────────────────────────
 
-    def _recommend_action(self, failures: list[CheckResult]) -> str:
+    @staticmethod
+    def _recommend_action(failures: list[CheckResult]) -> str:
         """Return a single recommended action based on the set of failures.
 
         Priority order when multiple failure types are present:

@@ -34,15 +34,15 @@ Monitoring and Alerting applies Statistical Process Control (SPC) techniques to 
 | Parameter       | Type            | Required | Description                                                        |
 |-----------------|-----------------|----------|--------------------------------------------------------------------|
 | task            | string          | Yes      | What to monitor and the monitoring objective                       |
-| metric_data     | list[float]     | No       | Time series of metric observations                                 |
+| metric_data     | list[float]     | Yes      | Time series of metric observations                                 |
 | metric_name     | string          | No       | Name of the metric being monitored                                 |
-| baseline_data   | list[float]     | No       | Historical baseline for control chart calculation                  |
+| baseline_data   | list[float]     | Yes      | Historical baseline for control chart calculation                  |
 | alert_config    | dict            | No       | Alert configuration (channels, severity levels, cooldown)          |
 | context         | dict            | No       | System context, known events, maintenance windows                 |
 
 ## Process Steps
 
-1. **Metric collection** -- Gather time-series data for the target metric. Sources include:
+1. **Metric collection** -- Require caller-provided `metric_data` observations and `baseline_data`; do not compute SPC limits from descriptions alone. If either series is missing or has fewer than 20 numeric points, return `success=false` with an insufficient-data reason. Sources include:
    - Task execution durations (per mode, per agent)
    - Quality scores (Inspector pass rates, review scores)
    - Token usage and cost per task

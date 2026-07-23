@@ -38,12 +38,13 @@ __all__ = [
 
 import ast
 import logging
-from dataclasses import dataclass, field  # noqa: VET123 - barrel export preserves public import compatibility
-from typing import Any  # noqa: VET123 - barrel export preserves public import compatibility
+from dataclasses import dataclass, field
+from typing import Any
 
 from vetinari.exceptions import ExecutionError
 
 logger = logging.getLogger(__name__)
+
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -56,7 +57,7 @@ PASS_THRESHOLD = 0.5  # Minimum score for an evaluation to be considered passing
 
 
 @dataclass
-class EvalResult:
+class PlanEvalResult:
     """Result of a single evaluation check.
 
     Attributes:
@@ -74,6 +75,9 @@ class EvalResult:
     def __repr__(self) -> str:
         """Show key identifying fields for debugging."""
         return f"EvalResult(score={self.score!r}, passed={self.passed!r})"
+
+
+EvalResult = PlanEvalResult
 
 
 # ── Plan Evaluation ────────────────────────────────────────────────────────────
@@ -107,9 +111,30 @@ def evaluate_plan_quality(plan_dict: dict[str, Any]) -> EvalResult:
     penalties: list[str] = []
     score_components: list[float] = []
 
+    if not isinstance(plan_dict, dict):
+        return _plan_hard_fail(metrics, "plan must be a dict")
+
     tasks: list[dict[str, Any]] = plan_dict.get("tasks", [])
     dependencies: dict[str, list[str]] = plan_dict.get("dependencies", {})
     goal: str = plan_dict.get("goal", "")
+
+    if not isinstance(tasks, list):
+        return _plan_hard_fail(metrics, "tasks must be a list")
+    if not all(isinstance(task, dict) for task in tasks):
+        return _plan_hard_fail(metrics, "tasks must contain dict entries")
+    missing_ids = [index for index, task in enumerate(tasks) if not str(task.get("id", "")).strip()]
+    if missing_ids:
+        metrics["missing_task_id_indexes"] = missing_ids
+        return _plan_hard_fail(metrics, f"missing task id at indexes: {missing_ids}")
+    if not isinstance(dependencies, dict):
+        return _plan_hard_fail(metrics, "dependencies must be a dict")
+    malformed_dependency_sources = [str(src) for src, prereqs in dependencies.items() if not isinstance(prereqs, list)]
+    if malformed_dependency_sources:
+        metrics["malformed_dependency_sources"] = malformed_dependency_sources
+        return _plan_hard_fail(
+            metrics,
+            f"dependency values must be lists: {sorted(malformed_dependency_sources)}",
+        )
 
     # ── Dimension 1: Task count ────────────────────────────────────────────
     task_count = len(tasks)
@@ -171,6 +196,20 @@ def evaluate_plan_quality(plan_dict: dict[str, Any]) -> EvalResult:
 
     logger.debug("evaluate_plan_quality -> score=%.2f passed=%s penalties=%s", composite, passed, penalties)
     return EvalResult(score=composite, passed=passed, reasoning=reasoning, metrics=metrics)
+
+
+def _plan_hard_fail(metrics: dict[str, Any], reason: str) -> EvalResult:
+    """Return a zero-score plan result for malformed or non-actionable plans."""
+    metrics.setdefault("task_count", 0)
+    metrics["task_score"] = 0.0
+    metrics["dependency_score"] = 0.0
+    metrics["goal_score"] = 0.0
+    return EvalResult(
+        score=0.0,
+        passed=False,
+        reasoning=f"Score 0.00. {reason}.",
+        metrics=metrics,
+    )
 
 
 def _score_dependencies(task_ids: set[str], dependencies: dict[str, list[str]]) -> tuple[float, list[str]]:
@@ -239,7 +278,7 @@ def _has_cycle(dependencies: dict[str, list[str]]) -> bool:
 # ── Code Evaluation ────────────────────────────────────────────────────────────
 
 
-def evaluate_code_quality(code: str) -> EvalResult:
+def evaluate_code_quality(code: str | None) -> EvalResult:
     """Score a Python code string produced by a builder agent.
 
     The code is evaluated across three dimensions:
@@ -263,6 +302,17 @@ def evaluate_code_quality(code: str) -> EvalResult:
     penalties: list[str] = []
     score_components: list[float] = []
 
+    if not isinstance(code, str) or not code.strip():
+        metrics["syntax_score"] = 0.0
+        metrics["import_score"] = 0.0
+        metrics["function_score"] = 0.0
+        return EvalResult(
+            score=0.0,
+            passed=False,
+            reasoning="Score 0.00. Code is empty.",
+            metrics=metrics,
+        )
+
     # ── Dimension 1: Syntax validity ──────────────────────────────────────
     tree: ast.Module | None = None
     try:
@@ -272,6 +322,17 @@ def evaluate_code_quality(code: str) -> EvalResult:
         syntax_score = 0.0
         penalties.append(f"syntax error: {exc.msg} (line {exc.lineno})")
         logger.warning("evaluate_code_quality: SyntaxError: %s", exc)
+
+    if tree is not None and not tree.body:
+        metrics["syntax_score"] = 0.0
+        metrics["import_score"] = 0.0
+        metrics["function_score"] = 0.0
+        return EvalResult(
+            score=0.0,
+            passed=False,
+            reasoning="Score 0.00. Code has no executable statements.",
+            metrics=metrics,
+        )
 
     score_components.append(syntax_score * 0.50)
     metrics["syntax_score"] = syntax_score

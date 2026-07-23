@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0",
+  "version": "1.2.0",
+  "channel": "stable",
+  "release_notes": "Stable Workbench release with update safety metadata.",
+  "public_export": {
+    "export_ref": "public-export:am-workbench:1.2.0",
+    "source_commit": "example-stable-commit",
+    "generated_at_utc": "2026-05-01T00:00:00Z"
+  },
+  "artifacts": [
+    {
+      "platform": "windows-x64",
+      "url": "https://example.invalid/workbench/1.2.0/windows-x64.zip",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size_bytes": 1024,
+      "local_path": "artifact.zip"
+    }
+  ],
+  "integrity": {
+    "checksum_algorithm": "sha256",
+    "require_signature": true,
+    "signature_evidence": "sigstore:example-stable"
+  },
+  "published_at_utc": "2026-05-01T00:00:00Z",
+  "rollback_from_version": "1.1.0"
+}

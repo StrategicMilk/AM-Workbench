@@ -279,11 +279,11 @@ def gate_to_signal(decision: GateDecision, model_id: str, task_type: str) -> Suc
     Returns:
         SuccessSignal with binary outcome and quality weight.
     """
-    return SuccessSignal(
+    return SuccessSignal.from_quality_score(
+        quality_score=decision.score,
+        success=decision.passed,
         model_id=model_id,
         task_type=task_type,
-        success=decision.passed,
-        quality_weight=decision.score,
     )
 
 

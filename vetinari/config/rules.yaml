@@ -1,26 +1,25 @@
 agents:
   BUILDER: []
   FOREMAN:
-  - Decompose goals into precise, dependency-aware task DAGs with clear inputs and
-    outputs.
-  - Always check existing ADRs before proposing work that might contradict accepted
-    decisions.
+  - Decompose goals into precise, dependency-aware task DAGs with clear inputs and outputs.
+  - Always check existing ADRs before proposing work that might contradict accepted decisions.
   INSPECTOR:
   - Require a minimum quality gate score of 0.7 before approving any deliverable.
   - Report all security findings with CWE IDs and severity levels (critical/high/medium/low).
   - Generate regression tests for every bug fix before marking the issue resolved.
+  - 'rule_id: inspector-correction-quality-gate; description: Retry or escalate correction tasks when
+    Inspector quality falls below the configured critical threshold; source_error_class: QualityGateFailure'
+  - 'rule_id: inspector-correction-input-guardrail; description: Treat scanner-blocked correction inputs
+    as fail-closed safety events that require sanitization or escalation; source_error_class: InputGuardrailViolation'
   WORKER:
-  - Target a minimum verification score of 0.8 for all deliverables before marking
-    complete.
+  - Target a minimum verification score of 0.8 for all deliverables before marking complete.
   - Implement all assigned tasks fully; no stubs, placeholders, or partial implementations.
   - Use type hints, docstrings, error handling, and logging in all generated code.
 global: []
 global_system_prompt: ''
 models:
   default: []
-  fuzz-model_id: []
   model-1: []
 projects:
-  fuzz-project-id: []
   proj-1: []
 proposed: {}

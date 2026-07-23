@@ -165,7 +165,7 @@ The skill produces a best practices report:
     "compliance_rate": 0.87
   },
   "suggestions": [
-    "Run 'python scripts/quality/check_vetinari_rules.py vetinari/orchestration/stagnation.py' to get automated VET rule output"
+    "Run 'python scripts/check_vetinari_rules.py vetinari/orchestration/stagnation.py' to get automated VET rule output"
   ]
 }
 ```

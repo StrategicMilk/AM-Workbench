@@ -14,10 +14,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+logger = logging.getLogger(__name__)
+
+
 if TYPE_CHECKING:
     from vetinari.ontology import SuccessSignal
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -88,10 +89,11 @@ class ThompsonBetaArm:
                 increment so higher-quality results have more influence.
             success: Whether the task was considered successful.
         """
+        quality_score = max(0.0, min(1.0, quality_score))
         if success:
             self.alpha += quality_score
         else:
-            self.beta += 1.0 - quality_score
+            self.beta += max(quality_score, 1.0 - quality_score)
         self.total_pulls += 1
         self.last_updated = datetime.now(timezone.utc).isoformat()
 

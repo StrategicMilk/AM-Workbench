@@ -1,0 +1,49 @@
+schema_version: "1.0"
+rubric_id: "backend-parity-rubric"
+owner: "audit-suite-pack-0j-backend-parity-lane"
+stale_after: "2026-08-25"
+purpose: >
+  Define the equivalent evidence dimensions used by the backend-parity-audit
+  lane so all active first-class backends are checked for the same adapter,
+  capability, lease, cost, and error-handling surfaces.
+first_class_backends:
+  - am_engine
+  - vllm
+  - sglang
+  - llama_cpp
+  - faster_whisper
+  - comfyui
+  - speculators
+  - openai_server
+  - cloud
+fail_closed_policy:
+  missing_config: "Consumers must fail the lane instead of assuming default backend parity."
+  corrupt_config: "Consumers must fail the lane and report the YAML parse error."
+  missing_backend_row: "Consumers must fail the lane and name the omitted backend."
+  missing_dimension_field: "Consumers must emit one finding per backend-dimension gap."
+dimensions:
+  - id: adapter_completeness
+    name: Adapter Completeness
+    severity: high
+    requirement: "The backend has an adapter or explicitly declared adapter-equivalent runtime surface."
+    measurement: "Inspect adapter files, backend registry evidence, or fixture row truth value."
+  - id: capability_negotiation
+    name: Capability Negotiation
+    severity: high
+    requirement: "The backend declares how model/tool/streaming/health capabilities are negotiated."
+    measurement: "Inspect capability contract evidence or fixture row truth value."
+  - id: lease_class_wiring
+    name: Lease Class Wiring
+    severity: high
+    requirement: "The backend has resource lease class evidence for scheduling and contention behavior."
+    measurement: "Inspect lease/resource routing evidence or fixture row truth value."
+  - id: cost_wiring
+    name: Cost Wiring
+    severity: high
+    requirement: "The backend has cost, pricing, or metering evidence suitable for operator comparison."
+    measurement: "Inspect pricing/cost configuration evidence or fixture row truth value."
+  - id: error_handling_consistency
+    name: Error Handling Consistency
+    severity: high
+    requirement: "The backend exposes consistent error and recovery semantics."
+    measurement: "Inspect error mapping, validation evidence, notes, or fixture row truth value."

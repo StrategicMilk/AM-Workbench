@@ -22,8 +22,11 @@ import logging
 import math
 import random
 import threading
+from collections import deque
 from dataclasses import dataclass, field
 from typing import NamedTuple, cast
+
+from vetinari.utils.bounded_collections import BoundedList
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +200,7 @@ class IsolationForest:
         self._n_trees = n_trees
         self._subsample_size = subsample_size
         self._contamination = contamination
-        self._rng = random.Random(seed)  # noqa: S311 — statistical use, not cryptographic
+        self._rng = random.Random(seed)
         self._trees: list[IsolationTreeNode] = []
         self._cn: float = 0.0  # c(subsample_size), cached after fit
         self._lock = threading.Lock()
@@ -223,7 +226,7 @@ class IsolationForest:
 
         n = len(data)
         sample_size = min(self._subsample_size, n)
-        trees: list[IsolationTreeNode] = []
+        trees = BoundedList[IsolationTreeNode](self._n_trees)
 
         for _ in range(self._n_trees):
             if n <= sample_size:
@@ -234,7 +237,7 @@ class IsolationForest:
             trees.append(tree)
 
         with self._lock:
-            self._trees = trees
+            self._trees = list(trees)
             self._cn = _c(sample_size)
 
     def score(self, point: list[float]) -> float:
@@ -294,7 +297,7 @@ class IsolationForest:
 class _DetectorState:
     """Internal warmup buffer and fitted forest for one detector instance."""
 
-    buffer: list[list[float]] = field(default_factory=list)
+    buffer: deque[list[float]] = field(default_factory=lambda: deque(maxlen=1000))
     forest: IsolationForest | None = None
     # How often to refit the forest (every N observations after warmup)
     refit_interval: int = 100
@@ -420,14 +423,14 @@ class PrimaryAnomalyDetector:
                     contamination=self._contamination,
                     seed=self._seed,
                 )
-                self._state.forest.fit(self._state.buffer)
+                self._state.forest.fit(list(self._state.buffer))
                 self._state.obs_since_refit = 0
                 logger.debug("PrimaryAnomalyDetector: initial forest fit on %d samples", n)
 
             self._state.obs_since_refit += 1
             if self._state.obs_since_refit >= self._state.refit_interval:
                 # Refit on the most recent 2 x subsample_size observations
-                recent = self._state.buffer[-512:]
+                recent = list(self._state.buffer)[-512:]
                 self._state.forest.fit(recent)
                 self._state.obs_since_refit = 0
                 logger.debug("PrimaryAnomalyDetector: forest refitted on %d samples", len(recent))
@@ -533,13 +536,13 @@ class HardwareAnomalyDetector:
                     contamination=self._contamination,
                     seed=self._seed,
                 )
-                self._state.forest.fit(self._state.buffer)
+                self._state.forest.fit(list(self._state.buffer))
                 self._state.obs_since_refit = 0
                 logger.debug("HardwareAnomalyDetector: initial forest fit on %d samples", n)
 
             self._state.obs_since_refit += 1
             if self._state.obs_since_refit >= self._state.refit_interval:
-                recent = self._state.buffer[-256:]
+                recent = list(self._state.buffer)[-256:]
                 self._state.forest.fit(recent)
                 self._state.obs_since_refit = 0
                 logger.debug(

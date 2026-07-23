@@ -45,7 +45,7 @@ _LEVEL_ORDER: list[DegradationLevel] = [
 ]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FallbackEntry:
     """A single fallback level within a subsystem's degradation chain.
 
@@ -202,6 +202,29 @@ def _build_persistence_chain() -> list[FallbackEntry]:
     ]
 
 
+def _build_engine_chain() -> list[FallbackEntry]:
+    """Build the fail-closed AM Engine lifecycle degradation chain."""
+    return [
+        FallbackEntry(
+            level=DegradationLevel.PRIMARY,
+            description="Pinned AM Engine is healthy and ready",
+            user_message="",
+        ),
+        FallbackEntry(
+            level=DegradationLevel.REDUCED,
+            description="AM Engine is restarting within the bounded retry policy",
+            user_message="The AM Engine is restarting; inference is temporarily unavailable",
+        ),
+        FallbackEntry(
+            level=DegradationLevel.UNAVAILABLE,
+            description="AM Engine is unavailable or its version does not match the trusted pin",
+            user_message=(
+                "The AM Engine is unavailable; verify or reinstall the pinned engine release before retrying"
+            ),
+        ),
+    ]
+
+
 # ── DegradationManager ──────────────────────────────────────────────────────
 
 
@@ -230,6 +253,7 @@ class DegradationManager:
             "model_selection": _build_model_selection_chain(),
             "learning": _build_learning_chain(),
             "persistence": _build_persistence_chain(),
+            "engine": _build_engine_chain(),
         }
         for name, chain in defaults.items():
             self._subsystems[name] = SubsystemFallback(

@@ -46,6 +46,13 @@ no skipping steps that feel tedious. If a task touches ten files, touch all ten.
 a fix requires updating every caller, update every caller. Fix root causes — never
 delete or weaken a test to make code pass. Correctness is not negotiable.
 
+**Best Correct Solution**: Do not choose the smallest, fastest, easiest,
+bare-minimum, least-invasive, rushed, or merely criteria-satisfying solution
+unless the human explicitly makes that the constraint. Default to thorough
+root-cause repair that goes above and beyond the checklist when it improves
+durability, clarity, correctness, tests, or operator trust. A half-done result is
+a failed result even if a narrow validator passes.
+
 - **Imports**: Enums from `vetinari.types`, specs from `vetinari.agents.contracts`. Never redefine locally.
 - **Logging**: `logging.getLogger(__name__)` with %-style formatting. Never `print()` in production.
 - **Error handling**: Specific exceptions only, chain with `from`. Never bare `except:`.

@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from vetinari.boundary_guards import account_evidence_drop
 from vetinari.constants import VETINARI_STATE_DIR
 from vetinari.types import AgentType
 
@@ -302,15 +303,18 @@ class WorkflowLearner:
         }
         return mapping.get(task_type.lower(), self.infer_domain(task_type))
 
-    def _default_depth(self, domain: str) -> int:
+    @staticmethod
+    def _default_depth(domain: str) -> int:
         defaults = {"coding": 4, "research": 3, "data": 4, "docs": 2, "general": 3}
         return defaults.get(domain, 3)
 
-    def _default_breadth(self, domain: str) -> int:
+    @staticmethod
+    def _default_breadth(domain: str) -> int:
         defaults = {"coding": 3, "research": 2, "data": 2, "docs": 1, "general": 2}
         return defaults.get(domain, 2)
 
-    def _default_agents(self, domain: str) -> list[str]:
+    @staticmethod
+    def _default_agents(domain: str) -> list[str]:
         defaults = {
             "coding": [AgentType.WORKER.value, AgentType.INSPECTOR.value],
             "research": [AgentType.WORKER.value],
@@ -359,16 +363,20 @@ class WorkflowLearner:
                     p = WorkflowPattern(**item)
                     self._patterns[p.domain] = p
                 logger.debug("[WorkflowLearner] Loaded %s patterns", len(self._patterns))
-        except Exception as e:
-            logger.warning("Could not load workflow patterns: %s", e)
+        except Exception:
+            account_evidence_drop("workflow_patterns_load", "workflow_learner", logger=logger)
+            logger.error("Could not load workflow patterns", exc_info=True)
+            raise
 
     def _save_patterns(self) -> None:
         try:
             path = self._get_state_path()
             with Path(path).open("w", encoding="utf-8") as f:
                 json.dump([asdict(p) for p in self._patterns.values()], f, indent=2)
-        except Exception as e:
-            logger.warning("Could not save workflow patterns: %s", e)
+        except Exception:
+            account_evidence_drop("workflow_patterns_save", "workflow_learner", logger=logger)
+            logger.error("Could not save workflow patterns", exc_info=True)
+            raise
 
 
 _workflow_learner: WorkflowLearner | None = None

@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_training_recipe.schema.json",
+  "title": "Workbench Training Recipe Harness",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["recipes"],
+  "properties": {
+    "recipes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/recipe" }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "recipeKind": {
+      "enum": ["sft", "dpo", "preference", "classification", "embedder", "lora_merge", "quantization"]
+    },
+    "datasetStep": {
+      "enum": ["clean", "dedupe", "consent_check", "provenance_validate", "split", "redact"]
+    },
+    "artifactKind": {
+      "enum": ["model_checkpoint", "adapter", "merged_model", "quantized_model", "embedding_index"]
+    },
+    "resourcePlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min_vram_gb", "cpu_threads", "estimated_hours", "max_cost_usd", "cloud_handoff_allowed"],
+      "properties": {
+        "min_vram_gb": { "type": "number", "exclusiveMinimum": 0 },
+        "cpu_threads": { "type": "integer", "minimum": 1 },
+        "estimated_hours": { "type": "number", "exclusiveMinimum": 0 },
+        "max_cost_usd": { "type": "number", "minimum": 0 },
+        "cloud_handoff_allowed": { "type": "boolean" }
+      }
+    },
+    "evalGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eval_id", "metric_name", "value", "threshold", "passed", "evidence_ref"],
+      "properties": {
+        "eval_id": { "$ref": "#/$defs/nonEmptyString" },
+        "metric_name": { "$ref": "#/$defs/nonEmptyString" },
+        "value": { "type": "number" },
+        "threshold": { "type": "number" },
+        "passed": { "type": "boolean" },
+        "evidence_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "status_reason": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "recipe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recipe_id",
+        "kind",
+        "base_model_id",
+        "output_artifact_kind",
+        "packaging_format",
+        "registry_alias",
+        "resource_plan",
+        "eval_gates",
+        "hyperparameters"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": { "enum": ["sft", "dpo", "preference", "classification", "embedder"] }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "required": ["dataset_steps"]
+          }
+        }
+      ],
+      "properties": {
+        "recipe_id": { "$ref": "#/$defs/nonEmptyString" },
+        "kind": { "$ref": "#/$defs/recipeKind" },
+        "base_model_id": { "$ref": "#/$defs/nonEmptyString" },
+        "output_artifact_kind": { "$ref": "#/$defs/artifactKind" },
+        "dataset_steps": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "contains": { "const": "clean" },
+          "items": { "$ref": "#/$defs/datasetStep" }
+        },
+        "packaging_format": { "$ref": "#/$defs/nonEmptyString" },
+        "registry_alias": { "$ref": "#/$defs/nonEmptyString" },
+        "resource_plan": { "$ref": "#/$defs/resourcePlan" },
+        "eval_gates": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/evalGate" }
+        },
+        "hyperparameters": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

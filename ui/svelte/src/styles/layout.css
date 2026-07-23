@@ -144,6 +144,46 @@
     color: var(--text-secondary);
   }
 
+  .advanced-filter {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin: 0 var(--space-2) var(--space-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: var(--space-2);
+    color: var(--text-muted);
+  }
+
+  .advanced-filter input {
+    min-width: 0;
+    width: 100%;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--text-primary);
+    font: inherit;
+  }
+
+  .nav-group-label {
+    padding: var(--space-3) var(--space-4) var(--space-1);
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    font-weight: var(--font-semibold);
+    text-transform: uppercase;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+
   .projects-panel {
     display: flex;
     flex-direction: column;

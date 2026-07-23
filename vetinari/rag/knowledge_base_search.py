@@ -1,11 +1,11 @@
 """Search and query methods for Vetinari's RAG knowledge base.
 
-Contains ``KnowledgeBaseSearchMixin`` — a mixin class providing all private
+Contains ``KnowledgeBaseSearch`` — the class providing all private
 query methods for ``KnowledgeBase``.  Extracted from ``knowledge_base.py``
 to keep that module under the 550-line file limit and ``KnowledgeBase``
 under the 500-line class limit.
 
-``KnowledgeBase`` inherits from this mixin and calls all methods via
+``KnowledgeBase`` inherits from this search behavior and calls all methods via
 ``self``.
 """
 
@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from typing import Any
+from collections.abc import Sequence
+from dataclasses import replace
+from typing import Any, Protocol, cast
 
 from vetinari.rag.knowledge_base_helpers import (
     KBDocument,
@@ -25,12 +27,20 @@ from vetinari.utils.math_helpers import cosine_similarity
 logger = logging.getLogger(__name__)
 
 
-class KnowledgeBaseSearchMixin:
-    """Mixin providing private query methods for KnowledgeBase.
+class _KnowledgeBaseSearchOwner(Protocol):
+    _conn: sqlite3.Connection
+
+
+class KnowledgeBaseSearch:
+    """Private query methods for KnowledgeBase.
 
     Expects ``self._conn``, ``self._has_vec``, and ``self._embedding_fallbacks``
     /``self._embedding_attempts`` to be set by the host class.
     """
+
+    def _connection(self) -> sqlite3.Connection:
+        """Return the host KnowledgeBase SQLite connection."""
+        return cast(_KnowledgeBaseSearchOwner, self)._conn
 
     # ── Compression ───────────────────────────────────────────────────
 
@@ -60,9 +70,11 @@ class KnowledgeBaseSearchMixin:
 
             compressor = PerplexityCompressor()
             target_ratio = max_chars / total if total > 0 else 1.0
-            for doc in docs:
+            compressed_docs = list(docs)
+            for index, doc in enumerate(compressed_docs):
                 if len(doc.content) > 200:
-                    doc.content = compressor.compress(doc.content, target_ratio)
+                    compressed_docs[index] = replace(doc, content=compressor.compress(doc.content, target_ratio))
+            return compressed_docs
         except Exception:
             logger.warning("Prompt compressor unavailable for RAG compression")
 
@@ -89,7 +101,7 @@ class KnowledgeBaseSearchMixin:
         Returns:
             Ranked list of KBDocument.
         """
-        cursor = self._conn.cursor()  # type: ignore[attr-defined]
+        cursor = self._connection().cursor()
         query_blob = pack_embedding(query_vec)
         fetch_limit = k * 3
 
@@ -106,7 +118,9 @@ class KnowledgeBaseSearchMixin:
         if not knn_results:
             return self._query_fts(fallback_query, k, category)
 
-        candidates = [(row["doc_id"], 1.0 / (1.0 + float(row["distance"]))) for row in knn_results]
+        candidates: list[tuple[str, float]] = [
+            (str(row["doc_id"]), 1.0 / (1.0 + float(row["distance"]))) for row in knn_results
+        ]
         return self._fetch_documents(candidates, k, category)
 
     # ── Cosine fallback ───────────────────────────────────────────────
@@ -130,7 +144,7 @@ class KnowledgeBaseSearchMixin:
         Returns:
             Ranked list of KBDocument.
         """
-        cursor = self._conn.cursor()  # type: ignore[attr-defined]
+        cursor = self._connection().cursor()
 
         conditions = []
         params: list[Any] = []
@@ -140,8 +154,7 @@ class KnowledgeBaseSearchMixin:
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         cursor.execute(
-            f"SELECT e.doc_id, e.embedding_blob FROM doc_embeddings e "  # noqa: S608 - SQL identifiers are constrained while values stay parameterized
-            f"JOIN documents d ON e.doc_id = d.doc_id {where}",
+            f"SELECT e.doc_id, e.embedding_blob FROM doc_embeddings e JOIN documents d ON e.doc_id = d.doc_id {where}",
             params,
         )
 
@@ -177,7 +190,7 @@ class KnowledgeBaseSearchMixin:
         Returns:
             Ranked list of KBDocument.
         """
-        cursor = self._conn.cursor()  # type: ignore[attr-defined]
+        cursor = self._connection().cursor()
 
         if not query or not query.strip():
             # An empty query has no semantic meaning — returning recency hits
@@ -195,7 +208,7 @@ class KnowledgeBaseSearchMixin:
             fts_params.append(k)
             fts_where = " AND ".join(fts_conditions)
             cursor.execute(
-                f"SELECT d.*, rank FROM doc_fts f "  # noqa: S608 - SQL identifiers are constrained while values stay parameterized
+                f"SELECT d.*, rank FROM doc_fts f "
                 f"JOIN documents d ON f.doc_id = d.doc_id "
                 f"WHERE {fts_where} "
                 "ORDER BY rank "
@@ -228,14 +241,14 @@ class KnowledgeBaseSearchMixin:
         Returns:
             Ranked list of KBDocument.
         """
-        cursor = self._conn.cursor()  # type: ignore[attr-defined]
+        cursor = self._connection().cursor()
         conditions = []
         params: list[Any] = []
         if category:
             conditions.append("category = ?")
             params.append(category)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        cursor.execute(f"SELECT * FROM documents {where}", params)  # noqa: S608 - SQL identifiers are constrained while values stay parameterized
+        cursor.execute(f"SELECT * FROM documents {where}", params)
 
         query_words = set(query.lower().split())
         scored: list[tuple[float, sqlite3.Row]] = []
@@ -252,7 +265,7 @@ class KnowledgeBaseSearchMixin:
 
     def _fetch_documents(
         self,
-        doc_ids: list[str | tuple[str, float]],
+        doc_ids: Sequence[str | tuple[str, float]],
         k: int,
         category: str | None,
     ) -> list[KBDocument]:
@@ -279,7 +292,7 @@ class KnowledgeBaseSearchMixin:
             ordered_ids.append(doc_id)
             score_by_id[doc_id] = float(score)
 
-        cursor = self._conn.cursor()  # type: ignore[attr-defined]
+        cursor = self._connection().cursor()
         placeholders = ",".join("?" for _ in ordered_ids)
         conditions = [f"doc_id IN ({placeholders})"]
         params: list[Any] = list(ordered_ids)
@@ -289,10 +302,9 @@ class KnowledgeBaseSearchMixin:
             params.append(category)
 
         where = " AND ".join(conditions)
-        cursor.execute(f"SELECT * FROM documents WHERE {where}", params)  # noqa: S608 - SQL identifiers are constrained while values stay parameterized
+        cursor.execute(f"SELECT * FROM documents WHERE {where}", params)
         docs_by_id = {
-            row["doc_id"]: self._row_to_doc(row, score=score_by_id.get(row["doc_id"], 0.0))
-            for row in cursor.fetchall()
+            row["doc_id"]: self._row_to_doc(row, score=score_by_id.get(row["doc_id"], 0.0)) for row in cursor.fetchall()
         }
 
         return [docs_by_id[did] for did in ordered_ids if did in docs_by_id][:k]

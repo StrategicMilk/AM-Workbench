@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from vetinari.learning.feedback_store import FeedbackStore, get_feedback_store, reset_feedback_store_for_test
 from vetinari.types import FeedbackAction
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,7 @@ class FeedbackSummary:
 # Lazy getters to avoid circular imports
 _context_graph_fn = None
 _context_graph_available = True
+_REHYDRATE_LIMIT = 10000
 
 
 def _get_context_graph():
@@ -129,17 +131,19 @@ class ImplicitFeedbackCollector:
 
     _CONTRADICTION_THRESHOLD = 0.3  # Score gap that triggers a contradiction alert
 
-    def __init__(self) -> None:
+    def __init__(self, store: FeedbackStore | None = None) -> None:
         self._lock = threading.Lock()
         self._signals: list[FeedbackSignal] = []
         self._stats: dict[tuple[str, str], dict[str, int]] = {}  # (model_id, task_type) → counts
+        self._store = store if store is not None else get_feedback_store()
+        self._rehydrate_signals_from_store()
 
     def record(
         self,
         task_id: str,
         model_id: str,
         task_type: str,
-        action: FeedbackAction,
+        action: FeedbackAction | str,
         edit_diff: str | None = None,
         inspector_score: float | None = None,
         metadata: dict[str, Any] | None = None,
@@ -158,23 +162,26 @@ class ImplicitFeedbackCollector:
         Returns:
             The created FeedbackSignal.
         """
+        normalized_action = action if isinstance(action, FeedbackAction) else FeedbackAction(action)
         metadata_dict = dict(metadata) if metadata is not None else {}
         signal = FeedbackSignal(
             task_id=task_id,
             model_id=model_id,
             task_type=task_type,
-            action=action,
+            action=normalized_action,
             edit_diff=edit_diff,
             inspector_score=inspector_score,
             metadata=metadata_dict,
         )
+        signal_dict = self._signal_to_dict(signal)
 
         with self._lock:
+            self._store.append_signal(signal_dict)
             self._signals.append(signal)
             key = (model_id, task_type)
             if key not in self._stats:
                 self._stats[key] = {"accepted": 0, "edited": 0, "regenerated": 0}
-            self._stats[key][action.value] += 1
+            self._stats[key][normalized_action.value] += 1
 
         # Push signal to context graph USER quadrant
         self._update_context_graph(signal)
@@ -186,9 +193,50 @@ class ImplicitFeedbackCollector:
             "Implicit feedback: task=%s model=%s action=%s",
             task_id,
             model_id,
-            action.value,
+            normalized_action.value,
         )
         return signal
+
+    def _rehydrate_signals_from_store(self) -> None:
+        """Restore recent signals from the durable store into the in-memory cache."""
+        rows = self._store.list_signals(limit=_REHYDRATE_LIMIT)
+        signals = [self._signal_from_dict(row) for row in reversed(rows)]
+        with self._lock:
+            self._signals = signals
+            self._stats = {}
+            for signal in signals:
+                key = (signal.model_id, signal.task_type)
+                if key not in self._stats:
+                    self._stats[key] = {"accepted": 0, "edited": 0, "regenerated": 0}
+                self._stats[key][signal.action.value] += 1
+
+    @staticmethod
+    def _signal_to_dict(signal: FeedbackSignal) -> dict[str, Any]:
+        return {
+            "signal_id": signal.signal_id,
+            "task_id": signal.task_id,
+            "model_id": signal.model_id,
+            "task_type": signal.task_type,
+            "action": signal.action.value,
+            "edit_diff": signal.edit_diff,
+            "inspector_score": signal.inspector_score,
+            "timestamp": signal.timestamp,
+            "metadata": dict(signal.metadata),
+        }
+
+    @staticmethod
+    def _signal_from_dict(row: dict[str, Any]) -> FeedbackSignal:
+        return FeedbackSignal(
+            signal_id=str(row.get("signal_id", "")),
+            task_id=str(row.get("task_id", "")),
+            model_id=str(row.get("model_id", "")),
+            task_type=str(row.get("task_type", "")),
+            action=FeedbackAction(str(row.get("action", FeedbackAction.ACCEPTED.value))),
+            edit_diff=row.get("edit_diff"),
+            inspector_score=row.get("inspector_score"),
+            timestamp=str(row.get("timestamp", datetime.now(timezone.utc).isoformat())),
+            metadata=dict(row.get("metadata") or {}),
+        )
 
     def get_summary(self, model_id: str, task_type: str) -> FeedbackSummary:
         """Get aggregated feedback stats for a model+task_type combination.
@@ -214,6 +262,28 @@ class ImplicitFeedbackCollector:
             regenerate_count=counts["regenerated"],
             acceptance_rate=acceptance_rate,
         )
+
+    def get_summary_for_routing(self, model_id: str, task_type: object) -> FeedbackSummary:
+        """Return a routing-safe FeedbackSummary for enum-or-string task types.
+
+        Args:
+            model_id: Model identifier used for routing or lookup.
+            task_type: Task type value consumed by get_summary_for_routing().
+
+        Returns:
+            Resolved summary for routing value.
+        """
+        task_type_str = task_type.value if hasattr(task_type, "value") else str(task_type)
+        try:
+            return self.get_summary(model_id, task_type_str)
+        except Exception:
+            logger.warning(
+                "Implicit feedback summary lookup failed for %s/%s; returning empty summary",
+                model_id,
+                task_type_str,
+                exc_info=True,
+            )
+            return FeedbackSummary(model_id=model_id, task_type=task_type_str)
 
     def get_signals(self, task_id: str | None = None, limit: int = 50) -> list[FeedbackSignal]:
         """Retrieve recent feedback signals with optional filtering.
@@ -368,3 +438,4 @@ def reset_implicit_feedback_collector() -> None:
     global _instance
     with _singleton_lock:
         _instance = None
+    reset_feedback_store_for_test(clear_default_store=True)

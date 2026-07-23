@@ -1,0 +1,32 @@
+{
+  "workload": "medium_task_end_to_end",
+  "recorded_at": "2026-05-08T00:00:00Z",
+  "machine_profile": "windows-local-dev-ci-safe",
+  "samples": [
+    {
+      "duration_ms": 1000,
+      "max_rss_mb": 768,
+      "cpu_percent": 75
+    },
+    {
+      "duration_ms": 1200,
+      "max_rss_mb": 768,
+      "cpu_percent": 75
+    },
+    {
+      "duration_ms": 1350,
+      "max_rss_mb": 768,
+      "cpu_percent": 75
+    },
+    {
+      "duration_ms": 1800,
+      "max_rss_mb": 768,
+      "cpu_percent": 75
+    },
+    {
+      "duration_ms": 2200,
+      "max_rss_mb": 768,
+      "cpu_percent": 75
+    }
+  ]
+}

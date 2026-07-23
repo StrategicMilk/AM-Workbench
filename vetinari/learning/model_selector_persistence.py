@@ -18,10 +18,12 @@ from typing import TYPE_CHECKING, Any
 
 from vetinari.constants import VETINARI_STATE_DIR
 
+logger = logging.getLogger(__name__)
+
+
 if TYPE_CHECKING:
     from vetinari.learning.model_selector import ThompsonSamplingSelector
 
-logger = logging.getLogger(__name__)
 
 __all__ = [
     "get_state_dir",
@@ -114,7 +116,9 @@ def migrate_from_json(selector: ThompsonSamplingSelector) -> None:
     """One-time migration: import arms from legacy JSON file and save to SQLite.
 
     The JSON file is left in place after migration so it can be used as a
-    backup.  Subsequent runs read exclusively from SQLite.
+    backup.  Subsequent runs read exclusively from SQLite.  Migration is
+    opt-in so a bundled project-local ``.vetinari/thompson_state.json`` cannot
+    silently seed default model selection in a fresh checkout.
 
     Args:
         selector: ThompsonSamplingSelector whose ``_arms`` dict is populated
@@ -125,6 +129,13 @@ def migrate_from_json(selector: ThompsonSamplingSelector) -> None:
     from vetinari.learning.thompson_arms import ThompsonBetaArm
 
     try:
+        allow_migration = os.environ.get("VETINARI_MIGRATE_LEGACY_THOMPSON_STATE", "").strip().lower()
+        if allow_migration not in {"1", "true", "yes"}:
+            logger.info(
+                "[Thompson] Legacy JSON migration skipped; set VETINARI_MIGRATE_LEGACY_THOMPSON_STATE=1 "
+                "to import thompson_state.json into SQLite"
+            )
+            return
         state_file = Path(get_state_dir(selector)) / "thompson_state.json"
         if not state_file.exists():
             return
@@ -186,8 +197,10 @@ def save_state(selector: ThompsonSamplingSelector) -> None:
             state_dir = get_state_dir(selector)
             Path(state_dir).mkdir(parents=True, exist_ok=True)
             state_file = Path(state_dir) / "thompson_state.json"
-            with Path(state_file).open("w", encoding="utf-8") as f:
+            tmp_path = state_file.with_name(f".{state_file.name}.{os.getpid()}.tmp")
+            with tmp_path.open("w", encoding="utf-8") as f:
                 json.dump({k: asdict(v) for k, v in selector._arms.items()}, f, indent=2)
+            os.replace(tmp_path, state_file)
         except Exception as json_exc:
             if not _shutting_down:
                 _safe_warning("[Thompson] JSON fallback save also failed: %s", json_exc)

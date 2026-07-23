@@ -11,6 +11,7 @@
    * to open the project detail.
    */
   import * as api from '$lib/api.js';
+  import Icon from '$lib/a11y/Icon.svelte';
 
   /** @type {{ projectId: string }} */
   let { projectId } = $props();
@@ -27,6 +28,7 @@
   let total = $state(0);
   let loading = $state(true);
   let error = $state(null);
+  let errorId = $derived(projectId ? `receipt-strip-error-${projectId}` : 'receipt-strip-error');
 
   const KINDS = [
     { key: 'plan_round', label: 'plan', icon: 'fa-clipboard-list' },
@@ -71,11 +73,12 @@
   });
 </script>
 
-<div class="receipt-strip" aria-label="Work receipts for {projectId}">
+<div class="receipt-strip" role="status" aria-live="polite" aria-label="Work receipts for {projectId}">
   {#if error}
-    <span class="strip-error" role="alert" title={error}>
-      <i class="fas fa-exclamation-triangle"></i>
+    <span class="strip-error" role="alert" aria-live="assertive" aria-describedby={errorId}>
+      <Icon name="exclamation-triangle" />
       receipts unavailable
+      <span id={errorId}><span class="sr-only">{error}</span></span>
     </span>
   {:else if loading}
     <span class="strip-muted">loading…</span>
@@ -84,8 +87,8 @@
   {:else}
     {#each KINDS as kind (kind.key)}
       {#if counts[kind.key] > 0}
-        <span class="strip-chip" title="{counts[kind.key]} {kind.label} receipt{counts[kind.key] === 1 ? '' : 's'}">
-          <i class="fas {kind.icon}"></i>
+        <span class="strip-chip" aria-label="{counts[kind.key]} {kind.label} receipt{counts[kind.key] === 1 ? '' : 's'}">
+          <i class="fas {kind.icon}" aria-hidden="true"></i>
           <span class="chip-count">{counts[kind.key]}</span>
           <span class="chip-label">{kind.label}</span>
         </span>
@@ -135,5 +138,17 @@
 
   .chip-label {
     color: var(--text-muted);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 </style>

@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_source_card.schema.json",
+  "title": "Workbench Source Card Connector Binding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source_card_id",
+    "connector_id",
+    "source_kind",
+    "provenance",
+    "privacy_governance",
+    "claim_limits",
+    "permitted_claim_kinds"
+  ],
+  "properties": {
+    "source_card_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "connector_id": {
+      "enum": ["file", "folder", "api", "web", "repository", "model_hub", "issue_tracker"]
+    },
+    "source_kind": {
+      "type": "string",
+      "minLength": 1
+    },
+    "provenance": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      },
+      "required": ["source"]
+    },
+    "claim_limits": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "permitted_claim_kinds": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "privacy_governance": {
+      "$ref": "#/$defs/privacyGovernance"
+    }
+  },
+  "$defs": {
+    "privacyGovernance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "privacy_class",
+        "subject_ref",
+        "consent_ref",
+        "retention_ref",
+        "redaction_ref",
+        "erasure_ref"
+      ],
+      "properties": {
+        "privacy_class": {
+          "type": "string",
+          "enum": ["public", "operational", "subject_data", "secret"]
+        },
+        "subject_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "consent_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retention_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "redaction_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "erasure_ref": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

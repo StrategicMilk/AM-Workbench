@@ -1,0 +1,30 @@
+schema_version: "1"
+release_phase: "alpha_beta"
+defaults:
+  FOREMAN:
+    recommendation_id: "gemma-4-26b-a4b-it-foreman-swap"
+    resolved_model_id: "google/gemma-4-26B-A4B-it"
+    verified_on: 2026-04-25
+    stale_after: 2026-08-31T00:00:00Z
+    notes: "Fresh alpha/beta catalog default."
+  WORKER:
+    recommendation_id: "qwen3-6-35b-a3b-agentic"
+    resolved_model_id: "Qwen/Qwen3.6-35B-A3B"
+    verified_on: 2026-04-25
+    stale_after: 2026-08-31T00:00:00Z
+    release_license_review:
+      "mistralai/Devstral-Small-2-24B-Instruct-2512":
+        status: "blocked"
+        license_ref: "review-required:mistral-ai-model-license"
+        source: "mode default only; not release approval"
+    modes:
+      build: "Qwen/Qwen3.6-35B-A3B"  # Devstral blocked pending license review; see release_license_review above
+      chat: "Qwen/Qwen3.6-35B-A3B"
+  INSPECTOR:
+    recommendation_id: "deepseek-r1-distill-qwen-32b-inspector-deep"
+    resolved_model_id: "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
+    verified_on: 2026-04-25
+    stale_after: 2026-08-31T00:00:00Z
+    modes:
+      deep_audit: "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
+      fast_check: "Qwen/Qwen3-8B-Instruct"

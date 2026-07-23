@@ -1,0 +1,18 @@
+{
+  "extension_id": "amw.local.ide",
+  "schema_version": "ide-extension.v1",
+  "signature": "signed:local-fixture",
+  "permissions": [
+    "tool:submit_goal",
+    "resource:workspace",
+    "fs_read:workspace/project"
+  ],
+  "retention_days": 7,
+  "privacy": {
+    "redaction": "secret-bearing-fields",
+    "deletion": "delete receipts and queued goals within retention window",
+    "fail_closed_on_unknown_permissions": true,
+    "prompt_control_rejected": true
+  },
+  "receipt_path": "receipts/ide-extension.jsonl"
+}

@@ -56,7 +56,6 @@ def vec_knn_search(
     Returns:
         Ranked list of :class:`~vetinari.memory.interfaces.MemoryEntry`.
     """
-    from ._store_ops import row_to_entry
     from .memory_embeddings import pack_embedding
 
     cursor = conn.cursor()
@@ -77,6 +76,30 @@ def vec_knn_search(
         return fts_fallback(conn, fallback_query, agent, entry_types, limit)
 
     candidate_ids = [row["memory_id"] for row in knn_results]
+    results = _hydrate_knn_entries(
+        conn,
+        candidate_ids,
+        agent,
+        entry_types,
+        embedding_model,
+        embedding_dimensions,
+    )
+    if not results:
+        return fts_fallback(conn, fallback_query, agent, entry_types, limit)
+    return results[:limit]
+
+
+def _hydrate_knn_entries(
+    conn: sqlite3.Connection,
+    candidate_ids: list[str],
+    agent: str | None,
+    entry_types: list[str] | None,
+    embedding_model: str,
+    embedding_dimensions: int,
+) -> list[MemoryEntry]:
+    from ._store_ops import row_to_entry
+
+    cursor = conn.cursor()
     placeholders = ",".join("?" for _ in candidate_ids)
     conditions = [
         f"m.id IN ({placeholders})",
@@ -96,16 +119,11 @@ def vec_knn_search(
 
     where = " AND ".join(conditions)
     cursor.execute(
-        f"SELECT m.* FROM memories m JOIN embeddings e ON e.memory_id = m.id WHERE {where}",  # noqa: S608 - SQL identifiers are constrained while values stay parameterized
+        f"SELECT m.* FROM memories m JOIN embeddings e ON e.memory_id = m.id WHERE {where}",
         params,
     )
     entries_by_id = {row["id"]: row_to_entry(row) for row in cursor.fetchall()}
-
-    # Preserve KNN distance ordering
-    results = [entries_by_id[mid] for mid in candidate_ids if mid in entries_by_id]
-    if not results:
-        return fts_fallback(conn, fallback_query, agent, entry_types, limit)
-    return results[:limit]
+    return [entries_by_id[mid] for mid in candidate_ids if mid in entries_by_id]
 
 
 def manual_cosine_search(
@@ -155,8 +173,7 @@ def manual_cosine_search(
 
     where = " AND ".join(conditions)
     cursor.execute(
-        f"SELECT e.memory_id, e.embedding_blob FROM embeddings e "  # noqa: S608 - SQL identifiers are constrained while values stay parameterized
-        f"JOIN memories m ON e.memory_id = m.id WHERE {where}",
+        f"SELECT e.memory_id, e.embedding_blob FROM embeddings e JOIN memories m ON e.memory_id = m.id WHERE {where}",
         params,
     )
 
@@ -173,7 +190,7 @@ def manual_cosine_search(
         return fts_fallback(conn, fallback_query, agent, entry_types, limit)
 
     placeholders = ",".join("?" for _ in top_ids)
-    cursor.execute(f"SELECT * FROM memories WHERE id IN ({placeholders})", top_ids)  # noqa: S608 - SQL identifiers are constrained while values stay parameterized
+    cursor.execute(f"SELECT * FROM memories WHERE id IN ({placeholders})", top_ids)
     entries_by_id = {row["id"]: row_to_entry(row) for row in cursor.fetchall()}
 
     return [entries_by_id[mid] for mid in top_ids if mid in entries_by_id]
@@ -230,7 +247,7 @@ def fts_search(
 
     where = " AND ".join(conditions)
     sql = (
-        "SELECT m.* FROM memory_fts f "  # noqa: S608 - SQL identifiers are constrained while values stay parameterized
+        "SELECT m.* FROM memory_fts f "
         "JOIN memories m ON f.rowid = m.rowid "
         f"WHERE {where} "
         "ORDER BY bm25(memory_fts), m.timestamp DESC LIMIT ?"
@@ -279,7 +296,7 @@ def like_search(
         params.extend(entry_types)
 
     where = " AND ".join(conditions)
-    sql = f"SELECT * FROM memories WHERE {where} ORDER BY timestamp DESC LIMIT ?"  # noqa: S608 - SQL identifiers are constrained while values stay parameterized
+    sql = f"SELECT * FROM memories WHERE {where} ORDER BY timestamp DESC LIMIT ?"
     params.append(limit)
 
     cursor.execute(sql, params)
@@ -321,7 +338,7 @@ def build_timeline(
         params.append(end_time)
 
     where = " AND ".join(conditions)
-    sql = f"SELECT * FROM memories WHERE {where} ORDER BY timestamp DESC LIMIT ?"  # noqa: S608 - SQL identifiers are constrained while values stay parameterized
+    sql = f"SELECT * FROM memories WHERE {where} ORDER BY timestamp DESC LIMIT ?"
     params.append(limit)
     cursor = conn.cursor()
     cursor.execute(sql, params)
@@ -349,7 +366,9 @@ def is_semantic_duplicate(
     rows = conn.execute(
         "SELECT e.embedding_blob FROM embeddings e "
         "JOIN memories m ON e.memory_id = m.id "
-        "WHERE m.forgotten = 0 LIMIT 500",
+        "WHERE m.forgotten = 0 "
+        "ORDER BY m.timestamp DESC, m.created_at DESC "
+        "LIMIT 500",
     ).fetchall()
     for row in rows:
         stored_vec = unpack_embedding(row["embedding_blob"])

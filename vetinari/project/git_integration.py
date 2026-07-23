@@ -23,6 +23,7 @@ from vetinari.tools.git_tool import CommitInfo, ConflictInfo, GitOperations
 
 logger = logging.getLogger(__name__)
 
+
 # Branch prefix that marks all Vetinari-created fix branches.
 _BRANCH_PREFIX: str = "vetinari/fix"
 
@@ -33,7 +34,7 @@ _MAX_SLUG_LEN: int = 50
 # -- Data structures ----------------------------------------------------------
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class BranchResult:
     """Outcome of a branch creation attempt.
 
@@ -224,10 +225,7 @@ def has_uncommitted_changes(project_path: Path) -> bool:
     git = GitOperations(project_path)
     result = git.status()
     if not result.success:
-        msg = (
-            f"Could not determine git status for {project_path}"
-            f" — git reported: {result.stderr!r}"
-        )
+        msg = f"Could not determine git status for {project_path} — git reported: {result.stderr!r}"
         logger.error(msg)
         raise RuntimeError(msg)
     return bool(result.stdout.strip())

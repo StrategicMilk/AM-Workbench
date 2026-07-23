@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_user_personalization.schema.json",
+  "title": "WorkbenchUserPersonalization",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profile_cards", "training_candidates", "decisions"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "profile_cards": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/profile_card" }
+    },
+    "training_candidates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/training_candidate" }
+    },
+    "decisions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/decision" }
+    }
+  },
+  "$defs": {
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_ref", "authority_ref", "captured_at_utc", "confidence"],
+      "properties": {
+        "source_ref": { "type": "string", "minLength": 1 },
+        "authority_ref": { "type": "string", "minLength": 1 },
+        "captured_at_utc": { "type": "string", "format": "date-time" },
+        "confidence": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+      }
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["retention_ref", "expires_at_utc", "delete_ref", "revocation_ref"],
+      "properties": {
+        "retention_ref": { "type": "string", "minLength": 1 },
+        "expires_at_utc": { "type": "string", "format": "date-time" },
+        "delete_ref": { "type": "string" },
+        "revocation_ref": { "type": "string" }
+      }
+    },
+    "audit_trail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signal_ref", "decision_ref", "artifact_ref", "captured_at_utc"],
+      "properties": {
+        "signal_ref": { "type": "string", "minLength": 1 },
+        "decision_ref": { "type": "string", "minLength": 1 },
+        "artifact_ref": { "type": "string", "minLength": 1 },
+        "captured_at_utc": { "type": "string", "format": "date-time" }
+      }
+    },
+    "dependency_refs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "memory_firewall_ref",
+        "tuning_data_source_ref",
+        "model_foundry_ref",
+        "approval_diff_ref",
+        "improvement_engine_ref",
+        "downstream_anti_sycophancy_gate_ref"
+      ],
+      "properties": {
+        "memory_firewall_ref": { "type": "string", "minLength": 1 },
+        "tuning_data_source_ref": { "type": "string", "minLength": 1 },
+        "model_foundry_ref": { "type": "string", "minLength": 1 },
+        "approval_diff_ref": { "type": "string", "minLength": 1 },
+        "improvement_engine_ref": { "type": "string", "minLength": 1 },
+        "downstream_anti_sycophancy_gate_ref": { "type": "string", "minLength": 1 }
+      }
+    },
+    "profile_card": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "card_id",
+        "kind",
+        "subject_ref",
+        "statement",
+        "status",
+        "provenance",
+        "allowed_uses",
+        "retention",
+        "audit_trail",
+        "sensitivity_label",
+        "conflict_ref"
+      ],
+      "properties": {
+        "card_id": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "enum": ["user_fact", "sensitive_context", "project_preference"] },
+        "subject_ref": { "type": "string", "minLength": 1 },
+        "statement": { "type": "string", "minLength": 1 },
+        "status": {
+          "type": "string",
+          "enum": ["active", "revoked", "expired", "delete_requested", "conflict_review_needed"]
+        },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "allowed_uses": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["profile_memory", "runtime_context", "project_default", "supporting_evidence"]
+          }
+        },
+        "retention": { "$ref": "#/$defs/retention" },
+        "audit_trail": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/audit_trail" }
+        },
+        "sensitivity_label": { "type": "string", "minLength": 1 },
+        "conflict_ref": { "type": "string" }
+      }
+    },
+    "training_candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "input_kind",
+        "target",
+        "source_signal_ref",
+        "summary",
+        "stable_preference",
+        "governance",
+        "audit_trail",
+        "provenance",
+        "confidence"
+      ],
+      "properties": {
+        "candidate_id": { "type": "string", "minLength": 1 },
+        "input_kind": {
+          "type": "string",
+          "enum": [
+            "stable_behavior_preference",
+            "profile_fact",
+            "sensitive_context",
+            "raw_user_log",
+            "raw_prompt",
+            "raw_transcript_snippet"
+          ]
+        },
+        "target": {
+          "type": "string",
+          "enum": ["eval_case", "preference_pair", "prompt_change", "route_rule", "model_adapter_candidate"]
+        },
+        "source_signal_ref": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "stable_preference": { "type": "boolean" },
+        "governance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "consent_ref",
+            "redaction_ref",
+            "dedupe_ref",
+            "split_firewall_ref",
+            "sensitivity_review_ref",
+            "retention_ref",
+            "revocation_check_ref",
+            "dependency_refs"
+          ],
+          "properties": {
+            "consent_ref": { "type": "string", "minLength": 1 },
+            "redaction_ref": { "type": "string", "minLength": 1 },
+            "dedupe_ref": { "type": "string", "minLength": 1 },
+            "split_firewall_ref": { "type": "string", "minLength": 1 },
+            "sensitivity_review_ref": { "type": "string", "minLength": 1 },
+            "retention_ref": { "type": "string", "minLength": 1 },
+            "revocation_check_ref": { "type": "string", "minLength": 1 },
+            "dependency_refs": { "$ref": "#/$defs/dependency_refs" }
+          }
+        },
+        "audit_trail": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/audit_trail" }
+        },
+        "provenance": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/provenance" }
+        },
+        "confidence": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject_id", "status", "approved", "blockers", "audit_trail", "evidence"],
+      "properties": {
+        "subject_id": { "type": "string", "minLength": 1 },
+        "status": {
+          "type": "string",
+          "enum": [
+            "profile_card_approved",
+            "training_candidate_approved",
+            "blocked",
+            "recovery_needed",
+            "conflict_needed",
+            "deleted_or_revoked"
+          ]
+        },
+        "approved": { "type": "boolean" },
+        "blockers": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "audit_trail": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/audit_trail" }
+        },
+        "evidence": { "type": "object" }
+      }
+    }
+  }
+}

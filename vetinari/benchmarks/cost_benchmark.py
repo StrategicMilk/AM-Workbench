@@ -26,6 +26,7 @@ from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
 
+
 # Cost constants for common models (USD per 1k tokens).
 # These are reference defaults; callers should pass the actual rate.
 DEFAULT_COST_PER_1K_USD = 0.001  # Conservative default for local/cheap models

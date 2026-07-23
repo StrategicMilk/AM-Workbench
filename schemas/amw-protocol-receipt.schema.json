@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "amw-protocol-receipt.schema.json",
+  "title": "AM Workbench Protocol Receipt",
+  "type": "object",
+  "required": ["id", "status", "provenance"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["accepted", "failed_closed"]},
+    "provenance": {"type": "string", "minLength": 1}
+  },
+  "additionalProperties": false,
+  "generated_from": "amw-protocol::ProtocolReceipt"
+}

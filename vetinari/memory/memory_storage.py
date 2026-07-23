@@ -11,6 +11,7 @@ detection (ADR-0077).
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
 import struct
@@ -23,6 +24,7 @@ from vetinari.database import get_connection
 from vetinari.memory.interfaces import MemoryEntry, MemoryType
 
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -60,7 +62,7 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def _record_dedup_hit(agent: str) -> None:
+def _record_dedup_hit_best_effort(agent: str) -> None:
     """Record a deduplication hit in the telemetry system."""
     try:
         from vetinari.telemetry import get_telemetry_collector
@@ -74,7 +76,7 @@ def _record_dedup_hit(agent: str) -> None:
         )
 
 
-def _record_dedup_miss(agent: str) -> None:
+def _record_dedup_miss_best_effort(agent: str) -> None:
     """Record a deduplication miss in the telemetry system."""
     try:
         from vetinari.telemetry import get_telemetry_collector
@@ -197,6 +199,95 @@ def _record_sync_failure(backend: str) -> None:
 _storage_lock = threading.Lock()
 
 
+def _exact_duplicate_id(conn: Any, content_hash: str, agent: str) -> str | None:
+    """Return an exact duplicate memory id when content hash matches."""
+    row = conn.execute("SELECT id FROM memories WHERE content_hash = ? AND forgotten = 0", (content_hash,)).fetchone()
+    if not row:
+        return None
+    logger.debug("Memory dedup: exact match found (%s)", row[0])
+    _record_dedup_hit(agent)
+    return row[0]
+
+
+def _semantic_duplicate_id(conn: Any, vec: list[float], agent: str) -> str | None:
+    """Return a semantically duplicate memory id from recent embeddings."""
+    rows = conn.execute(
+        "SELECT memory_id, embedding_blob FROM embeddings ORDER BY rowid DESC LIMIT ?",
+        (_DEDUP_SCAN_LIMIT,),
+    ).fetchall()
+    for emb_row in rows:
+        sim = _cosine_similarity(vec, _unpack_embedding(emb_row[1]))
+        if sim >= SEMANTIC_DEDUP_THRESHOLD:
+            logger.debug(
+                "Memory semantic dedup: similarity %.3f >= %.2f; skipping",
+                sim,
+                SEMANTIC_DEDUP_THRESHOLD,
+            )
+            _record_dedup_hit(agent)
+            return emb_row[0]
+    _record_dedup_miss(agent)
+    return None
+
+
+def _previous_chain_hash(conn: Any) -> str:
+    """Return the latest persisted chain hash for tamper detection."""
+    last_row = conn.execute("SELECT id, metadata_json FROM memories ORDER BY rowid DESC LIMIT 1").fetchone()
+    if not last_row or not last_row[1]:
+        return ""
+    meta = json.loads(last_row[1]) if last_row[1] else {}
+    return str(meta.get("chain_hash", ""))
+
+
+def _memory_metadata_with_chain(entry: MemoryEntry, chain_hash: str) -> dict[str, Any]:
+    """Return persisted metadata with chain and provenance fields."""
+    meta = dict(entry.metadata or {})
+    meta["chain_hash"] = chain_hash
+    if entry.provenance:
+        meta["provenance"] = entry.provenance
+    return meta
+
+
+def _insert_memory_entry(
+    conn: Any,
+    entry: MemoryEntry,
+    *,
+    ts_ms: int,
+    now_str: str,
+    content_hash: str,
+    chain_hash: str,
+    vec: list[float],
+) -> None:
+    """Insert or replace the memory row and matching embedding."""
+    meta = _memory_metadata_with_chain(entry, chain_hash)
+    conn.execute(
+        """INSERT OR REPLACE INTO memories
+           (id, agent, entry_type, content, summary, timestamp, provenance,
+            content_hash, quality_score, importance, created_at, updated_at,
+            metadata_json, scope)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            entry.id,
+            entry.agent,
+            entry.entry_type.value if hasattr(entry.entry_type, "value") else str(entry.entry_type),
+            entry.content,
+            entry.summary,
+            ts_ms,
+            entry.provenance,
+            content_hash,
+            0.5,
+            entry.metadata.get("importance", 0.5) if entry.metadata else 0.5,
+            now_str,
+            now_str,
+            json.dumps(meta),
+            entry.scope,
+        ),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO embeddings (memory_id, embedding_blob, model, created_at) VALUES (?, ?, ?, ?)",
+        (entry.id, _pack_embedding(vec), "all-MiniLM-L6-v2", now_str),
+    )
+
+
 class MemoryStorage:
     """Handles write-side memory operations: store, forget, deduplicate, chain.
 
@@ -232,93 +323,37 @@ class MemoryStorage:
         now_str = datetime.now(timezone.utc).isoformat()
         ts_ms = entry.timestamp or int(time.time() * 1000)
         content_hash = hashlib.sha256(entry.content.encode("utf-8")).hexdigest()
+        agent = entry.agent or "unknown"
 
-        # Fast exact dedup — same content hash means identical content
-        row = conn.execute(
-            "SELECT id FROM memories WHERE content_hash = ? AND forgotten = 0", (content_hash,)
-        ).fetchone()
-        if row:
-            logger.debug("Memory dedup: exact match found (%s)", row[0])
-            _record_dedup_hit(entry.agent or "unknown")
-            return row[0]
+        duplicate_id = _exact_duplicate_id(conn, content_hash, agent)
+        if duplicate_id is not None:
+            return duplicate_id
 
-        # Compute embedding for semantic dedup and vector search
         from vetinari.embeddings import get_embedder
 
         vec = get_embedder().embed(entry.content)
-
         if check_duplicate:
-            # Semantic dedup: scan up to _DEDUP_SCAN_LIMIT recent embeddings
-            rows = conn.execute(
-                "SELECT memory_id, embedding_blob FROM embeddings ORDER BY rowid DESC LIMIT ?",
-                (_DEDUP_SCAN_LIMIT,),
-            ).fetchall()
-            for emb_row in rows:
-                stored_vec = _unpack_embedding(emb_row[1])
-                sim = _cosine_similarity(vec, stored_vec)
-                if sim >= SEMANTIC_DEDUP_THRESHOLD:
-                    logger.debug(
-                        "Memory semantic dedup: similarity %.3f >= %.2f; skipping",
-                        sim,
-                        SEMANTIC_DEDUP_THRESHOLD,
-                    )
-                    _record_dedup_hit(entry.agent or "unknown")
-                    return emb_row[0]
-            # No duplicate found — record a miss so the ratio stays accurate
-            _record_dedup_miss(entry.agent or "unknown")
+            duplicate_id = _semantic_duplicate_id(conn, vec, agent)
+            if duplicate_id is not None:
+                return duplicate_id
 
-        # Chain hash: link to last entry for tamper detection
-        last_row = conn.execute("SELECT id, metadata_json FROM memories ORDER BY rowid DESC LIMIT 1").fetchone()
-        prev_hash = ""
-        if last_row and last_row[1]:
-            import json
-
-            meta = json.loads(last_row[1]) if last_row[1] else {}
-            prev_hash = meta.get("chain_hash", "")
-        chain_hash = _compute_chain_hash(entry.id, entry.content, prev_hash)
-
-        import json
-
-        meta = entry.metadata or {}
-        meta["chain_hash"] = chain_hash
-        if entry.provenance:
-            meta["provenance"] = entry.provenance
-
+        chain_hash = _compute_chain_hash(entry.id, entry.content, _previous_chain_hash(conn))
         with _storage_lock:
-            conn.execute(
-                """INSERT OR REPLACE INTO memories
-                   (id, agent, entry_type, content, summary, timestamp, provenance,
-                    content_hash, quality_score, importance, created_at, updated_at,
-                    metadata_json, scope)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    entry.id,
-                    entry.agent,
-                    entry.entry_type.value if hasattr(entry.entry_type, "value") else str(entry.entry_type),
-                    entry.content,
-                    entry.summary,
-                    ts_ms,
-                    entry.provenance,
-                    content_hash,
-                    0.5,
-                    entry.metadata.get("importance", 0.5) if entry.metadata else 0.5,
-                    now_str,
-                    now_str,
-                    json.dumps(meta),
-                    entry.scope,
-                ),
-            )
-            # Store embedding
-            conn.execute(
-                "INSERT OR REPLACE INTO embeddings (memory_id, embedding_blob, model, created_at) VALUES (?, ?, ?, ?)",
-                (entry.id, _pack_embedding(vec), "all-MiniLM-L6-v2", now_str),
+            _insert_memory_entry(
+                conn,
+                entry,
+                ts_ms=ts_ms,
+                now_str=now_str,
+                content_hash=content_hash,
+                chain_hash=chain_hash,
+                vec=vec,
             )
             try:
                 conn.commit()
             except Exception as _commit_exc:
-                _record_sync_failure(entry.agent or "unknown")
+                _record_sync_failure(agent)
                 raise RuntimeError(
-                    f"Memory commit failed for entry {entry.id} — storage may be inconsistent"
+                    f"Memory commit failed for entry {entry.id} - storage may be inconsistent"
                 ) from _commit_exc
 
         logger.debug("Stored memory %s (scope=%s, agent=%s)", entry.id, entry.scope, entry.agent)
@@ -380,12 +415,22 @@ class MemoryStorage:
             return None
         return self._row_to_entry(row)
 
-    def export(self, path: str, limit: int = 10_000) -> bool:
-        """Export all non-forgotten memories to a JSONL file.
+    def export(
+        self,
+        path: str,
+        limit: int = 10_000,
+        *,
+        subject_id: str | None = None,
+        allow_unscoped_export: bool = False,
+    ) -> bool:
+        """Export filtered memories to a JSONL file.
 
         Args:
             path: Destination file path (UTF-8 encoded JSONL).
             limit: Maximum number of entries to export (guards against OOM).
+            subject_id: Optional subject identifier for subject-scoped export.
+            allow_unscoped_export: Explicitly permit exporting all non-forgotten
+                memories when no subject scope is supplied.
 
         Returns:
             True on success, False when an error occurs.
@@ -394,14 +439,21 @@ class MemoryStorage:
         from pathlib import Path
 
         try:
+            if not subject_id and not allow_unscoped_export:
+                raise ValueError("subject_id is required for memory export")
             conn = get_connection()
             rows = conn.execute(
                 "SELECT * FROM memories WHERE forgotten = 0 ORDER BY timestamp LIMIT ?", (limit,)
             ).fetchall()
+            entries = [self._row_to_entry(row) for row in rows]
+            if subject_id:
+                from vetinari.privacy.erasure_registry import filter_subject_export
+
+                serialized = filter_subject_export(entries, subject_id=subject_id)
+            else:
+                serialized = [entry.to_dict() for entry in entries]
             with Path(path).open("w", encoding="utf-8") as f:
-                for row in rows:
-                    entry = self._row_to_entry(row)
-                    f.write(json.dumps(entry.to_dict()) + "\n")
+                f.writelines(json.dumps(entry) + "\n" for entry in serialized)
             return True
         except Exception as exc:
             logger.error("Memory export failed: %s", exc)

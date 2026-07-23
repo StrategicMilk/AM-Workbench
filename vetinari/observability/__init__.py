@@ -17,7 +17,8 @@ from vetinari.observability.otel_genai import (
     get_genai_tracer,
     reset_genai_tracer,
 )
-from vetinari.observability.step_evaluator import (  # noqa: VET123 - barrel export preserves public import compatibility
+from vetinari.observability.pipeline_checkpoint import PipelineCheckpointStore
+from vetinari.observability.step_evaluator import (
     PlanAdherenceMetric,
     PlanQualityMetric,
     StepEvaluator,
@@ -43,6 +44,7 @@ __all__ = [
     "EvalCase",
     "GenAITracer",
     "NoOpSpan",
+    "PipelineCheckpointStore",
     "PlanAdherenceMetric",
     "PlanQualityMetric",
     "SpanContext",

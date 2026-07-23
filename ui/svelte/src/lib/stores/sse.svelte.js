@@ -6,6 +6,7 @@
  */
 
 import { appState } from './app.svelte.js';
+import { nativeProjectStreamPath } from '../native_kernel_routes.js';
 
 /** Minimum backoff between reconnect attempts (ms). */
 const MIN_BACKOFF = 1000;
@@ -21,6 +22,14 @@ let _backoff = MIN_BACKOFF;
 
 /** Active event handlers keyed by event type. */
 let _handlers = {};
+
+function tauriInvokeAvailable() {
+  return Boolean(globalThis.__TAURI__?.core?.invoke ?? globalThis.__TAURI_INTERNALS__?.invoke);
+}
+
+function projectStreamUrl(projectId) {
+  return nativeProjectStreamPath(projectId);
+}
 
 /**
  * Subscribe to a project's SSE stream.
@@ -57,7 +66,12 @@ export function isConnected() {
 function _connect(projectId) {
   _clearReconnect();
 
-  const url = `/api/project/${encodeURIComponent(projectId)}/stream`;
+  const url = projectStreamUrl(projectId);
+  if (!url) {
+    _connected = false;
+    appState.serverConnected = false;
+    return;
+  }
   const es = new EventSource(url);
 
   es.onopen = () => {
