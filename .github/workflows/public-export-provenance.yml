@@ -6,6 +6,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: public-export-provenance-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   protected-provenance:
     name: Protected export provenance (trusted base)
