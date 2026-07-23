@@ -3,20 +3,20 @@
   "api_allowlist_sha256": "823e68e1a0ab13e6427bb9c2749f3579212a71f6afc5d63428adab9d3f3acbf1",
   "api_checker_path": "scripts/check_all_exports.py",
   "api_checker_sha256": "fe6c848c1008d39510119f06f6c10f0f6aa79fd23549f619fa966d9d517a93c3",
-  "copied_count": 6102,
+  "copied_count": 6103,
   "executable_paths": [],
   "export_digest_spec": "sha256:path-length,path,git-mode,byte-length,content-sha256:v2",
-  "export_tree_sha256": "87e5ce95c0f9e33c33ecde61ebfcb9faa6590cb62571e32b48652d0516eeedfa",
+  "export_tree_sha256": "043b6c462b040053fc6b186774fec1add9c19a3ec59a0ac221338e1b731eb750",
   "generated_at": "2026-07-23T11:46:35+00:00",
   "manifest_version": 3,
   "path_contract_version": 1,
   "scope_policy_path": "config/public_export_scope.toml",
   "scope_policy_sha256": "49a8f908bd3be113f6a2564f7d11b3c73455c282435811c9f644b08263238440",
   "scope_policy_version": 1,
-  "skipped_count": 21738,
+  "skipped_count": 21737,
   "skipped_summary": {
     "by_check": {
-      "positive-public-scope": 21738
+      "positive-public-scope": 21737
     }
   },
   "source_commit": "651769a1fcb409d2ed2ea2a896855a47128ce4cf",
