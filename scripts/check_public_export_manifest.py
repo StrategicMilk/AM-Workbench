@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from public_export_path_contract import PATH_CONTRACT_VERSION, validate_public_paths
+
 MANIFEST_NAME = "PUBLIC_EXPORT_MANIFEST.json"
 MANIFEST_VERSION = 2
 DIGEST_SPEC = "sha256:path-length,path,git-mode,byte-length,content-sha256:v2"
@@ -28,6 +30,7 @@ REQUIRED_PATHS = (
     API_ALLOWLIST_PATH,
     API_CHECKER_PATH,
     "scripts/check_public_export_manifest.py",
+    "scripts/public_export_path_contract.py",
     "ui/svelte/package.json",
     "ui/svelte/package-lock.json",
 )
@@ -40,34 +43,21 @@ def _is_hex(value: object, length: int) -> bool:
 
 
 def _public_paths(root: Path) -> tuple[list[str], list[str]]:
-    paths: list[str] = []
+    raw_paths: list[str] = []
     errors: list[str] = []
-    seen_casefolded: dict[str, str] = {}
     for full_path in root.rglob("*"):
         relative = full_path.relative_to(root)
         if ".git" in relative.parts or not (full_path.is_file() or full_path.is_symlink()):
             continue
         path = relative.as_posix()
-        parts = path.split("/")
-        if (
-            path != path.strip()
-            or path.startswith("/")
-            or "\\" in path
-            or ":" in parts[0]
-            or any(part in {"", ".", ".."} for part in parts)
-        ):
-            errors.append(f"non-canonical path: {path!r}")
-            continue
-        previous = seen_casefolded.get(path.casefold())
-        if previous is not None and previous != path:
-            errors.append(f"case-colliding paths: {previous!r}, {path!r}")
-            continue
-        seen_casefolded[path.casefold()] = path
         if full_path.is_symlink():
             errors.append(f"symlink is not allowed: {path}")
             continue
-        paths.append(path)
-    return sorted(paths), errors
+        raw_paths.append(path)
+    path_errors = validate_public_paths(raw_paths)
+    errors.extend(f"{path!r}: {message}" for path, message in path_errors)
+    invalid_paths = {path for path, _message in path_errors}
+    return sorted(path for path in raw_paths if path not in invalid_paths), errors
 
 
 def _payload_digest(root: Path, paths: list[str], executable_paths: set[str]) -> str:
@@ -123,6 +113,8 @@ def verify_public_export(
 
     if manifest.get("manifest_version") != MANIFEST_VERSION:
         errors.append(f"manifest_version must be {MANIFEST_VERSION}")
+    if manifest.get("path_contract_version") != PATH_CONTRACT_VERSION:
+        errors.append(f"path_contract_version must be {PATH_CONTRACT_VERSION}")
     if manifest.get("export_digest_spec") != DIGEST_SPEC:
         errors.append(f"export_digest_spec must be {DIGEST_SPEC!r}")
     if manifest.get("source_tracked_dirty") is not False:
