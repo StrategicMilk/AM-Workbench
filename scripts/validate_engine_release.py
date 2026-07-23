@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import importlib
 import json
@@ -62,11 +64,14 @@ MAX_EXPANDED_BYTES = 2 * 1024 * 1024 * 1024
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 CUDA_CERTIFICATION_LABELS = (
-    "runner-group:vetinari-engine-gpu",
+    "self-hosted",
+    "vetinari-engine-gpu",
     "linux",
     "x64",
     "cuda-12-4",
 )
+CUDA_TRAINING_RUNNER_LABEL = "vetinari-training-gpu"
+CUDA_CERTIFICATION_JOB_NAME = "Certify CUDA runtime and model offload on governed GPU hardware"
 CUDA_FIXTURE_SHA256 = "f7e39dc9f26f3d39bf59e885349c6eec65880f685322d591f53e6cdb46ceb2e9"
 CUDA_CERTIFICATION_ASSET = "cuda-certification.json"
 CONSUMER_AUTHORITY_ASSET = "consumer-release-authority.json"
@@ -106,6 +111,7 @@ PUBLISH_JOB_CONDITION = (
 MACOS_PILOT_CONDITION = "github.event_name == 'workflow_dispatch' && inputs.macos_pilot && !inputs.publish_release"
 PUBLISH_ONLY_JOBS = frozenset({
     "cuda-certification",
+    "cuda-certification-binding",
     "publication-prerequisites",
     "sign-windows",
     "validate-signed-windows",
@@ -666,6 +672,9 @@ def validate_workflow_export_toolchain_bindings(workflow_path: Path) -> None:
     jobs = _workflow_jobs(workflow_path)
     required_jobs = {
         "build",
+        "cuda-certification",
+        "cuda-certification-binding",
+        "publication-prerequisites",
         "sign-windows",
         "validate-signed-windows",
         "assemble-release",
@@ -677,6 +686,9 @@ def validate_workflow_export_toolchain_bindings(workflow_path: Path) -> None:
             f"engine workflow is missing export-toolchain jobs: {sorted(required_jobs - jobs.keys())}"
         )
     build = jobs["build"]
+    cuda_certification = jobs["cuda-certification"]
+    cuda_binding = jobs["cuda-certification-binding"]
+    publication_prerequisites = jobs["publication-prerequisites"]
     sign = jobs["sign-windows"]
     validate = jobs["validate-signed-windows"]
     assemble = jobs["assemble-release"]
@@ -684,12 +696,23 @@ def validate_workflow_export_toolchain_bindings(workflow_path: Path) -> None:
     verify_release = jobs["verify-release"]
     if "supply-chain" not in _needs(build):
         raise ReleaseValidationError("engine workflow build job does not depend on supply-chain validation")
+    _require_publish_job(cuda_certification, job_name="cuda-certification", needs={"build"})
+    _require_publish_job(
+        cuda_binding,
+        job_name="cuda-certification-binding",
+        needs={"cuda-certification"},
+    )
+    _require_publish_job(
+        publication_prerequisites,
+        job_name="publication-prerequisites",
+        needs={"supply-chain", "build", "cuda-certification-binding"},
+    )
     _require_publish_job(sign, job_name="sign-windows", needs={"build", "publication-prerequisites"})
     _require_publish_job(validate, job_name="validate-signed-windows", needs={"sign-windows"})
     _require_publish_job(
         assemble,
         job_name="assemble-release",
-        needs={"build", "cuda-certification", "sign-windows", "validate-signed-windows"},
+        needs={"build", "cuda-certification-binding", "sign-windows", "validate-signed-windows"},
     )
     _require_publish_job(publish, job_name="publish", needs={"assemble-release"})
     _require_publish_job(verify_release, job_name="verify-release", needs={"publish"})
@@ -1211,6 +1234,10 @@ def _validate_manifest_cuda_evidence(
         expected_workflow_run_url=f"https://github.com/{repository}/actions/runs/{run_id}",
         require_certified=True,
     )
+    _validate_cuda_certification_subject(
+        _read_json_object(path, "CUDA certification evidence")["subject"],
+        subject_directory=root,
+    )
 
 
 def merge_release_fragments(root: Path, output: Path, identity: ReleaseIdentity) -> dict[str, Any]:
@@ -1287,6 +1314,11 @@ def merge_release_fragments(root: Path, output: Path, identity: ReleaseIdentity)
         expected_commit=identity.source_commit,
         expected_workflow_run_url=(f"https://github.com/{identity.repository}/actions/runs/{identity.run_id}"),
         require_certified=True,
+    )
+    _validate_cuda_certification_subject(
+        _read_json_object(cuda_path, "CUDA certification evidence")["subject"],
+        subject_directory=root,
+        require_manifest=True,
     )
     manifest = {
         "engine_version": version,
@@ -1937,6 +1969,13 @@ def validate_publication_prerequisites(
     cuda_evidence_path: Path,
     expected_commit: str,
     expected_workflow_run_url: str,
+    expected_workflow_run_attempt: int,
+    expected_runner_id: int,
+    expected_runner_name: str,
+    expected_machine_id_sha256: str,
+    expected_service_account: str,
+    expected_work_directory: str,
+    certifier_public_key_der_base64: str,
 ) -> None:
     """Require measured size budgets and same-commit GPU/offload certification.
 
@@ -1958,6 +1997,13 @@ def validate_publication_prerequisites(
         cuda_evidence_path,
         expected_commit=expected_commit,
         expected_workflow_run_url=expected_workflow_run_url,
+        expected_workflow_run_attempt=expected_workflow_run_attempt,
+        expected_runner_id=expected_runner_id,
+        expected_runner_name=expected_runner_name,
+        expected_machine_id_sha256=expected_machine_id_sha256,
+        expected_service_account=expected_service_account,
+        expected_work_directory=expected_work_directory,
+        certifier_public_key_der_base64=certifier_public_key_der_base64,
     )
 
 
@@ -1977,25 +2023,71 @@ def validate_workflow_publication_bindings(workflow_path: Path) -> None:
         re.DOTALL,
     )
     required_cuda_job_markers = (
-        "    runs-on:\n      group: vetinari-engine-gpu\n",
+        "    runs-on: [self-hosted, vetinari-engine-gpu, linux, x64, cuda-12-4]\n",
         "    environment: engine-release-cuda-certification\n",
         "          name: engine-linux-cuda\n",
         "          CERTIFIER_SHA256: ${{ vars.ENGINE_CUDA_CERTIFIER_SHA256 }}\n",
         '          certifier="/opt/vetinari/bin/amw-engine-cuda-certifier"\n',
         "          /opt/vetinari/bin/amw-engine-cuda-certifier \\\n",
-        "            --runner-label runner-group:vetinari-engine-gpu \\\n",
+        "            --archive cuda-certification/input/amw-engine-linux-cuda.zip \\\n",
+        "            --manifest cuda-certification/input/manifest-linux-cuda.json \\\n",
+        "            --output cuda-certification/result/cuda-device-certification.json \\\n",
+        '            --workflow-run-attempt "${{ github.run_attempt }}" \\\n',
+        "            --runner-label self-hosted \\\n",
+        "            --runner-label vetinari-engine-gpu \\\n",
+        "          name: engine-cuda-device-certification\n",
+        "          path: cuda-certification/result/cuda-device-certification.json\n",
+    )
+    binding_job = re.search(
+        r"  cuda-certification-binding:\n(?P<body>.*?)(?=\n  [a-zA-Z0-9_-]+:)",
+        text,
+        re.DOTALL,
+    )
+    required_binding_markers = (
+        "    needs: cuda-certification\n",
+        "    runs-on: ubuntu-latest\n",
+        "    environment: engine-release-cuda-certification\n",
+        "      actions: read\n",
+        "          GH_TOKEN: ${{ github.token }}\n",
+        "          RUNNER_AUDIT_TOKEN: ${{ secrets.ENGINE_RUNNER_AUDIT_TOKEN }}\n",
+        "          name: engine-cuda-device-certification\n",
+        "          name: engine-linux-cuda\n",
+        "          path: cuda-certification/subject\n",
+        '          expected = {"amw-engine-linux-cuda.zip", "manifest-linux-cuda.json"}\n',
+        '            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs?per_page=100" \\\n',
+        '            "repos/${{ github.repository }}/actions/runners?per_page=100" \\\n',
+        "          EXPECTED_RUNNER_ID: ${{ vars.ENGINE_CUDA_CERTIFICATION_RUNNER_ID }}\n",
+        "          EXPECTED_RUNNER_NAME: ${{ vars.ENGINE_CUDA_CERTIFICATION_RUNNER_NAME }}\n",
+        "          EXPECTED_MACHINE_ID_SHA256: ${{ vars.ENGINE_CUDA_HOST_ID_SHA256 }}\n",
+        "          EXPECTED_SERVICE_ACCOUNT: ${{ vars.ENGINE_CUDA_SERVICE_ACCOUNT }}\n",
+        "          EXPECTED_WORK_DIRECTORY: ${{ vars.ENGINE_CUDA_WORK_DIRECTORY }}\n",
+        "          CERTIFIER_PUBLIC_KEY_DER_BASE64: ${{ vars.ENGINE_CUDA_CERTIFIER_PUBLIC_KEY_DER_BASE64 }}\n",
+        "          python scripts/validate_engine_release.py bind-cuda-runner \\\n",
+        "            --runner-metadata cuda-certification/metadata/runner-inventory.json \\\n",
+        "            --workflow-jobs cuda-certification/metadata/workflow-jobs.json \\\n",
+        "            --subject-directory cuda-certification/subject \\\n",
+        '            --expected-runner-id "$EXPECTED_RUNNER_ID" \\\n',
+        '            --expected-workflow-run-attempt "${{ github.run_attempt }}"\n',
+        '            --certifier-public-key-der-base64 "$CERTIFIER_PUBLIC_KEY_DER_BASE64" \\\n',
+        "            --output cuda-certification/result/cuda-certification.json \\\n",
         "          python scripts/validate_engine_release.py cuda-result \\\n",
         "          name: engine-cuda-certification\n",
         "          path: cuda-certification/result/cuda-certification.json\n",
     )
     required_cuda_consumer_markers = (
-        "    needs: [supply-chain, build, cuda-certification]\n",
+        "    needs: [supply-chain, build, cuda-certification-binding]\n",
+        "    environment: engine-release-cuda-certification\n",
         "            --cuda-evidence cuda-certification/cuda-certification.json \\\n",
-        '            --expected-workflow-run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"\n',
+        '            --expected-runner-id "$EXPECTED_RUNNER_ID" \\\n',
+        '            --expected-workflow-run-attempt "${{ github.run_attempt }}" \\\n',
+        '            --certifier-public-key-der-base64 "$CERTIFIER_PUBLIC_KEY_DER_BASE64"\n',
+        '            --expected-work-directory "$EXPECTED_WORK_DIRECTORY" \\\n',
     )
     if (
         cuda_job is None
         or any(marker not in cuda_job.group("body") for marker in required_cuda_job_markers)
+        or binding_job is None
+        or any(marker not in binding_job.group("body") for marker in required_binding_markers)
         or any(marker not in text for marker in required_cuda_consumer_markers)
     ):
         raise ReleaseValidationError("engine workflow does not preserve the governed same-run CUDA evidence channel")
@@ -2658,11 +2750,34 @@ def _validate_cuda_evidence(
     *,
     expected_commit: str | None = None,
     expected_workflow_run_url: str | None = None,
+    expected_workflow_run_attempt: int | None = None,
+    expected_runner_id: int | None = None,
+    expected_runner_name: str | None = None,
+    expected_machine_id_sha256: str | None = None,
+    expected_service_account: str | None = None,
+    expected_work_directory: str | None = None,
+    certifier_public_key_der_base64: str | None = None,
     require_certified: bool = False,
 ) -> None:
     evidence = _read_json_object(path, "CUDA certification evidence")
-    required = {"schema_version", "status", "source_commit", "workflow_run_url", "runner_labels", "device", "offload"}
-    if set(evidence) != required or evidence["schema_version"] != 1:
+    base_fields = {
+        "schema_version",
+        "status",
+        "source_commit",
+        "workflow_run_url",
+        "runner_labels",
+        "device",
+        "offload",
+    }
+    schema_version = evidence.get("schema_version")
+    required_by_schema = {
+        1: base_fields,
+        2: base_fields | {"workflow_run_attempt", "subject", "host_attestation", "certifier_signature"},
+        3: base_fields
+        | {"workflow_run_attempt", "subject", "host_attestation", "certifier_signature", "runner_identity"},
+    }
+    required = required_by_schema.get(schema_version) if type(schema_version) is int else None
+    if required is None or set(evidence) != required:
         raise ReleaseValidationError("CUDA certification evidence fields or schema version are invalid")
     device = evidence["device"]
     offload = evidence["offload"]
@@ -2684,6 +2799,8 @@ def _validate_cuda_evidence(
         return
     if evidence["status"] != "certified":
         raise ReleaseValidationError("CUDA certification status must be blocked or certified")
+    if schema_version == 1:
+        raise ReleaseValidationError("certified CUDA evidence must include governed host isolation attestation")
     source_commit = evidence["source_commit"]
     if not isinstance(source_commit, str) or COMMIT_PATTERN.fullmatch(source_commit) is None:
         raise ReleaseValidationError("CUDA certification source commit is invalid")
@@ -2695,8 +2812,86 @@ def _validate_cuda_evidence(
         raise ReleaseValidationError("CUDA certification must name an immutable Actions run")
     if expected_workflow_run_url is not None and run_url != expected_workflow_run_url:
         raise ReleaseValidationError("CUDA certification does not come from the current publication workflow run")
+    run_attempt = evidence["workflow_run_attempt"]
+    if (
+        not isinstance(run_attempt, int)
+        or isinstance(run_attempt, bool)
+        or run_attempt <= 0
+        or (expected_workflow_run_attempt is not None and run_attempt != expected_workflow_run_attempt)
+    ):
+        raise ReleaseValidationError("CUDA certification does not match the current workflow run attempt")
     if labels != list(CUDA_CERTIFICATION_LABELS):
         raise ReleaseValidationError("CUDA certification must record the exact governed GPU runner labels")
+    _validate_cuda_certification_subject(evidence["subject"])
+    _validate_cuda_certifier_signature(
+        evidence,
+        certifier_public_key_der_base64=certifier_public_key_der_base64,
+    )
+    host_attestation = evidence["host_attestation"]
+    if (
+        not isinstance(host_attestation, dict)
+        or set(host_attestation)
+        != {
+            "machine_id_sha256",
+            "service_account",
+            "work_directory",
+            "runner_service_count",
+            "training_runner_present",
+        }
+        or not isinstance(host_attestation["machine_id_sha256"], str)
+        or SHA256_PATTERN.fullmatch(host_attestation["machine_id_sha256"]) is None
+        or not isinstance(host_attestation["service_account"], str)
+        or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,127}", host_attestation["service_account"]) is None
+        or not isinstance(host_attestation["work_directory"], str)
+        or not PurePosixPath(host_attestation["work_directory"]).is_absolute()
+        or ".." in PurePosixPath(host_attestation["work_directory"]).parts
+        or not isinstance(host_attestation["runner_service_count"], int)
+        or isinstance(host_attestation["runner_service_count"], bool)
+        or host_attestation["runner_service_count"] != 1
+        or host_attestation["training_runner_present"] is not False
+    ):
+        raise ReleaseValidationError(
+            "CUDA certification host attestation does not prove one isolated non-training runner service"
+        )
+    expected_host = (
+        expected_machine_id_sha256,
+        expected_service_account,
+        expected_work_directory,
+    )
+    if any(value is not None for value in expected_host) and any(value is None for value in expected_host):
+        raise ReleaseValidationError("protected CUDA host authority must be supplied as one complete tuple")
+    if expected_machine_id_sha256 is not None and (
+        host_attestation["machine_id_sha256"] != expected_machine_id_sha256
+        or host_attestation["service_account"] != expected_service_account
+        or host_attestation["work_directory"] != expected_work_directory
+    ):
+        raise ReleaseValidationError("CUDA certification host identity does not match protected authority")
+    expected_runner = (expected_runner_id, expected_runner_name)
+    if any(value is not None for value in expected_runner) and any(value is None for value in expected_runner):
+        raise ReleaseValidationError("protected CUDA runner authority must include both ID and name")
+    if schema_version != 3:
+        if require_certified:
+            raise ReleaseValidationError(
+                "CUDA certification is not bound to the protected workflow-job and repository runner identity"
+            )
+    else:
+        runner_identity = evidence["runner_identity"]
+        if (
+            not isinstance(runner_identity, dict)
+            or set(runner_identity) != {"id", "name", "labels"}
+            or not isinstance(runner_identity["id"], int)
+            or isinstance(runner_identity["id"], bool)
+            or runner_identity["id"] <= 0
+            or not isinstance(runner_identity["name"], str)
+            or not runner_identity["name"]
+            or runner_identity["labels"] != list(CUDA_CERTIFICATION_LABELS)
+            or CUDA_TRAINING_RUNNER_LABEL in runner_identity["labels"]
+        ):
+            raise ReleaseValidationError("CUDA certification runner identity is invalid or training-eligible")
+        if expected_runner_id is not None and (
+            runner_identity["id"] != expected_runner_id or runner_identity["name"] != expected_runner_name
+        ):
+            raise ReleaseValidationError("CUDA certification runner identity does not match protected authority")
     if any(not isinstance(value, str) or not value for value in device.values()):
         raise ReleaseValidationError("CUDA certification must assert a concrete device identity")
     if (
@@ -2710,11 +2905,299 @@ def _validate_cuda_evidence(
         raise ReleaseValidationError("CUDA certification does not prove model offload on the asserted device")
 
 
+def _cuda_certifier_signature_payload(evidence: dict[str, Any]) -> bytes:
+    payload = {key: value for key, value in evidence.items() if key not in {"certifier_signature", "runner_identity"}}
+    payload["schema_version"] = 2
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def _validate_cuda_certification_subject(
+    subject: Any,
+    *,
+    subject_directory: Path | None = None,
+    require_manifest: bool = False,
+) -> None:
+    expected_names = {
+        "archive_name": "amw-engine-linux-cuda.zip",
+        "manifest_name": "manifest-linux-cuda.json",
+    }
+    if (
+        not isinstance(subject, dict)
+        or set(subject)
+        != {
+            "archive_name",
+            "archive_sha256",
+            "archive_size_bytes",
+            "manifest_name",
+            "manifest_sha256",
+            "manifest_size_bytes",
+        }
+        or any(subject.get(key) != value for key, value in expected_names.items())
+        or any(
+            not isinstance(subject.get(key), str) or SHA256_PATTERN.fullmatch(subject[key]) is None
+            for key in ("archive_sha256", "manifest_sha256")
+        )
+        or any(
+            not isinstance(subject.get(key), int) or isinstance(subject[key], bool) or subject[key] <= 0
+            for key in ("archive_size_bytes", "manifest_size_bytes")
+        )
+    ):
+        raise ReleaseValidationError("CUDA certification subject identity is invalid")
+    if subject_directory is None:
+        return
+    archive = subject_directory / subject["archive_name"]
+    manifest_path = subject_directory / subject["manifest_name"]
+    if (
+        not archive.is_file()
+        or archive.stat().st_size != subject["archive_size_bytes"]
+        or sha256_file(archive) != subject["archive_sha256"]
+    ):
+        raise ReleaseValidationError("CUDA certification subject does not match the same-run Linux CUDA archive")
+    if not manifest_path.is_file():
+        if require_manifest:
+            raise ReleaseValidationError("CUDA certification subject manifest is unavailable")
+        return
+    if (
+        manifest_path.stat().st_size != subject["manifest_size_bytes"]
+        or sha256_file(manifest_path) != subject["manifest_sha256"]
+    ):
+        raise ReleaseValidationError("CUDA certification subject does not match the same-run Linux CUDA manifest")
+    manifest = _read_json_object(manifest_path, "Linux CUDA release fragment")
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list) or len(artifacts) != 1 or not isinstance(artifacts[0], dict):
+        raise ReleaseValidationError("Linux CUDA release fragment does not identify one archive")
+    artifact = artifacts[0]
+    if (
+        artifact.get("platform") != "linux"
+        or artifact.get("accel") != "cuda"
+        or artifact.get("file") != subject["archive_name"]
+        or artifact.get("sha256") != subject["archive_sha256"]
+        or artifact.get("size_bytes") != subject["archive_size_bytes"]
+    ):
+        raise ReleaseValidationError("Linux CUDA release fragment does not bind the certified archive")
+
+
+def _validate_cuda_certifier_signature(
+    evidence: dict[str, Any],
+    *,
+    certifier_public_key_der_base64: str | None,
+) -> None:
+    signature = evidence["certifier_signature"]
+    if (
+        not isinstance(signature, dict)
+        or set(signature) != {"algorithm", "public_key_sha256", "value_base64"}
+        or signature["algorithm"] != "ecdsa-p256-sha256"
+        or not isinstance(signature["public_key_sha256"], str)
+        or SHA256_PATTERN.fullmatch(signature["public_key_sha256"]) is None
+        or not isinstance(signature["value_base64"], str)
+        or not signature["value_base64"]
+    ):
+        raise ReleaseValidationError("CUDA certifier signature metadata is invalid")
+    try:
+        signature_bytes = base64.b64decode(signature["value_base64"], validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ReleaseValidationError("CUDA certifier signature is not canonical base64") from exc
+    if not 64 <= len(signature_bytes) <= 80:
+        raise ReleaseValidationError("CUDA certifier ECDSA signature length is invalid")
+    if certifier_public_key_der_base64 is None:
+        return
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+    except ImportError as exc:
+        raise ReleaseValidationError("CUDA signature verification dependency is unavailable") from exc
+    try:
+        public_key_der = base64.b64decode(certifier_public_key_der_base64, validate=True)
+        public_key = serialization.load_der_public_key(public_key_der)
+    except (binascii.Error, ValueError, TypeError) as exc:
+        raise ReleaseValidationError("protected CUDA certifier public key is invalid") from exc
+    if (
+        not isinstance(public_key, ec.EllipticCurvePublicKey)
+        or not isinstance(public_key.curve, ec.SECP256R1)
+        or hashlib.sha256(public_key_der).hexdigest() != signature["public_key_sha256"]
+    ):
+        raise ReleaseValidationError("CUDA certifier signature key does not match protected authority")
+    try:
+        public_key.verify(
+            signature_bytes,
+            _cuda_certifier_signature_payload(evidence),
+            ec.ECDSA(hashes.SHA256()),
+        )
+    except InvalidSignature as exc:
+        raise ReleaseValidationError(
+            "CUDA certifier signature does not authenticate the raw certification evidence"
+        ) from exc
+
+
+def bind_cuda_runner_inventory(
+    cuda_evidence_path: Path,
+    runner_metadata_path: Path,
+    workflow_jobs_path: Path,
+    subject_directory: Path,
+    output_path: Path,
+    *,
+    expected_runner_id: int,
+    expected_runner_name: str,
+    expected_machine_id_sha256: str,
+    expected_service_account: str,
+    expected_work_directory: str,
+    certifier_public_key_der_base64: str,
+    expected_commit: str,
+    expected_workflow_run_url: str,
+    expected_workflow_run_attempt: int,
+) -> dict[str, Any]:
+    """Bind device evidence to protected identity using independent GitHub metadata."""
+    if (
+        not isinstance(expected_runner_id, int)
+        or isinstance(expected_runner_id, bool)
+        or expected_runner_id <= 0
+        or not expected_runner_name
+    ):
+        raise ReleaseValidationError("protected CUDA runner ID and name are invalid")
+    _validate_cuda_evidence(
+        cuda_evidence_path,
+        expected_commit=expected_commit,
+        expected_workflow_run_url=expected_workflow_run_url,
+        expected_workflow_run_attempt=expected_workflow_run_attempt,
+        expected_machine_id_sha256=expected_machine_id_sha256,
+        expected_service_account=expected_service_account,
+        expected_work_directory=expected_work_directory,
+        certifier_public_key_der_base64=certifier_public_key_der_base64,
+    )
+    raw_evidence = _read_json_object(cuda_evidence_path, "raw CUDA certification evidence")
+    if raw_evidence.get("schema_version") != 2 or raw_evidence.get("status") != "certified":
+        raise ReleaseValidationError("raw CUDA certification must be an unbound certified schema version 2 result")
+    _validate_cuda_certification_subject(
+        raw_evidence["subject"],
+        subject_directory=subject_directory,
+        require_manifest=True,
+    )
+
+    workflow_metadata = _read_json_object(workflow_jobs_path, "workflow job inventory")
+    jobs = workflow_metadata.get("jobs")
+    job_count = workflow_metadata.get("total_count")
+    if (
+        set(workflow_metadata) != {"total_count", "jobs"}
+        or not isinstance(job_count, int)
+        or isinstance(job_count, bool)
+        or job_count < 0
+        or job_count > 100
+        or not isinstance(jobs, list)
+        or job_count != len(jobs)
+    ):
+        raise ReleaseValidationError("workflow job inventory is incomplete or malformed")
+    run_match = re.fullmatch(r"https://github\.com/[^/]+/[^/]+/actions/runs/(\d+)", expected_workflow_run_url)
+    if run_match is None:
+        raise ReleaseValidationError("expected CUDA workflow run URL is invalid")
+    run_id = int(run_match.group(1))
+    job_matches = [
+        job
+        for job in jobs
+        if isinstance(job, dict) and job.get("name") == CUDA_CERTIFICATION_JOB_NAME and job.get("run_id") == run_id
+    ]
+    if len(job_matches) != 1:
+        raise ReleaseValidationError("CUDA certification workflow job is absent or ambiguous")
+    workflow_job = job_matches[0]
+    workflow_labels = workflow_job.get("labels")
+    if (
+        workflow_job.get("status") != "completed"
+        or workflow_job.get("conclusion") != "success"
+        or workflow_job.get("runner_id") != expected_runner_id
+        or workflow_job.get("runner_name") != expected_runner_name
+        or not isinstance(workflow_labels, list)
+        or any(not isinstance(label, str) for label in workflow_labels)
+        or len(workflow_labels) != len(CUDA_CERTIFICATION_LABELS)
+        or set(workflow_labels) != set(CUDA_CERTIFICATION_LABELS)
+    ):
+        raise ReleaseValidationError("CUDA workflow job does not match the protected successful runner identity")
+
+    metadata = _read_json_object(runner_metadata_path, "repository runner inventory")
+    runners = metadata.get("runners")
+    total_count = metadata.get("total_count")
+    if (
+        set(metadata) != {"total_count", "runners"}
+        or not isinstance(total_count, int)
+        or isinstance(total_count, bool)
+        or total_count < 0
+        or total_count > 100
+        or not isinstance(runners, list)
+        or total_count != len(runners)
+    ):
+        raise ReleaseValidationError("repository runner inventory is incomplete or malformed")
+    matches = [
+        runner
+        for runner in runners
+        if isinstance(runner, dict)
+        and runner.get("id") == expected_runner_id
+        and runner.get("name") == expected_runner_name
+    ]
+    if len(matches) != 1:
+        raise ReleaseValidationError("protected CUDA runner is absent or ambiguous in repository inventory")
+    runner = matches[0]
+    labels = runner.get("labels")
+    if (
+        not isinstance(runner.get("id"), int)
+        or isinstance(runner["id"], bool)
+        or runner["id"] <= 0
+        or runner.get("os") != "linux"
+        or runner.get("status") != "online"
+        or not isinstance(runner.get("busy"), bool)
+        or not isinstance(labels, list)
+    ):
+        raise ReleaseValidationError("protected CUDA runner state is not online, Linux, and identity-complete")
+    label_types: dict[str, str] = {}
+    for label in labels:
+        if (
+            not isinstance(label, dict)
+            or set(label) != {"id", "name", "type"}
+            or not isinstance(label.get("id"), int)
+            or isinstance(label["id"], bool)
+            or label["id"] <= 0
+            or not isinstance(label.get("name"), str)
+            or not isinstance(label.get("type"), str)
+        ):
+            raise ReleaseValidationError("protected CUDA runner label inventory is malformed")
+        normalized = label["name"].lower()
+        if normalized in label_types:
+            raise ReleaseValidationError("protected CUDA runner label inventory contains duplicates")
+        label_types[normalized] = label["type"]
+    expected_types = {
+        "self-hosted": "read-only",
+        "vetinari-engine-gpu": "custom",
+        "linux": "read-only",
+        "x64": "read-only",
+        "cuda-12-4": "custom",
+    }
+    if label_types != expected_types or CUDA_TRAINING_RUNNER_LABEL in label_types:
+        raise ReleaseValidationError("protected CUDA runner labels are not exact or include training eligibility")
+
+    bound = {
+        **raw_evidence,
+        "schema_version": 3,
+        "runner_identity": {
+            "id": expected_runner_id,
+            "name": expected_runner_name,
+            "labels": list(CUDA_CERTIFICATION_LABELS),
+        },
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(bound, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    return bound
+
+
 def validate_cuda_certification_result(
     path: Path,
     *,
     expected_commit: str,
     expected_workflow_run_url: str,
+    expected_workflow_run_attempt: int | None = None,
+    expected_runner_id: int | None = None,
+    expected_runner_name: str | None = None,
+    expected_machine_id_sha256: str | None = None,
+    expected_service_account: str | None = None,
+    expected_work_directory: str | None = None,
+    certifier_public_key_der_base64: str | None = None,
 ) -> None:
     """Validate one protected same-run CUDA certification result.
 
@@ -2730,6 +3213,13 @@ def validate_cuda_certification_result(
         path,
         expected_commit=expected_commit,
         expected_workflow_run_url=expected_workflow_run_url,
+        expected_workflow_run_attempt=expected_workflow_run_attempt,
+        expected_runner_id=expected_runner_id,
+        expected_runner_name=expected_runner_name,
+        expected_machine_id_sha256=expected_machine_id_sha256,
+        expected_service_account=expected_service_account,
+        expected_work_directory=expected_work_directory,
+        certifier_public_key_der_base64=certifier_public_key_der_base64,
         require_certified=True,
     )
 
@@ -3376,10 +3866,39 @@ def _build_parser() -> argparse.ArgumentParser:
     publication.add_argument("--cuda-evidence", type=Path, required=True)
     publication.add_argument("--expected-commit", required=True)
     publication.add_argument("--expected-workflow-run-url", required=True)
+    publication.add_argument("--expected-workflow-run-attempt", type=int, required=True)
+    publication.add_argument("--expected-runner-id", type=int, required=True)
+    publication.add_argument("--expected-runner-name", required=True)
+    publication.add_argument("--expected-machine-id-sha256", required=True)
+    publication.add_argument("--expected-service-account", required=True)
+    publication.add_argument("--expected-work-directory", required=True)
+    publication.add_argument("--certifier-public-key-der-base64", required=True)
     cuda_result = subparsers.add_parser("cuda-result")
     cuda_result.add_argument("--cuda-evidence", type=Path, required=True)
     cuda_result.add_argument("--expected-commit", required=True)
     cuda_result.add_argument("--expected-workflow-run-url", required=True)
+    cuda_result.add_argument("--expected-workflow-run-attempt", type=int)
+    cuda_result.add_argument("--expected-runner-id", type=int)
+    cuda_result.add_argument("--expected-runner-name")
+    cuda_result.add_argument("--expected-machine-id-sha256")
+    cuda_result.add_argument("--expected-service-account")
+    cuda_result.add_argument("--expected-work-directory")
+    cuda_result.add_argument("--certifier-public-key-der-base64")
+    bind_cuda_runner = subparsers.add_parser("bind-cuda-runner")
+    bind_cuda_runner.add_argument("--cuda-evidence", type=Path, required=True)
+    bind_cuda_runner.add_argument("--runner-metadata", type=Path, required=True)
+    bind_cuda_runner.add_argument("--workflow-jobs", type=Path, required=True)
+    bind_cuda_runner.add_argument("--subject-directory", type=Path, required=True)
+    bind_cuda_runner.add_argument("--output", type=Path, required=True)
+    bind_cuda_runner.add_argument("--expected-runner-id", type=int, required=True)
+    bind_cuda_runner.add_argument("--expected-runner-name", required=True)
+    bind_cuda_runner.add_argument("--expected-machine-id-sha256", required=True)
+    bind_cuda_runner.add_argument("--expected-service-account", required=True)
+    bind_cuda_runner.add_argument("--expected-work-directory", required=True)
+    bind_cuda_runner.add_argument("--certifier-public-key-der-base64", required=True)
+    bind_cuda_runner.add_argument("--expected-commit", required=True)
+    bind_cuda_runner.add_argument("--expected-workflow-run-url", required=True)
+    bind_cuda_runner.add_argument("--expected-workflow-run-attempt", type=int, required=True)
     size = subparsers.add_parser("size")
     size.add_argument("--bundle", required=True)
     size.add_argument("--binary", type=Path, required=True)
@@ -3467,12 +3986,43 @@ def main(argv: list[str] | None = None) -> int:
                 cuda_evidence_path=args.cuda_evidence,
                 expected_commit=args.expected_commit,
                 expected_workflow_run_url=args.expected_workflow_run_url,
+                expected_workflow_run_attempt=args.expected_workflow_run_attempt,
+                expected_runner_id=args.expected_runner_id,
+                expected_runner_name=args.expected_runner_name,
+                expected_machine_id_sha256=args.expected_machine_id_sha256,
+                expected_service_account=args.expected_service_account,
+                expected_work_directory=args.expected_work_directory,
+                certifier_public_key_der_base64=args.certifier_public_key_der_base64,
             )
         elif args.command == "cuda-result":
             validate_cuda_certification_result(
                 args.cuda_evidence,
                 expected_commit=args.expected_commit,
                 expected_workflow_run_url=args.expected_workflow_run_url,
+                expected_workflow_run_attempt=args.expected_workflow_run_attempt,
+                expected_runner_id=args.expected_runner_id,
+                expected_runner_name=args.expected_runner_name,
+                expected_machine_id_sha256=args.expected_machine_id_sha256,
+                expected_service_account=args.expected_service_account,
+                expected_work_directory=args.expected_work_directory,
+                certifier_public_key_der_base64=args.certifier_public_key_der_base64,
+            )
+        elif args.command == "bind-cuda-runner":
+            bind_cuda_runner_inventory(
+                args.cuda_evidence,
+                args.runner_metadata,
+                args.workflow_jobs,
+                args.subject_directory,
+                args.output,
+                expected_runner_id=args.expected_runner_id,
+                expected_runner_name=args.expected_runner_name,
+                expected_machine_id_sha256=args.expected_machine_id_sha256,
+                expected_service_account=args.expected_service_account,
+                expected_work_directory=args.expected_work_directory,
+                certifier_public_key_der_base64=args.certifier_public_key_der_base64,
+                expected_commit=args.expected_commit,
+                expected_workflow_run_url=args.expected_workflow_run_url,
+                expected_workflow_run_attempt=args.expected_workflow_run_attempt,
             )
         elif args.command == "size":
             print(

@@ -15,7 +15,7 @@ concurrency:
 jobs:
   vanilla-training-proof:
     name: Vanilla TRL degraded-performance proof
-    runs-on: [self-hosted, vetinari-engine-gpu, linux, x64]
+    runs-on: [self-hosted, vetinari-training-gpu, linux, x64]
     timeout-minutes: 90
     env:
       HF_HUB_DISABLE_TELEMETRY: "1"
