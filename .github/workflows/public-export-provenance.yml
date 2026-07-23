@@ -16,6 +16,9 @@ jobs:
       EXPECTED_SOURCE_COMMIT: ${{ vars.PUBLIC_EXPORT_SOURCE_COMMIT }}
       EXPECTED_SOURCE_TREE: ${{ vars.PUBLIC_EXPORT_SOURCE_TREE }}
       EXPECTED_PAYLOAD_SHA256: ${{ vars.PUBLIC_EXPORT_PAYLOAD_SHA256 }}
+      EXPECTED_MANIFEST_SHA256: ${{ vars.PUBLIC_EXPORT_MANIFEST_SHA256 }}
+      TRUST_ROOT_MODE: ${{ vars.PUBLIC_EXPORT_TRUST_ROOT_MODE || 'payload' }}
+      EXPECTED_NEXT_TRUST_ROOT_SHA256: ${{ vars.PUBLIC_EXPORT_NEXT_TRUST_ROOT_SHA256 }}
     steps:
       - name: Check out trusted verifier from the protected base
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -41,3 +44,7 @@ jobs:
           --expected-source-commit "$EXPECTED_SOURCE_COMMIT"
           --expected-source-tree "$EXPECTED_SOURCE_TREE"
           --expected-payload-sha256 "$EXPECTED_PAYLOAD_SHA256"
+          --expected-manifest-sha256 "$EXPECTED_MANIFEST_SHA256"
+          --trusted-base-root trusted
+          --trust-root-mode "$TRUST_ROOT_MODE"
+          --expected-next-trust-root-sha256 "$EXPECTED_NEXT_TRUST_ROOT_SHA256"
