@@ -47,12 +47,20 @@ ERROR_REMEDIATIONS: list[ErrorRemediation] = [
     ErrorRemediation(
         pattern=r"(?i)local inference.*unreachable|UNREACHABLE",
         title="Local inference unreachable",
-        explanation="No GGUF model file found or llama-cpp-python is not installed.",
+        explanation=(
+            "The configured local backend has no usable model. Diagnosis depends on which "
+            "backend the request targeted: llama-cpp needs GGUF files on disk; "
+            "vLLM/SGLang/NIM need a reachable endpoint plus a resolvable HuggingFace model; "
+            "faster-whisper/ComfyUI need their backend-native model assets; "
+            "hosted providers need the relevant API key."
+        ),
         steps=[
-            "Check VETINARI_MODELS_DIR points to a directory with .gguf files",
-            "Run 'vetinari models scan' to discover models on disk",
-            "Run 'vetinari init' to download a recommended model",
-            "Verify llama-cpp-python: pip install llama-cpp-python",  # noqa: VET301 — user guidance string
+            "llama-cpp: check VETINARI_MODELS_DIR points to a directory with .gguf files; verify llama-cpp-python is installed",
+            "vLLM/SGLang/NIM: confirm the endpoint is reachable and VETINARI_VLLM_MODEL (or equivalent) resolves on the backend",
+            "faster-whisper / ComfyUI: confirm the optional dependency group is installed and the model asset is present or reachable",
+            "Hosted providers (Anthropic/OpenAI/Gemini/Cohere/HuggingFace/Replicate via LiteLLM): confirm the relevant API key env var is set",
+            "Run 'vetinari models scan' to list locally discovered llama-cpp models",
+            "Run 'vetinari init' to re-probe hardware and select a backend",
         ],
     ),
     ErrorRemediation(
@@ -123,12 +131,12 @@ ERROR_REMEDIATIONS: list[ErrorRemediation] = [
         severity="warning",
     ),
     ErrorRemediation(
-        pattern=r"(?i)no module named.*flask",
-        title="Flask not installed",
-        explanation="The web dashboard requires Flask which is not installed.",
+        pattern=r"(?i)no module named.*litestar|litestar.*not installed",
+        title="Litestar not installed",
+        explanation="The web API requires Litestar compatibility dependencies for the Python route stack.",
         steps=[
-            "pip install flask",  # noqa: VET301 — user guidance string
-            "Or: pip install -e '.[web]'",  # noqa: VET301 — user guidance string
+            "Or: pip install -e '.[web]'",
+            "Run 'vetinari doctor --json' to verify web runtime dependencies",
         ],
     ),
     # Database
@@ -179,7 +187,7 @@ ERROR_REMEDIATIONS: list[ErrorRemediation] = [
         title="Vetinari not installed",
         explanation="The vetinari package is not installed in the current Python environment.",
         steps=[
-            "pip install -e '.'",  # noqa: VET301 — user guidance string
+            "pip install -e '.'",
             "Verify: python -c 'import vetinari; print(\"OK\")'",
         ],
     ),

@@ -1,6 +1,6 @@
 """Mid-execution DAG replanning capabilities for AgentGraph.
 
-This module provides ``ReplanMixin``, a mixin class that adds replanning logic
+This module provides ``ReplanEngine``, a mixin class that adds replanning logic
 to ``AgentGraph`` without bloating the main orchestration file.  The mixin
 accesses ``self._agents`` (dict[AgentType, Any]) which AgentGraph populates
 during initialization.
@@ -14,7 +14,7 @@ complexity.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from vetinari.agents.contracts import AgentResult, AgentTask, Task
 from vetinari.constants import TRUNCATE_OUTPUT_SUMMARY
@@ -24,7 +24,7 @@ from vetinari.types import AgentType, StatusEnum
 logger = logging.getLogger(__name__)
 
 
-class ReplanMixin:
+class ReplanEngine:
     """Mid-execution replanning capabilities (mixin for AgentGraph).
 
     Requires the host class to expose:
@@ -34,7 +34,11 @@ class ReplanMixin:
     # The _agents attribute is declared on AgentGraph; type checkers see it via
     # the mixin contract, not a field definition here.
 
-    def _should_replan(self, task: Task, result: AgentResult) -> bool:
+    if TYPE_CHECKING:
+        _agents: dict[AgentType, Any]
+
+    @staticmethod
+    def _should_replan(task: Task, result: AgentResult) -> bool:
         """Check whether intermediate results warrant DAG replanning.
 
         Evaluates metadata flags set by agents during execution to determine
@@ -85,7 +89,31 @@ class ReplanMixin:
             )
             return True
 
-        # 4. An agent requested delegation
+        # 4. Foreman identified a planning concern that requires a new DAG.
+        if (
+            hasattr(task, "assigned_agent")
+            and task.assigned_agent == AgentType.FOREMAN
+            and (metadata.get("architecture_concern") or metadata.get("complexity_exceeded"))
+        ):
+            logger.info(
+                "[Replan] Foreman planning concern for task %s",
+                task.id,
+            )
+            return True
+
+        # 5. Inspector found verification scope drift.
+        if (
+            hasattr(task, "assigned_agent")
+            and task.assigned_agent == AgentType.INSPECTOR
+            and metadata.get("scope_changed")
+        ):
+            logger.info(
+                "[Replan] Inspector scope change detected for task %s",
+                task.id,
+            )
+            return True
+
+        # 6. An agent requested delegation
         if metadata.get("delegate_to"):
             logger.info(
                 "[Replan] Delegation request from task %s to %s",
@@ -177,7 +205,8 @@ class ReplanMixin:
 
         return ReplanResult(new_tasks=remaining_tasks)
 
-    def _parse_replan_tasks(self, output: Any) -> list[Task] | None:
+    @staticmethod
+    def _parse_replan_tasks(output: Any) -> list[Task] | None:
         """Attempt to parse structured task list from Planner replan output.
 
         Accepts output as a dict with a 'tasks' key containing a list
@@ -219,8 +248,8 @@ class ReplanMixin:
 
         return parsed or None
 
+    @staticmethod
     def _replace_remaining_tasks(
-        self,
         exec_plan: ExecutionDAG,
         new_tasks: list[Task],
     ) -> None:

@@ -18,18 +18,31 @@ import json
 import logging
 import subprocess
 import sys
-import threading
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from vetinari.config.sandbox_schema import SandboxPolicyConfig
 from vetinari.constants import _PROJECT_ROOT, SANDBOX_MAX_MEMORY_MB, SANDBOX_TIMEOUT
+from vetinari.sandbox_policy_helpers import _SandboxAuditLogger, _SandboxPolicyLoader, _SandboxRateLimiter
 from vetinari.sandbox_types import SandboxAuditEntry
+from vetinari.security.redaction import redact_value
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "_ALLOWED_COMMANDS",
+    "_DANGEROUS_ATTRS",
+    "_DANGEROUS_NAMES",
+    "_SAFE_ENV_VARS",
+    "ExternalPluginSandbox",
+    "_SandboxAuditLogger",
+    "_SandboxPolicyLoader",
+    "_SandboxRateLimiter",
+    "_execute_plugin_hook_entry",
+]
+
 
 # ── Environment and command allowlists ───────────────────────────────────────
 # Only these environment variables are forwarded to sandboxed subprocesses.
@@ -259,6 +272,66 @@ class ExternalPluginSandbox:
                         logger.warning("Failed to load plugin manifest %s", manifest_file)
         return manifests
 
+    def _resolve_plugin_path(self, plugin_name: str) -> Path | dict[str, str]:
+        plugin_dir_resolved = self.plugin_dir.resolve()
+        try:
+            plugin_path_resolved = (self.plugin_dir / plugin_name).resolve()
+        except Exception as e:
+            logger.warning("Failed to resolve plugin path for %r - rejecting: %s", plugin_name, e)
+            return {"error": f"Plugin name {plugin_name!r} is invalid"}
+
+        if plugin_path_resolved != plugin_dir_resolved and plugin_dir_resolved not in plugin_path_resolved.parents:
+            logger.warning(
+                "Path traversal attempt blocked for plugin %r - resolved path %s escapes plugin dir %s",
+                plugin_name,
+                plugin_path_resolved,
+                plugin_dir_resolved,
+            )
+            return {"error": f"Plugin name {plugin_name!r} is not allowed (path traversal detected)"}
+        return plugin_path_resolved
+
+    def _record_hook_audit(
+        self,
+        execution_id: str,
+        hook_name: str,
+        status: str,
+        duration_ms: int,
+        details: dict[str, Any],
+    ) -> None:
+        self._log_audit(
+            SandboxAuditEntry(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                execution_id=execution_id,
+                operation=hook_name,
+                sandbox_type="external",
+                status=status,
+                duration_ms=duration_ms,
+                details=details,
+            )
+        )
+
+    @staticmethod
+    def _plugin_target(plugin_path: Path) -> Path:
+        init_file = plugin_path / "__init__.py"
+        main_file = plugin_path / "main.py"
+        return main_file if main_file.exists() else init_file
+
+    def _execute_validated_hook(
+        self,
+        plugin_path: Path,
+        plugin_name: str,
+        hook_name: str,
+        params: dict,
+    ) -> Any:
+        target = self._plugin_target(plugin_path)
+        if not target.exists():
+            logger.error("Plugin %r has no loadable module at %s", plugin_name, target)
+            return {"error": f"Plugin {plugin_name} not found"}
+        outcome = self._run_hook_in_subprocess(target, plugin_name, hook_name, params)
+        if not outcome.get("ok"):
+            raise RuntimeError(str(outcome.get("error", "plugin hook failed")))
+        return outcome.get("result")
+
     def execute_hook(self, plugin_name: str, hook_name: str, params: dict) -> Any:
         """Execute a named hook in the specified plugin.
 
@@ -279,84 +352,39 @@ class ExternalPluginSandbox:
         if hook_name not in self.ALLOWED_HOOKS:
             return {"error": f"Hook {hook_name} not allowed"}
 
-        # Bug 5 fix: validate plugin_name against path traversal before any I/O.
-        # Resolve the candidate path and verify it stays inside plugin_dir.
-        plugin_dir_resolved = self.plugin_dir.resolve()
-        try:
-            plugin_path_resolved = (self.plugin_dir / plugin_name).resolve()
-        except Exception as e:
-            logger.warning(
-                "Failed to resolve plugin path for %r — rejecting: %s",
-                plugin_name,
-                e,
-            )
-            return {"error": f"Plugin name {plugin_name!r} is invalid"}
-
-        if not str(plugin_path_resolved).startswith(str(plugin_dir_resolved)):
-            logger.warning(
-                "Path traversal attempt blocked for plugin %r — resolved path %s escapes plugin dir %s",
-                plugin_name,
-                plugin_path_resolved,
-                plugin_dir_resolved,
-            )
-            return {"error": f"Plugin name {plugin_name!r} is not allowed (path traversal detected)"}
+        plugin_path = self._resolve_plugin_path(plugin_name)
+        if isinstance(plugin_path, dict):
+            return plugin_path
 
         execution_id = f"plugin_{uuid.uuid4().hex[:8]}"
         start_time = time.time()
 
-        self._log_audit(
-            SandboxAuditEntry(
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                execution_id=execution_id,
-                operation=hook_name,
-                sandbox_type="external",
-                status="executing",
-                duration_ms=0,
-                details={"plugin": plugin_name, "params": params},
-            )
+        self._record_hook_audit(
+            execution_id,
+            hook_name,
+            "executing",
+            0,
+            {"plugin": plugin_name, "params": redact_value(params)},
         )
 
         try:
-            plugin_path = self.plugin_dir / plugin_name
-            init_file = plugin_path / "__init__.py"
-            main_file = plugin_path / "main.py"
-            target = main_file if main_file.exists() else init_file
-
-            if not target.exists():
-                logger.error("Plugin %r has no loadable module at %s", plugin_name, target)
-                return {"error": f"Plugin {plugin_name} not found"}
-
-            # Run plugin code outside the host process so timeouts are killable
-            # and test/host monkeypatches cannot affect plugin behavior.
-            outcome = self._run_hook_in_subprocess(target, plugin_name, hook_name, params)
-            if not outcome.get("ok"):
-                raise RuntimeError(str(outcome.get("error", "plugin hook failed")))
-            result = outcome.get("result")
-
-            self._log_audit(
-                SandboxAuditEntry(
-                    timestamp=datetime.now(timezone.utc).isoformat(),
-                    execution_id=execution_id,
-                    operation=hook_name,
-                    sandbox_type="external",
-                    status="success",
-                    duration_ms=int((time.time() - start_time) * 1000),
-                    details={"plugin": plugin_name},
-                )
+            result = self._execute_validated_hook(plugin_path, plugin_name, hook_name, params)
+            self._record_hook_audit(
+                execution_id,
+                hook_name,
+                "success",
+                int((time.time() - start_time) * 1000),
+                {"plugin": plugin_name},
             )
             return result
 
         except Exception as e:
-            self._log_audit(
-                SandboxAuditEntry(
-                    timestamp=datetime.now(timezone.utc).isoformat(),
-                    execution_id=execution_id,
-                    operation=hook_name,
-                    sandbox_type="external",
-                    status="error",
-                    duration_ms=int((time.time() - start_time) * 1000),
-                    details={"plugin": plugin_name, "error": str(e)},
-                )
+            self._record_hook_audit(
+                execution_id,
+                hook_name,
+                "error",
+                int((time.time() - start_time) * 1000),
+                {"plugin": plugin_name, "error": str(e)},
             )
             logger.warning("Plugin hook execution failed — returning error result: %s", e)
             return {"error": str(e)}
@@ -385,7 +413,7 @@ class ExternalPluginSandbox:
             "raise SystemExit(_execute_plugin_hook_entry())",
         ]
         try:
-            completed = subprocess.run(  # noqa: S603 - fixed Python entrypoint with validated plugin path and JSON stdin.
+            completed = subprocess.run(
                 command,
                 input=payload,
                 capture_output=True,
@@ -434,197 +462,3 @@ class ExternalPluginSandbox:
 
 
 # ── Policy loader ────────────────────────────────────────────────────────────
-
-
-class _SandboxPolicyLoader:
-    """Loads and validates the sandbox policy from YAML configuration.
-
-    Responsibility: read ``config/sandbox_policy.yaml`` via
-    ``SandboxPolicyConfig``, fall back to built-in defaults on missing file or
-    validation error, and expose the validated ``SandboxPolicyConfig`` to
-    callers.  All filesystem I/O for policy configuration is isolated here.
-    """
-
-    _DEFAULT_POLICY_PATH: Path = _PROJECT_ROOT / "config" / "sandbox_policy.yaml"
-
-    def load(self, policy_path: Path | None = None) -> SandboxPolicyConfig:
-        """Load and validate the sandbox policy from disk.
-
-        Only a missing policy file uses built-in defaults — a present file
-        that fails schema validation or is malformed YAML raises so the caller
-        cannot silently run with a permissive (all-defaults) policy when the
-        operator intended stricter constraints.
-
-        Args:
-            policy_path: Override path to ``sandbox_policy.yaml``. Defaults
-                to ``<project_root>/config/sandbox_policy.yaml``.
-
-        Returns:
-            A validated ``SandboxPolicyConfig`` loaded from the file, or
-            built-in defaults only when no policy file exists at the path.
-
-        Raises:
-            ValueError: If the policy file exists but fails schema or bounds
-                validation — caller must not silently fall back to defaults.
-            Exception: Any other I/O or YAML parse error when the file exists
-                is re-raised so operators are aware of broken configuration.
-        """
-        resolved_path = policy_path or self._DEFAULT_POLICY_PATH
-        try:
-            policy = SandboxPolicyConfig.from_yaml_file(resolved_path)
-            logger.info("SandboxManager loaded policy from %s", resolved_path)
-            return policy
-        except FileNotFoundError:
-            # No policy file is acceptable — use built-in safe defaults.
-            logger.warning(
-                "sandbox_policy.yaml not found at %s — using built-in defaults",
-                resolved_path,
-            )
-            return SandboxPolicyConfig()
-        except ValueError as exc:
-            # Bug 7 fix: schema/bounds violations must fail CLOSED.  The file
-            # exists but is invalid — returning permissive defaults would silently
-            # grant more access than the operator intended.
-            logger.error(
-                "sandbox_policy.yaml at %s failed validation — refusing to start with permissive defaults: %s",
-                resolved_path,
-                exc,
-            )
-            raise
-        except Exception as exc:
-            # Bug 8 fix: malformed YAML and other I/O errors on a present file
-            # are re-raised consistently rather than silently falling back.
-            logger.error(
-                "sandbox_policy.yaml at %s could not be loaded — refusing to start with permissive defaults: %s",
-                resolved_path,
-                exc,
-            )
-            raise
-
-
-# ── Rate limiter ─────────────────────────────────────────────────────────────
-
-
-class _SandboxRateLimiter:
-    """Per-client rate limiting for sandbox execution requests.
-
-    Responsibility: enforce a sliding-window rate limit (max N calls per
-    client per time window).  All rate-limit state and locking lives here,
-    keeping it isolated from policy loading and audit logging concerns.
-    """
-
-    def __init__(self, max_calls: int, window_seconds: float) -> None:
-        """Configure the rate limiter.
-
-        Args:
-            max_calls: Maximum number of calls allowed per client per window.
-            window_seconds: Length of the sliding window in seconds.
-        """
-        self._max_calls = max_calls
-        self._window = window_seconds
-        self._log: dict[str, list[float]] = {}
-        self._lock = threading.Lock()
-
-    def check(self, client_id: str) -> bool:
-        """Return True if the client is within the rate limit, False if exceeded.
-
-        Args:
-            client_id: Identifier for the calling client (used as the rate-limit key).
-
-        Returns:
-            ``True`` when the client may proceed; ``False`` when the limit is exceeded.
-        """
-        now = time.time()
-        cutoff = now - self._window
-        with self._lock:
-            timestamps = self._log.get(client_id, [])
-            timestamps = [t for t in timestamps if t > cutoff]
-            if len(timestamps) >= self._max_calls:
-                self._log[client_id] = timestamps
-                return False
-            timestamps.append(now)
-            self._log[client_id] = timestamps
-            return True
-
-
-# ── Audit logger ─────────────────────────────────────────────────────────────
-
-
-class _SandboxAuditLogger:
-    """Structured audit logging for sandbox execution events.
-
-    Responsibility: persist execution audit records to the Vetinari audit
-    system via ``vetinari.audit.get_audit_logger()`` and maintain an
-    in-memory ring buffer so ``SandboxManager.get_audit_log()`` can return
-    subprocess/in-process execution records alongside plugin records.
-
-    Failures in the external logger are swallowed with a WARNING — audit
-    logging is best-effort and must never block code execution.  The
-    in-memory buffer write is unconditional and not affected by external
-    logger failures.
-    """
-
-    _MAX_BUFFER = 1000  # cap the in-memory ring buffer to avoid unbounded growth
-
-    def __init__(self) -> None:
-        """Initialise the in-memory ring buffer for audit records."""
-        self._buffer: list[dict[str, Any]] = []
-        self._lock = threading.Lock()
-
-    def record(
-        self,
-        sandbox_type: str,
-        execution_id: str,
-        status: str,
-        duration_ms: int,
-        code_length: int,
-    ) -> None:
-        """Persist a sandbox execution audit record.
-
-        Writes to the in-memory ring buffer (always) and to the Vetinari
-        audit logger (best-effort).  External logger failures never propagate.
-
-        Args:
-            sandbox_type: Execution strategy used (``"in_process"`` or ``"subprocess"``).
-            execution_id: Unique identifier for this execution run.
-            status: Outcome string — ``"success"`` or ``"failure"``.
-            duration_ms: Wall-clock execution time in milliseconds.
-            code_length: Number of characters in the submitted code.
-        """
-        entry = {
-            "sandbox_type": sandbox_type,
-            "execution_id": execution_id,
-            "status": status,
-            "duration_ms": duration_ms,
-            "code_length": code_length,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        with self._lock:
-            self._buffer.append(entry)
-            if len(self._buffer) > self._MAX_BUFFER:
-                self._buffer = self._buffer[-self._MAX_BUFFER :]
-
-        try:
-            from vetinari.audit import get_audit_logger
-
-            get_audit_logger().log_sandbox_execution(
-                sandbox_type=sandbox_type,
-                execution_id=execution_id,
-                status=status,
-                duration_ms=float(duration_ms),
-                code_length=code_length,
-            )
-        except Exception:
-            logger.warning("Sandbox audit logging failed — execution result is unaffected", exc_info=True)
-
-    def get_records(self, limit: int = 100) -> list[dict[str, Any]]:
-        """Return recent audit records from the in-memory buffer.
-
-        Args:
-            limit: Maximum number of records to return (most recent first).
-
-        Returns:
-            List of audit record dictionaries, newest first.
-        """
-        with self._lock:
-            return list(self._buffer[-limit:])

@@ -12,10 +12,8 @@
 #   rails/input.co    — input rail flows using execute check_* actions
 #   rails/output.co   — output rail flows using execute check_* actions
 #
-# Note on rails/input.co and rails/output.co: the execute check_jailbreak,
-# execute check_toxic, execute check_prompt_injection, and
-# execute check_sensitive_data actions must be registered in
-# vetinari/safety/nemo_provider.py before these flows will run.
+# rails/input.co and rails/output.co action handlers are registered by
+# NeMoGuardrailsProvider._register_actions() in vetinari/safety/nemo_provider.py.
 
 models:
   - type: main
@@ -35,7 +33,9 @@ rails:
     flows:
       - check jailbreak
       - check prompt injection
+      - check sensitive data leakage
+      - check toxic language
   output:
     flows:
-      - check output safety
-      - check harmful content
+      - check sensitive data leakage
+      - check toxic language

@@ -91,7 +91,7 @@ class PlanQualityMetric:
     _MAX_TASKS = 100
     _PASS_THRESHOLD = 0.75
 
-    def evaluate_plan(self, plan: dict[str, Any]) -> StepScore:
+    def evaluate_plan(self, plan: dict[str, Any] | None) -> StepScore:
         """Score plan quality.
 
         Args:
@@ -101,31 +101,47 @@ class PlanQualityMetric:
         Returns:
             A :class:`StepScore` with up to 4 points (one per check).
         """
-        tasks: list[dict[str, Any]] = plan.get("tasks", []) or []
-        details: dict[str, Any] = {}
+        raw_tasks = plan.get("tasks") if plan else None
+        tasks: list[dict[str, Any]] = raw_tasks or []
+        details: dict[str, Any] = {
+            "has_tasks": len(tasks) > 0,
+            "has_dependencies": any("depends_on" in task for task in tasks),
+            "no_cycles": self._is_acyclic(tasks),
+            "task_count": len(tasks),
+            "reasonable_task_count": 1 <= len(tasks) <= self._MAX_TASKS,
+        }
+        if not details["has_tasks"]:
+            return StepScore(
+                metric_name=self.NAME,
+                score=0.0,
+                max_score=4.0,
+                details={**details, "guard": "empty_or_null_plan"},
+                passed=False,
+            )
+
         score = 0.0
         max_score = 4.0
 
         # Check 1: has_tasks
-        has_tasks = len(tasks) > 0
+        has_tasks = details["has_tasks"]
         details["has_tasks"] = has_tasks
         if has_tasks:
             score += 1.0
 
         # Check 2: has_dependencies field present on at least one task
-        has_dep_field = any("depends_on" in t for t in tasks)
+        has_dep_field = details["has_dependencies"]
         details["has_dependencies"] = has_dep_field
-        if has_dep_field or not tasks:
+        if has_dep_field and tasks:
             score += 1.0
 
         # Check 3: no_cycles
-        no_cycles = self._is_acyclic(tasks)
+        no_cycles = details["no_cycles"]
         details["no_cycles"] = no_cycles
         if no_cycles:
             score += 1.0
 
         # Check 4: reasonable_task_count
-        reasonable = 1 <= len(tasks) <= self._MAX_TASKS if tasks else True
+        reasonable = details["reasonable_task_count"]
         details["task_count"] = len(tasks)
         details["reasonable_task_count"] = reasonable
         if reasonable:

@@ -1,0 +1,63 @@
+"""Persona cohesion eval harness public API."""
+
+from __future__ import annotations
+
+from vetinari.workbench.persona_cohesion.contracts import (
+    BLOCKER_CASE_SET_MALFORMED,
+    BLOCKER_DIMENSION_REGRESSION,
+    BLOCKER_FAILING_ANTI_SYCOPHANCY_GATE,
+    BLOCKER_MISSING_ANTI_SYCOPHANCY_GATE,
+    BLOCKER_MISSING_BASELINE_OBSERVATION,
+    BLOCKER_MISSING_CANDIDATE_OBSERVATION,
+    BLOCKER_MISSING_DEPENDENCY_REF,
+    BLOCKER_MISSING_FIXTURE_COVERAGE,
+    BLOCKER_POSITIVE_FEEDBACK_UNGOVERNED,
+    BLOCKER_REFERENCE_ONLY_EVIDENCE,
+    CohesionCaseSetError,
+    CohesionContractError,
+    CohesionDecisionStatus,
+    CohesionDependencyRefs,
+    CohesionDimension,
+    CohesionDimensionScore,
+    CohesionEvalCase,
+    CohesionEvalResult,
+    CohesionObservation,
+    FeedbackKind,
+    SurfaceContext,
+)
+from vetinari.workbench.persona_cohesion.harness import (
+    DEFAULT_CASE_SET_PATH,
+    blocked_result_from_loader_error,
+    cohesion_result_to_improvement_candidate,
+    evaluate_cohesion_run,
+    load_cohesion_eval_cases,
+)
+
+__all__ = [
+    "BLOCKER_CASE_SET_MALFORMED",
+    "BLOCKER_DIMENSION_REGRESSION",
+    "BLOCKER_FAILING_ANTI_SYCOPHANCY_GATE",
+    "BLOCKER_MISSING_ANTI_SYCOPHANCY_GATE",
+    "BLOCKER_MISSING_BASELINE_OBSERVATION",
+    "BLOCKER_MISSING_CANDIDATE_OBSERVATION",
+    "BLOCKER_MISSING_DEPENDENCY_REF",
+    "BLOCKER_MISSING_FIXTURE_COVERAGE",
+    "BLOCKER_POSITIVE_FEEDBACK_UNGOVERNED",
+    "BLOCKER_REFERENCE_ONLY_EVIDENCE",
+    "DEFAULT_CASE_SET_PATH",
+    "CohesionCaseSetError",
+    "CohesionContractError",
+    "CohesionDecisionStatus",
+    "CohesionDependencyRefs",
+    "CohesionDimension",
+    "CohesionDimensionScore",
+    "CohesionEvalCase",
+    "CohesionEvalResult",
+    "CohesionObservation",
+    "FeedbackKind",
+    "SurfaceContext",
+    "blocked_result_from_loader_error",
+    "cohesion_result_to_improvement_candidate",
+    "evaluate_cohesion_run",
+    "load_cohesion_eval_cases",
+]

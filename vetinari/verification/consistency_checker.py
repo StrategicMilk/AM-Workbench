@@ -15,81 +15,14 @@ from __future__ import annotations
 
 import ast
 import logging
-from dataclasses import dataclass
-from enum import Enum
+
+from vetinari.verification.consistency_types import (
+    ConsistencyIssue,
+    PatternCategory,
+    PatternInstance,
+)
 
 logger = logging.getLogger(__name__)
-
-
-# -- Enums and data types -------------------------------------------------------
-
-
-class PatternCategory(Enum):
-    """Categories of implementation patterns that can be inconsistently applied."""
-
-    FILE_TYPE_CHECK = "file_type_check"  # .endswith vs in set vs regex for extensions
-    STRING_MATCHING = "string_matching"  # in vs startswith vs regex for string checks
-    COLLECTION_MEMBERSHIP = "collection_membership"  # set vs list vs tuple for membership
-    ERROR_HANDLING = "error_handling"  # broad except vs specific vs contextlib
-    NULL_CHECK = "null_check"  # is None vs == None vs not x
-    ITERATION_PATTERN = "iteration_pattern"  # for+append vs comprehension vs map
-    IMPORT_STYLE = "import_style"  # import x vs from x import y
-
-
-@dataclass(frozen=True, slots=True)
-class PatternInstance:
-    """A single occurrence of an implementation pattern in source code.
-
-    Attributes:
-        category: Which pattern category this belongs to.
-        implementation: Short label for the specific approach used (e.g. "endswith").
-        file_path: Path to the source file containing this instance.
-        line_number: 1-based line number of the pattern occurrence.
-        code_snippet: The actual source code (1-3 lines) illustrating the pattern.
-    """
-
-    category: PatternCategory
-    implementation: str
-    file_path: str
-    line_number: int
-    code_snippet: str
-
-    def __repr__(self) -> str:
-        """Show key identifying fields for debugging."""
-        return (
-            f"PatternInstance(category={self.category.value!r}, "
-            f"impl={self.implementation!r}, "
-            f"file={self.file_path!r}, line={self.line_number})"
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class ConsistencyIssue:
-    """An inconsistency found when the same logical operation uses different patterns.
-
-    Attributes:
-        category: The pattern category where inconsistency was detected.
-        instances: All conflicting pattern instances (2 or more).
-        severity: Always "medium" per US-014 acceptance criteria.
-        message: Human-readable description of the inconsistency.
-        suggested_pattern: The recommended implementation to standardise on.
-    """
-
-    category: PatternCategory
-    instances: tuple[PatternInstance, ...]
-    severity: str = "medium"  # Always medium per AC
-    message: str = ""
-    suggested_pattern: str = ""
-
-    def __repr__(self) -> str:
-        """Show key identifying fields for debugging."""
-        impls = {i.implementation for i in self.instances}
-        return (
-            f"ConsistencyIssue(category={self.category.value!r}, "
-            f"implementations={sorted(impls)!r}, "
-            f"severity={self.severity!r})"
-        )
-
 
 # -- AST visitor ----------------------------------------------------------------
 
@@ -374,7 +307,7 @@ class _PatternVisitor(ast.NodeVisitor):
         self._check_map_call(node)
         self.generic_visit(node)
 
-    def visit_Compare(self, node: ast.Compare) -> None:  # noqa: VET120 — called dynamically by ast.NodeVisitor.visit() via getattr
+    def visit_Compare(self, node: ast.Compare) -> None:
         """Dispatch comparison checks for FILE_TYPE_CHECK, COLLECTION_MEMBERSHIP, NULL_CHECK.
 
         Args:
@@ -386,7 +319,7 @@ class _PatternVisitor(ast.NodeVisitor):
         self._check_null_check(node)
         self.generic_visit(node)
 
-    def visit_UnaryOp(self, node: ast.UnaryOp) -> None:  # noqa: VET120 — called dynamically by ast.NodeVisitor.visit() via getattr
+    def visit_UnaryOp(self, node: ast.UnaryOp) -> None:
         """Dispatch unary-op checks for NULL_CHECK (``not x``).
 
         Args:
@@ -395,7 +328,7 @@ class _PatternVisitor(ast.NodeVisitor):
         self._check_implicit_none(node)
         self.generic_visit(node)
 
-    def visit_For(self, node: ast.For) -> None:  # noqa: VET120 — called dynamically by ast.NodeVisitor.visit() via getattr
+    def visit_For(self, node: ast.For) -> None:
         """Dispatch for-loop checks for ITERATION_PATTERN.
 
         Args:
@@ -404,7 +337,7 @@ class _PatternVisitor(ast.NodeVisitor):
         self._check_for_append(node)
         self.generic_visit(node)
 
-    def visit_ListComp(self, node: ast.ListComp) -> None:  # noqa: VET120 — called dynamically by ast.NodeVisitor.visit() via getattr
+    def visit_ListComp(self, node: ast.ListComp) -> None:
         """Dispatch list-comprehension checks for ITERATION_PATTERN.
 
         Args:
@@ -413,7 +346,7 @@ class _PatternVisitor(ast.NodeVisitor):
         self._check_list_comprehension(node)
         self.generic_visit(node)
 
-    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:  # noqa: VET120 — called dynamically by ast.NodeVisitor.visit() via getattr
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
         """Dispatch except-clause checks for ERROR_HANDLING.
 
         Args:
@@ -422,7 +355,7 @@ class _PatternVisitor(ast.NodeVisitor):
         self._check_error_handling(node)
         self.generic_visit(node)
 
-    def visit_Import(self, node: ast.Import) -> None:  # noqa: VET120 — called dynamically by ast.NodeVisitor.visit() via getattr
+    def visit_Import(self, node: ast.Import) -> None:
         """Dispatch import-statement checks for IMPORT_STYLE.
 
         Args:
@@ -431,7 +364,7 @@ class _PatternVisitor(ast.NodeVisitor):
         self._check_import_style(node)
         self.generic_visit(node)
 
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:  # noqa: VET120 — called dynamically by ast.NodeVisitor.visit() via getattr
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         """Dispatch from-import checks for IMPORT_STYLE.
 
         Args:
@@ -521,20 +454,14 @@ def extract_patterns(
     source_code: str,
     file_path: str = "<unknown>",
 ) -> list[PatternInstance]:
-    """Parse Python source and extract all detected implementation pattern instances.
-
-    Uses an ``ast.NodeVisitor`` to walk the parse tree and classify expressions
-    into PatternCategory buckets. Handles syntax errors gracefully by logging
-    and returning an empty list.
+    """Parse Python source and extract detected implementation patterns.
 
     Args:
-        source_code: Full Python source text to analyse.
-        file_path: Path used to populate PatternInstance.file_path; does not
-            have to be a real path on disk.
+        source_code: Source object or text processed by the operation.
+        file_path: Filesystem path read or written by the operation.
 
     Returns:
-        List of PatternInstance objects, one per detected pattern occurrence.
-        Empty list if the source cannot be parsed.
+        Value produced for the caller.
     """
     try:
         tree = ast.parse(source_code, filename=file_path)
@@ -559,19 +486,14 @@ def check_consistency(
     source_code: str,
     file_path: str = "<unknown>",
 ) -> list[ConsistencyIssue]:
-    """Check a single source file for internally inconsistent implementation patterns.
-
-    Parses the source, extracts all pattern instances, and flags any category
-    where two or more distinct implementation approaches are used within the
-    same file.
+    """Check one source file for internally inconsistent patterns.
 
     Args:
-        source_code: Full Python source text to analyse.
-        file_path: Path used for reporting; does not need to exist on disk.
+        source_code: Source object or text processed by the operation.
+        file_path: Filesystem path read or written by the operation.
 
     Returns:
-        List of ConsistencyIssue objects with ``severity="medium"``.
-        Empty list when the source is internally consistent or cannot be parsed.
+        Value produced for the caller.
     """
     instances = extract_patterns(source_code, file_path)
     if not instances:

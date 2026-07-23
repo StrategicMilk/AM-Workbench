@@ -8,29 +8,39 @@ machinery.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from importlib import import_module
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
+
 
 # ── Structured logging shim ──────────────────────────────────────────────────
 # Import structured logging if available; fall back to stdlib silently.
 
 try:
-    from vetinari.structured_logging import get_logger as _get_structured_logger
-    from vetinari.structured_logging import log_sandbox_execution
-
-    _STRUCTURED_LOGGING = True
+    _structured_logging: Any = import_module("vetinari.structured_logging")
 except ImportError:
+    _structured_logging = None
+
+if _structured_logging is not None:
+    _STRUCTURED_LOGGING = True
+    _get_structured_logger = cast(Callable[[str], logging.Logger], _structured_logging.get_logger)
+    log_sandbox_execution = cast(Callable[..., None], _structured_logging.log_sandbox_execution)
+else:
     _STRUCTURED_LOGGING = False
 
-    def _get_structured_logger(name: str) -> logging.Logger:  # type: ignore[misc]
+    def _get_stdlib_logger(name: str) -> logging.Logger:
         """Return a stdlib logger when structured logging is unavailable."""
         return logging.getLogger(name)
 
-    def log_sandbox_execution(*_args: object, **_kwargs: object) -> None:  # type: ignore[misc]
+    def _log_sandbox_execution_noop(*_args: object, **_kwargs: object) -> None:
         """No-op fallback when structured logging is unavailable."""
+
+    _get_structured_logger = _get_stdlib_logger
+    log_sandbox_execution = _log_sandbox_execution_noop
 
 
 # ── Enums ────────────────────────────────────────────────────────────────────
@@ -94,7 +104,7 @@ class ExecutionResult:
         """
         from vetinari.utils.serialization import dataclass_to_dict
 
-        return dataclass_to_dict(self)
+        return cast(dict[str, Any], dataclass_to_dict(self))
 
     def to_feedback(self) -> Any:
         """Convert this execution result to a structured ExecutionFeedback object.
@@ -114,7 +124,7 @@ class ExecutionResult:
         )
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class SandboxResult:
     """Result of an in-process or manager-level sandbox execution.
 
@@ -141,7 +151,7 @@ class SandboxResult:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SandboxAuditEntry:
     """Audit log entry for plugin sandbox executions.
 

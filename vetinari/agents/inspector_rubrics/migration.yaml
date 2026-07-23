@@ -1,0 +1,32 @@
+kind: migration
+version: "1.0"
+grading_criteria:
+  - id: legacy_path_coexists
+    name: Legacy path coexists
+    required: true
+    description: Migration keeps the legacy path available during transition.
+    evidence_type: artifact_path
+    evidence_key: legacy_path
+    rejection_reason: Migration is missing legacy path coexistence evidence.
+  - id: new_path_functional
+    name: New path functional
+    required: true
+    description: Migration names the new functional path or behavior.
+    evidence_type: artifact_path
+    evidence_key: new_path
+    rejection_reason: Migration is missing new path functionality evidence.
+  - id: cutover_criterion_stated
+    name: Cutover criterion stated
+    required: true
+    description: Migration defines the observable cutover criterion.
+    evidence_type: criterion_field
+    evidence_key: cutover_criterion
+    rejection_reason: Migration is missing a cutover criterion.
+  - id: rollback_path_stated
+    name: Rollback path stated
+    required: true
+    description: Migration documents the rollback path.
+    evidence_type: criterion_field
+    evidence_key: rollback_path
+    rejection_reason: Migration is missing a rollback path.
+rejection_policy: all_required

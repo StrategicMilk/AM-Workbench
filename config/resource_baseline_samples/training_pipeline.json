@@ -1,0 +1,22 @@
+{
+  "workload": "training_pipeline",
+  "recorded_at": "2026-05-08T00:00:00Z",
+  "machine_profile": "windows-local-dev-ci-safe",
+  "samples": [
+    {
+      "duration_ms": 18000,
+      "max_rss_mb": 1984,
+      "cpu_percent": 84
+    },
+    {
+      "duration_ms": 22000,
+      "max_rss_mb": 2112,
+      "cpu_percent": 89
+    },
+    {
+      "duration_ms": 26000,
+      "max_rss_mb": 2240,
+      "cpu_percent": 93
+    }
+  ]
+}

@@ -1,28 +1,28 @@
 # =============================================================================
-# EXAMPLE SCAFFOLDING — review before use in production.
+# EXAMPLE SCAFFOLDING - review before use in production.
 #
 # - User/Group are set to "vetinari"; create this account or substitute your
 #   service account before enabling.
-# - WorkingDirectory assumes installation at /opt/vetinari; adjust if different.
+# - amw-kernel-server must be installed on PATH or replace ExecStart with the
+#   absolute path used by your package.
 # - ReadWritePaths lists the directories Vetinari writes to at runtime.
 #   ProtectSystem=strict blocks all other writes.
 # =============================================================================
 
 [Unit]
-Description=Vetinari AI Orchestration System
+Description=Vetinari AM Workbench Kernel
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-# Type=simple: Vetinari does not emit sd_notify readiness — Type=notify would
+# Type=simple: the kernel does not emit sd_notify readiness; Type=notify would
 # cause systemd to wait forever for a notification that never arrives.
-# This unit is process-liveness only. Release readiness gates must query
-# http://127.0.0.1:${VETINARI_WEB_PORT}/ready and fail on non-2xx/degraded JSON.
+# Release readiness gates must query http://127.0.0.1:${AMW_KERNEL_PORT}/ready.
 Type=simple
 User=vetinari
 Group=vetinari
 WorkingDirectory=/opt/vetinari
-ExecStart=/opt/vetinari/.venv312/bin/python -m vetinari serve
+ExecStart=/usr/local/bin/amw-kernel-server --host ${AMW_KERNEL_HOST} --port ${AMW_KERNEL_PORT}
 Restart=always
 RestartSec=5
 
@@ -32,15 +32,16 @@ ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=yes
 # Allow writes to the directories Vetinari uses at runtime
-ReadWritePaths=/opt/vetinari/projects /opt/vetinari/outputs /opt/vetinari/.vetinari /opt/vetinari/logs
+ReadWritePaths=/opt/vetinari/data
 
 # Resource limits
 MemoryMax=4G
 CPUQuota=200%
 
-# Canonical bind environment variables
-Environment=VETINARI_WEB_HOST=127.0.0.1
-Environment=VETINARI_WEB_PORT=8080
+# Canonical Rust kernel environment variables
+Environment=AMW_KERNEL_HOST=127.0.0.1
+Environment=AMW_KERNEL_PORT=8080
+Environment=AMW_KERNEL_STATE_DIR=/opt/vetinari/data
 
 [Install]
 WantedBy=multi-user.target

@@ -1,0 +1,240 @@
+schema_version: 1
+kits:
+  - kit_id: finance-research-evidence
+    title: Finance Research Evidence Kit
+    domain: finance_research
+    supported_workflows:
+      - public-company-source-review
+      - market-event-evidence-pack
+    supported_claim_kinds:
+      - sourced_summary
+      - risk_factor_inventory
+    unsupported_claims:
+      - investment_advice
+      - price_prediction
+    capability_pack_ids:
+      - workbench-trace-eval
+    source_kinds:
+      - web_page
+      - http_api
+      - search_index
+    tool_kinds:
+      - web_scraper
+      - http_caller
+      - search_query
+    prompt_templates:
+      source_review: "List claims with source, freshness, caveat, and refusal status."
+    examples:
+      - Compare two public filings and cite every material claim.
+    eval_fixtures: []
+    rate_limit_policy:
+      requests_per_minute: 20
+      burst: 5
+      rationale: public-source refreshes are bounded by provider quotas
+    refusal_boundaries:
+      - Do not recommend buying, selling, or holding securities.
+      - Do not infer private account state.
+    sample_notebook_refs: []
+    benchmark_provider_ids:
+      - manual_example
+      - release_evidence
+    required_caveat_acknowledgements:
+      - sources_are_not_investment_advice
+      - stale_market_data_must_be_refreshed
+  - kit_id: repo-maintenance-evidence
+    title: Repository Maintenance Evidence Kit
+    domain: repo_maintenance
+    supported_workflows:
+      - failing-test-triage
+      - scoped-refactor-proof
+    supported_claim_kinds:
+      - test_failure_root_cause
+      - scoped_change_summary
+    unsupported_claims:
+      - unverified_completion
+      - unrelated_cleanup
+    capability_pack_ids:
+      - workbench-trace-eval
+    source_kinds:
+      - local_tool
+      - dataset_ref
+    tool_kinds:
+      - local_function
+      - dataset_query
+    prompt_templates:
+      triage: "Capture baseline, failing command, changed files, and post-fix proof."
+    examples:
+      - Fix a failing test without weakening assertions or broadening scope.
+    eval_fixtures: []
+    rate_limit_policy:
+      requests_per_minute: 120
+      burst: 20
+      rationale: local probes are bounded by test runtime rather than provider quota
+    refusal_boundaries:
+      - Do not mark failures pre-existing without baseline proof.
+      - Do not edit files outside the declared owned scope.
+    sample_notebook_refs: []
+    benchmark_provider_ids:
+      - local_failed_trace
+      - github_issue
+    required_caveat_acknowledgements:
+      - dirty_worktree_scope_reviewed
+      - baseline_captured_before_edits
+  - kit_id: release-evidence-dossier
+    title: Release Evidence Dossier Kit
+    domain: release_evidence
+    supported_workflows:
+      - release-gate-matrix
+      - package-smoke-proof
+    supported_claim_kinds:
+      - release_ready_with_evidence
+      - blocker_classification
+    unsupported_claims:
+      - production_sla_guarantee
+      - unstaged_artifact_claim
+    capability_pack_ids:
+      - workbench-trace-eval
+    source_kinds:
+      - local_tool
+      - dataset_ref
+    tool_kinds:
+      - local_function
+      - dataset_query
+    prompt_templates:
+      release_matrix: "Map every release claim to command output, artifact path, and residual risk."
+    examples:
+      - Build a release evidence matrix from focused tests, smoke commands, and package metadata.
+    eval_fixtures: []
+    rate_limit_policy:
+      requests_per_minute: 60
+      burst: 10
+      rationale: release probes may be expensive and should stay bounded
+    refusal_boundaries:
+      - Do not call a release ready when a required proof artifact is missing.
+      - Do not hide warnings or flaky checks behind suppressions.
+    sample_notebook_refs: []
+    benchmark_provider_ids:
+      - release_evidence
+      - manual_example
+    required_caveat_acknowledgements:
+      - package_and_source_versions_recorded
+      - residual_failures_classified
+  - kit_id: legal-document-review
+    title: Legal And Document Review Kit
+    domain: legal_document_review
+    supported_workflows:
+      - clause-citation-audit
+      - document-risk-inventory
+    supported_claim_kinds:
+      - cited_clause_summary
+      - document_risk_flag
+    unsupported_claims:
+      - legal_advice
+      - jurisdiction_specific_instruction
+    capability_pack_ids:
+      - workbench-trace-eval
+    source_kinds:
+      - dataset_ref
+      - web_page
+    tool_kinds:
+      - dataset_query
+      - web_scraper
+    prompt_templates:
+      clause_review: "Summarize clauses with exact source anchors and non-advice caveats."
+    examples:
+      - Identify renewal, termination, and liability clauses in an uploaded contract.
+    eval_fixtures: []
+    rate_limit_policy:
+      requests_per_minute: 30
+      burst: 5
+      rationale: document extraction and citation checks are operator-supervised
+    refusal_boundaries:
+      - Do not provide legal advice or jurisdiction-specific instructions.
+      - Do not summarize uncited text as a contract obligation.
+    sample_notebook_refs: []
+    benchmark_provider_ids:
+      - manual_example
+      - support_ticket
+    required_caveat_acknowledgements:
+      - not_legal_advice
+      - source_document_version_confirmed
+  - kit_id: local-machine-operations
+    title: Local Machine Operations Kit
+    domain: local_machine_operations
+    supported_workflows:
+      - diagnostic-inventory
+      - reversible-settings-audit
+    supported_claim_kinds:
+      - observed_host_state
+      - reversible_change_plan
+    unsupported_claims:
+      - destructive_operation_approval
+      - hardware_warranty_diagnosis
+    capability_pack_ids:
+      - workbench-trace-eval
+    source_kinds:
+      - local_tool
+      - mcp_server
+    tool_kinds:
+      - local_function
+      - mcp_invocation
+    prompt_templates:
+      host_audit: "Record exact host commands, outputs, and reversible next steps."
+    examples:
+      - Diagnose display mode or driver state from local command output.
+    eval_fixtures: []
+    rate_limit_policy:
+      requests_per_minute: 90
+      burst: 15
+      rationale: local probes must stay bounded and non-destructive
+    refusal_boundaries:
+      - Do not perform destructive host changes without explicit approval.
+      - Do not infer hardware failure without observed evidence.
+    sample_notebook_refs: []
+    benchmark_provider_ids:
+      - local_failed_trace
+      - manual_example
+    required_caveat_acknowledgements:
+      - commands_are_read_only
+      - host_state_can_change_between_probes
+  - kit_id: web-research-evidence
+    title: Web Research Evidence Kit
+    domain: web_research
+    supported_workflows:
+      - current-fact-check
+      - source-comparison
+    supported_claim_kinds:
+      - cited_current_fact
+      - source_disagreement_summary
+    unsupported_claims:
+      - uncited_current_fact
+      - private_or_paywalled_assertion
+    capability_pack_ids:
+      - workbench-trace-eval
+    source_kinds:
+      - web_page
+      - search_index
+      - scraper_recipe
+    tool_kinds:
+      - web_scraper
+      - search_query
+      - http_caller
+    prompt_templates:
+      current_fact_check: "Compare primary sources, report dates, and mark stale or unavailable evidence."
+    examples:
+      - Verify a current product or policy claim against primary sources.
+    eval_fixtures: []
+    rate_limit_policy:
+      requests_per_minute: 15
+      burst: 4
+      rationale: public web sources need conservative rate and freshness handling
+    refusal_boundaries:
+      - Do not state current facts without source date and citation.
+      - Do not bypass robots, auth, paywalls, or terms restrictions.
+    sample_notebook_refs: []
+    benchmark_provider_ids:
+      - humaneval_external
+      - manual_example
+    required_caveat_acknowledgements:
+      - primary_sources_checked_when_available
+      - source_dates_recorded

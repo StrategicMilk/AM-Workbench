@@ -1,0 +1,47 @@
+schema_version: "1.0"
+domains:
+  providers:
+    settings_target: settings.providers
+    fix_action: configure-provider
+  models:
+    settings_target: settings.models
+    fix_action: refresh-model-catalog
+  channels:
+    settings_target: settings.channels
+    fix_action: inspect-channel-health
+  memory:
+    settings_target: settings.memory
+    fix_action: refresh-memory-index
+  tools:
+    settings_target: settings.tools
+    fix_action: inspect-tool-pins
+  mcp:
+    settings_target: settings.mcp
+    fix_action: inspect-mcp-processes
+  agent_safety:
+    settings_target: settings.agent_safety
+    fix_action: inspect-agent-safety-gates
+  capability_packs:
+    settings_target: settings.capability_packs
+    fix_action: refresh-capability-packs
+  scheduler_resources:
+    settings_target: settings.scheduler_resources
+    fix_action: open-resource-cockpit
+  active_runs:
+    settings_target: settings.run_kernel
+    fix_action: inspect-active-runs
+  queues:
+    settings_target: settings.queues
+    fix_action: inspect-queues
+  logs_errors:
+    settings_target: settings.logs
+    fix_action: inspect-error-log
+  updates:
+    settings_target: settings.updates
+    fix_action: check-update-readiness
+  settings:
+    settings_target: settings
+    fix_action: request-approval-chain-decision
+  support_bundle:
+    settings_target: settings.support_bundle
+    fix_action: prepare-support-bundle

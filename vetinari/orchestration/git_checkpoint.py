@@ -15,17 +15,21 @@ mode so orchestration continues without checkpointing.
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from vetinari.boundary_guards import require_nonempty
+
 logger = logging.getLogger(__name__)
+
 
 GIT_TIMEOUT = 30  # seconds for any single git command
 _GIT_UNAVAILABLE_MSG = "[GitCheckpoint] git not available — operating in no-op mode"
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class CheckpointResult:
     """Result from a git checkpoint operation.
 
@@ -56,8 +60,9 @@ def _run_git(args: list[str], cwd: Path) -> tuple[bool, str, str]:
         Tuple of (success, stdout, stderr).
     """
     try:
-        result = subprocess.run(  # noqa: S603 - argv is controlled and shell interpolation is not used
-            ["git", *args],  # noqa: S607 - tool name is intentionally resolved by the runtime environment
+        git_exe = shutil.which("git") or "git"
+        result = subprocess.run(
+            [git_exe, *args],
             cwd=str(cwd),
             capture_output=True,
             text=True,
@@ -154,12 +159,17 @@ class GitCheckpoint:
 
         Returns:
             CheckpointResult indicating success or failure.
+
+        Raises:
+            RuntimeError: If git rollback is unavailable or no stash ref is provided.
         """
         if not self._is_available:
-            return CheckpointResult(success=True, message="no-op: git unavailable")
+            raise RuntimeError("git checkpoint rollback unavailable: git is not available")
 
-        if not stash_ref:
-            return CheckpointResult(success=False, message="no stash_ref provided", error="empty ref")
+        try:
+            stash_ref = require_nonempty(stash_ref, field_name="stash_ref")
+        except ValueError as exc:
+            raise RuntimeError("git checkpoint rollback requires a non-empty stash_ref") from exc
 
         # Discard current working tree changes
         ok_reset, _, err_reset = _run_git(["checkout", "--", "."], self._repo_path)

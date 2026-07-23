@@ -6,18 +6,27 @@ Feeds quality scores back into ModelPerformance table and DynamicModelRouter.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from datetime import datetime, timezone
-from pathlib import Path
 
-from vetinari.types import AgentType
+from vetinari.boundary_guards import account_evidence_drop
+from vetinari.learning.feedback_loop_replay import FeedbackLoopReplayMixin
+from vetinari.learning.feedback_store import FeedbackStore, FeedbackStoreCorrupt, get_feedback_store
+from vetinari.memory.plan_pruning import PLAN_RETENTION_DAYS
 
 logger = logging.getLogger(__name__)
 
+FEEDBACK_LOOP_LIFECYCLE = {
+    "store_id": "feedback_loop_model_performance_signals",
+    "retention_days": PLAN_RETENTION_DAYS,
+    "redaction_applied": True,
+    "deletion_mechanism": "MemoryStore.prune_old_plans and FeedbackStore retention controls",
+    "owner_ref": "docs/security/data-inventory.json#feedback_loop_model_performance_signals",
+}
 
-class FeedbackLoop:
+
+class FeedbackLoop(FeedbackLoopReplayMixin):
     """Closes the feedback loop between execution outcomes and model selection.
 
     After each task completes, this component:
@@ -31,10 +40,20 @@ class FeedbackLoop:
 
     DRIFT_REMEDIATION_THRESHOLD = 3  # Consecutive drifts before triggering model scout
 
-    def __init__(self):
+    def __init__(
+        self,
+        store: FeedbackStore | None = None,
+        *,
+        rehydrate_drift_counts: bool | None = None,
+    ):
         self._memory = None
         self._router = None
+        explicit_store = store is not None
+        self._store = store if explicit_store else get_feedback_store()
         self._consecutive_drift_counts: dict[str, int] = {}  # task_type → consecutive drift count
+        if rehydrate_drift_counts is None:
+            rehydrate_drift_counts = explicit_store
+        self._consecutive_drift_counts = self._store.get_all_drift_counts() if rehydrate_drift_counts else {}
         self._drift_lock = threading.Lock()  # Protects _consecutive_drift_counts
 
     _MAX_INIT_RETRIES = 2  # Number of retry attempts for lazy init
@@ -79,27 +98,39 @@ class FeedbackLoop:
         model_id: str,
         task_type: str,
         quality_score: float,
-        latency_ms: int = 0,
+        latency_ms: int | None = 0,
         cost_usd: float = 0.0,
         success: bool = True,
         benchmark_result: dict | None = None,
+        episode_id: str | None = None,
+        *,
+        confidence: float | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
     ) -> None:
         """Record a task outcome and propagate it to all performance tracking systems.
 
         Args:
-            task_id: The task identifier.
-            model_id: The model used.
-            task_type: Type of task (coding, research, etc.).
-            quality_score: Overall quality score 0.0-1.0.
-            latency_ms: Execution latency in milliseconds.
-            cost_usd: Estimated cost in USD.
-            success: Whether the task succeeded.
-            benchmark_result: Optional benchmark data dict with keys:
-                - pass_rate (float): 0.0-1.0 fraction of benchmark cases passed
-                - task_type (str): benchmark task category
-                - suite_name (str): benchmark suite identifier
-                - n_trials (int): number of benchmark trials run
-                - avg_score (float): average benchmark score
+                    task_id: The task identifier.
+                    model_id: The model used.
+                    task_type: Type of task (coding, research, etc.).
+                    quality_score: Overall quality score 0.0-1.0.
+                    latency_ms: Execution latency in milliseconds.
+                    cost_usd: Estimated cost in USD.
+                    success: Whether the task succeeded.
+                    benchmark_result: Optional benchmark data dict with keys:
+                        - pass_rate (float): 0.0-1.0 fraction of benchmark cases passed
+                        - task_type (str): benchmark task category
+                        - suite_name (str): benchmark suite identifier
+                        - n_trials (int): number of benchmark trials run
+                        - avg_score (float): average benchmark score
+                    episode_id: Canonical episode id to attach candidate feedback to.
+                    confidence: Typed inference confidence used for reward shaping.
+                    input_tokens: Exact prompt token count used for reward shaping.
+                    output_tokens: Exact completion token count used for reward shaping.
+
+        Raises:
+            Exception: Propagates validation or runtime failures from the underlying operation.
         """
         logger.debug(
             "[FeedbackLoop] Recording outcome: task=%s model=%s type=%s quality=%.2f success=%s",
@@ -110,23 +141,47 @@ class FeedbackLoop:
             success,
         )
 
+        operational_latency_ms = latency_ms or 0
+
         # 1. Update memory store ModelPerformance
-        self._update_memory_performance(model_id, task_type, quality_score, latency_ms, success)
+        self._update_memory_performance(model_id, task_type, quality_score, operational_latency_ms, success)
 
         # 2. Update DynamicModelRouter performance cache
-        self._update_router_cache(model_id, task_type, quality_score, latency_ms, success)
+        self._update_router_cache(model_id, task_type, quality_score, operational_latency_ms, success)
 
         # 3. Update SubtaskMemory outcome with quality score
         self._update_subtask_quality(task_id, quality_score, success)
 
         # 4. Update Thompson Sampling arms
-        self._update_thompson_arms(model_id, task_type, quality_score, success)
+        self._update_thompson_arms(
+            model_id,
+            task_type,
+            quality_score,
+            success,
+            confidence=confidence,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            latency_ms=latency_ms,
+        )
 
         # 5. If benchmark_result provided, feed it into model selection and learning
         if benchmark_result:
             self._process_benchmark_result(model_id, task_type, benchmark_result)
 
-        # 6. Feed quality score into the drift ensemble and remediate if persistent
+        self._process_quality_drift(task_type, model_id, quality_score)
+        self._record_implicit_feedback(task_id, model_id, task_type, quality_score, success)
+        self._record_episode_feedback(
+            episode_id=episode_id or task_id,
+            task_id=task_id,
+            model_id=model_id,
+            task_type=task_type,
+            quality_score=quality_score,
+            success=success,
+            user_feedback=(benchmark_result or {}).get("user_feedback") if benchmark_result else None,
+        )
+
+    def _process_quality_drift(self, task_type: str, model_id: str, quality_score: float) -> None:
+        """Feed quality score into drift detection and remediation."""
         try:
             from vetinari.analytics.quality_drift import get_drift_ensemble
 
@@ -143,6 +198,9 @@ class FeedbackLoop:
                 # Reset consecutive drift counter on non-drift observation
                 with self._drift_lock:
                     self._consecutive_drift_counts.pop(task_type, None)
+                    self._store.set_drift_count(task_type, 0)
+        except FeedbackStoreCorrupt:
+            raise
         except Exception:
             # Drift detection is advisory; failures must not interrupt the feedback loop
             logger.warning(
@@ -150,7 +208,15 @@ class FeedbackLoop:
                 exc_info=True,
             )
 
-        # 7. Feed into implicit feedback collector for user preference learning
+    @staticmethod
+    def _record_implicit_feedback(
+        task_id: str,
+        model_id: str,
+        task_type: str,
+        quality_score: float,
+        success: bool,
+    ) -> None:
+        """Feed task outcome into the implicit feedback collector."""
         try:
             from vetinari.learning.implicit_feedback import get_implicit_feedback_collector
             from vetinari.types import FeedbackAction
@@ -163,11 +229,12 @@ class FeedbackLoop:
                 action=action,
                 inspector_score=quality_score,
             )
+        except FeedbackStoreCorrupt:
+            raise
         except Exception:
-            logger.warning(
-                "Implicit feedback recording skipped for task %s — collector unavailable",
-                task_id,
-            )
+            account_evidence_drop(task_id, "feedback_loop", logger=logger)
+            logger.error("Implicit feedback recording failed for task %s", task_id, exc_info=True)
+            raise
 
     def record_benchmark_outcome(
         self,
@@ -256,9 +323,11 @@ class FeedbackLoop:
             task_type: The task type experiencing drift.
             model_id: The model that produced the drifting output.
         """
+        # Lock order: FeedbackLoop drift lock first, then FeedbackStore's write lock.
         with self._drift_lock:
             count = self._consecutive_drift_counts.get(task_type, 0) + 1
             self._consecutive_drift_counts[task_type] = count
+            self._store.set_drift_count(task_type, count)
 
         # Increase calibration frequency so drift detection becomes more sensitive
         try:
@@ -383,115 +452,68 @@ class FeedbackLoop:
         except Exception as e:
             logger.warning("Subtask quality update failed: %s", e)
 
-    def _update_thompson_arms(self, model_id: str, task_type: str, quality: float, success: bool) -> None:
+    @staticmethod
+    def _update_thompson_arms(
+        model_id: str,
+        task_type: str,
+        quality: float,
+        success: bool,
+        *,
+        confidence: float | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        latency_ms: int | None = None,
+    ) -> None:
         """Update Thompson Sampling arm for this model+task_type pair."""
         try:
             from vetinari.learning.model_selector import get_thompson_selector
 
-            get_thompson_selector().update(model_id, task_type, quality, success)
+            get_thompson_selector().update(
+                model_id,
+                task_type,
+                quality,
+                success,
+                confidence=confidence,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_ms=latency_ms,
+            )
         except Exception as e:
             logger.warning("Thompson arm update failed: %s", e)
 
-    def record_quality_rejection(
-        self,
-        agent_type: str,
-        mode: str,
-        violation_description: str,
-        model_name: str | None = None,
+    @staticmethod
+    def _record_episode_feedback(
+        *,
+        episode_id: str,
+        task_id: str,
+        model_id: str,
+        task_type: str,
+        quality_score: float,
+        success: bool,
+        user_feedback: str | None = None,
     ) -> None:
-        """Record a Quality rejection and propose a rule if pattern is new.
-
-        Bridges Quality agent feedback into the RulesManager rule learning
-        system.  After 3 consistent observations of the same violation,
-        a rule is auto-accepted.
-
-        Args:
-            agent_type: Agent type that produced the rejected output.
-            mode: Agent mode during the rejection.
-            violation_description: Short description of the violation.
-            model_name: Optional model name for model-specific rules.
-        """
+        """Attach helpful/harmful candidate feedback to the created episode."""
         try:
-            from vetinari.rules_manager import get_rules_manager
+            from vetinari.memory.episodic import EpisodeFeedback, EpisodeFeedbackLabel, UnifiedEpisodicMemory
 
-            rules = get_rules_manager()
-            accepted = rules.propose_rule_from_feedback(
-                agent_type=agent_type,
-                mode=mode,
-                violation_description=violation_description,
-                model_name=model_name,
+            label = EpisodeFeedbackLabel.HELPFUL if success and quality_score >= 0.5 else EpisodeFeedbackLabel.HARMFUL
+            UnifiedEpisodicMemory().add_feedback(
+                episode_id,
+                EpisodeFeedback(
+                    label=label,
+                    source="feedback_loop",
+                    task_id=task_id,
+                    model_id=model_id,
+                    task_type=task_type,
+                    inspector_score=quality_score,
+                    user_feedback=user_feedback,
+                    metadata={"authority": "candidate_evidence_only"},
+                ),
             )
-            if accepted:
-                logger.info(
-                    "Quality feedback auto-accepted as rule: %s",
-                    violation_description,
-                )
-        except Exception as e:
-            logger.warning("Rule proposal from feedback failed: %s", e)
-
-    def load_feedback_jsonl(self, feedback_path: str | Path) -> int:
-        """Load and replay user feedback from a persisted JSONL file.
-
-        Reads every line from ``feedback_path``, converts each thumbs-up/down
-        record into a quality signal, and feeds it into the Thompson Sampling
-        and rule-learning subsystems.  This bridges the gap between the disk
-        file written by ``chat_api.submit_feedback`` and the in-memory learning
-        systems so that feedback survives process restarts.
-
-        Args:
-            feedback_path: Path to the ``feedback.jsonl`` file produced by
-                ``chat_api.submit_feedback``.
-
-        Returns:
-            Number of feedback records successfully replayed.
-        """
-        path = Path(feedback_path)
-        if not path.exists():
-            logger.debug("[FeedbackLoop] No feedback file found at %s — skipping replay", path)
-            return 0
-
-        replayed = 0
-        try:
-            from vetinari.learning.model_selector import get_thompson_selector
-
-            thompson = get_thompson_selector()
-            with path.open(encoding="utf-8") as fh:
-                for line_no, line in enumerate(fh, 1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        record = json.loads(line)
-                    except json.JSONDecodeError:
-                        logger.warning("[FeedbackLoop] Skipping malformed JSON at line %d in %s", line_no, path)
-                        continue
-
-                    rating = record.get("rating", "")
-                    if rating not in ("up", "down"):
-                        continue
-
-                    quality = 0.9 if rating == "up" else 0.2
-                    model_id = record.get("model_id", "default")
-                    task_type = record.get("task_type", "general")
-
-                    thompson.update(model_id, task_type, quality, success=(rating == "up"))
-
-                    # On rejection, propose a rule from the stored comment
-                    if rating == "down":
-                        comment = record.get("comment") or f"User rejected task {record.get('task_id', 'unknown')}"
-                        self.record_quality_rejection(
-                            agent_type=record.get("agent_type", AgentType.WORKER.value),
-                            mode="user_feedback",
-                            violation_description=str(comment),
-                            model_name=model_id,
-                        )
-                    replayed += 1
-
-            logger.info("[FeedbackLoop] Replayed %d feedback record(s) from %s", replayed, path)
         except Exception:
-            logger.warning("[FeedbackLoop] Failed to load feedback from %s", feedback_path, exc_info=True)
-
-        return replayed
+            account_evidence_drop(task_id, "feedback_loop", logger=logger)
+            logger.error("Episode feedback metadata failed for task %s", task_id, exc_info=True)
+            raise
 
 
 # Singleton
@@ -513,7 +535,7 @@ def get_feedback_loop() -> FeedbackLoop:
     if _feedback_loop is None:
         with _feedback_loop_lock:
             if _feedback_loop is None:
-                _feedback_loop = FeedbackLoop()
+                _feedback_loop = FeedbackLoop(rehydrate_drift_counts=True)
                 # Replay persisted feedback so learning signals survive restarts.
                 try:
                     from vetinari.constants import _PROJECT_ROOT

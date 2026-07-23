@@ -42,7 +42,7 @@ from vetinari.validation.quality_gates import (
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class AgentConstraints:
     """All constraints applicable to a specific agent+mode combination."""
 

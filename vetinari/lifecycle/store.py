@@ -21,6 +21,7 @@ Layout::
 
 from __future__ import annotations
 
+import builtins
 import hashlib
 import json
 import logging
@@ -28,22 +29,33 @@ import os
 import shutil
 import threading
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from vetinari.exceptions import StorageError
+from vetinari.privacy.envelope import PRIVACY_ENVELOPE_KEY, wrap_for_persistence
+from vetinari.security.redaction import REDACTED_PATH, redact_text
+
+logger = logging.getLogger(__name__)
+
+
 if TYPE_CHECKING:
     from vetinari.lifecycle.policies import Policy, PolicyFilter
 
-logger = logging.getLogger(__name__)
 
 _MANIFEST_FILENAME = "manifest.json"
 _PAYLOAD_DIRNAME = "payload"
 
 # Per-path locks prevent concurrent retire on the same source path.
-# Double-checked locking: check outside lock, acquire, check again.
-_PATH_LOCKS: dict[str, threading.Lock] = {}
+# Bounded with FIFO eviction: long-running processes that retire many distinct
+# paths over time would otherwise grow this map without bound.  4096 is well
+# above any realistic in-flight retire concurrency window; eviction only drops
+# locks for paths that are no longer being contended.
+_MAX_PATH_LOCKS = 4096
+_PATH_LOCKS: OrderedDict[str, threading.Lock] = OrderedDict()
 _LOCKS_LOCK = threading.Lock()
 
 
@@ -51,7 +63,9 @@ def _get_path_lock(path: Path) -> threading.Lock:
     """Return (creating if absent) a per-path threading lock.
 
     Uses double-checked locking so only the first caller per path pays
-    the ``_LOCKS_LOCK`` acquisition cost.
+    the ``_LOCKS_LOCK`` acquisition cost.  When the lock map exceeds
+    ``_MAX_PATH_LOCKS`` entries the oldest entry is evicted FIFO so the
+    table stays bounded.
 
     Args:
         path: Absolute path being retired; the lock key is its string form.
@@ -63,7 +77,17 @@ def _get_path_lock(path: Path) -> threading.Lock:
     if key not in _PATH_LOCKS:
         with _LOCKS_LOCK:
             if key not in _PATH_LOCKS:
-                _PATH_LOCKS[key] = threading.Lock()
+                new_lock = threading.Lock()
+                _PATH_LOCKS[key] = new_lock
+                if len(_PATH_LOCKS) > _MAX_PATH_LOCKS:
+                    # Evict the oldest unused lock — FIFO via OrderedDict.
+                    for candidate_key, candidate_lock in list(_PATH_LOCKS.items()):
+                        if candidate_key != key and not candidate_lock.locked():
+                            del _PATH_LOCKS[candidate_key]
+                            break
+                    else:
+                        del _PATH_LOCKS[key]
+                        raise StorageError("lifecycle path lock table is saturated with active locks")
     return _PATH_LOCKS[key]
 
 
@@ -83,6 +107,15 @@ def _sha256_of_path(path: Path) -> str:
         for chunk in iter(lambda: fh.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _path_sha256(path: Path) -> str:
+    return hashlib.sha256(str(path.resolve()).encode("utf-8", errors="replace")).hexdigest()
+
+
+def _redacted_path(path: Path) -> str:
+    redacted = redact_text(str(path))
+    return redacted if redacted != str(path) else REDACTED_PATH
 
 
 def _write_manifest_atomic(manifest_path: Path, data: dict) -> None:
@@ -106,7 +139,7 @@ def _write_manifest_atomic(manifest_path: Path, data: dict) -> None:
 
 
 @dataclass
-class LifecycleRecord:  # noqa: VET114 — restored_at_utc is mutated post-creation by restore() so that list/load callers see the up-to-date status without re-reading the manifest; converting to dataclasses.replace() would force every list caller to re-fetch the record from disk, adding I/O on what is already a hot-path scan loop
+class LifecycleRecord:
     """Represents a single retired (moved-aside) entity.
 
     Attributes:
@@ -116,6 +149,8 @@ class LifecycleRecord:  # noqa: VET114 — restored_at_utc is mutated post-creat
         retired_at_utc: ISO-8601 UTC timestamp the entity was retired.
         reason: Human-readable reason for the retirement.
         work_receipt_id: Optional receipt that triggered this retirement.
+        entity_type: Optional entity type used by lifecycle policies for
+            type-specific classification.
         policy: Policy name (``"recycle"`` or ``"archive"``).
         store_path: Absolute path of the record directory inside the store root.
         restored_at_utc: ISO-8601 timestamp the entity was restored, or None.
@@ -129,6 +164,8 @@ class LifecycleRecord:  # noqa: VET114 — restored_at_utc is mutated post-creat
     policy: str
     store_path: Path
     work_receipt_id: str | None = None
+    work_receipt_id_sha256: str | None = None
+    entity_type: str | None = None
     restored_at_utc: str | None = None
 
     def to_manifest_dict(self) -> dict:
@@ -139,13 +176,28 @@ class LifecycleRecord:  # noqa: VET114 — restored_at_utc is mutated post-creat
         """
         return {
             "record_id": self.record_id,
-            "original_path": self.original_path,
+            "original_path": _redacted_path(Path(self.original_path)),
+            "original_path_sha256": _path_sha256(Path(self.original_path)),
+            "payload_name": Path(self.original_path).name,
             "sha256": self.sha256,
             "retired_at_utc": self.retired_at_utc,
-            "reason": self.reason,
-            "work_receipt_id": self.work_receipt_id,
+            "reason": redact_text(self.reason),
+            "work_receipt_id": "[REDACTED]" if self.work_receipt_id else None,
+            "work_receipt_id_sha256": self.work_receipt_id_sha256
+            or (
+                hashlib.sha256(self.work_receipt_id.encode("utf-8", errors="replace")).hexdigest()
+                if self.work_receipt_id
+                else None
+            ),
+            "entity_type": redact_text(self.entity_type) if self.entity_type else None,
             "policy": self.policy,
             "restored_at_utc": self.restored_at_utc,
+            PRIVACY_ENVELOPE_KEY: wrap_for_persistence(
+                {"record_id": self.record_id, "original_path_sha256": _path_sha256(Path(self.original_path))},
+                privacy_class="operational",
+                source="lifecycle.store.manifest",
+                redaction_applied=True,
+            )[PRIVACY_ENVELOPE_KEY],
         }
 
     @classmethod
@@ -165,7 +217,11 @@ class LifecycleRecord:  # noqa: VET114 — restored_at_utc is mutated post-creat
             sha256=data["sha256"],
             retired_at_utc=data["retired_at_utc"],
             reason=data["reason"],
-            work_receipt_id=data.get("work_receipt_id"),
+            work_receipt_id=data.get("work_receipt_id")
+            if data.get("work_receipt_id") not in {None, "[REDACTED]"}
+            else None,
+            work_receipt_id_sha256=data.get("work_receipt_id_sha256"),
+            entity_type=data.get("entity_type"),
             policy=data["policy"],
             store_path=store_path,
             restored_at_utc=data.get("restored_at_utc"),
@@ -201,6 +257,7 @@ class LifecycleStore:
         """
         self._root = root
         self._policy = policy
+        self._restore_targets: dict[str, Path] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -211,59 +268,45 @@ class LifecycleStore:
         path: Path,
         reason: str,
         work_receipt_id: str | None = None,
+        entity_type: str | None = None,
     ) -> LifecycleRecord:
-        """Move ``path`` into the store and write a manifest.
-
-        The operation is atomic: either both the payload move and the manifest
-        write succeed, or the original path is left untouched and an exception
-        is raised.
-
-        Concurrent calls for the same path are serialised via a per-path lock;
-        one caller wins and the other raises ``FileNotFoundError`` (because the
-        source is gone).
+        """Move a path into the lifecycle store and write its manifest.
 
         Args:
-            path: File or directory to retire. Must exist.
-            reason: Human-readable reason for the retirement.
-            work_receipt_id: Optional receipt identifier to record in the manifest.
+            path: Filesystem path read or written by the operation.
+            reason: Reason value consumed by retire().
+            work_receipt_id: Work receipt id value consumed by retire().
+            entity_type: Optional entity type used by policy-specific
+                classification.
 
         Returns:
-            A ``LifecycleRecord`` describing the newly retired entity.
+            Value produced for the caller.
 
         Raises:
-            FileNotFoundError: If ``path`` does not exist.
-            OSError: If the move or manifest write fails (original is untouched).
+            FileNotFoundError: Propagated when validation, persistence, or execution fails.
+            OSError: Propagated when validation, persistence, or execution fails.
         """
         lock = _get_path_lock(path)
         with lock:
-            # Re-check inside lock to be TOCTOU-safe (anti-pattern: TOCTOU without locks).
             if not path.exists():
-                raise FileNotFoundError(f"retire: path does not exist: {path}")
-
+                raise FileNotFoundError(f"retire: path does not exist: path_sha256={_path_sha256(path)}")
             record_id = uuid.uuid4().hex
             now = datetime.now(timezone.utc)
             date_str = now.strftime("%Y-%m-%d")
             dest_dir = self._root / self._policy.name / date_str / record_id
             payload_dir = dest_dir / _PAYLOAD_DIRNAME
             manifest_path = dest_dir / _MANIFEST_FILENAME
-
             sha256 = _sha256_of_path(path)
-
-            # Create destination directory structure before touching the source.
-            # If this fails (permissions, disk full) the source is untouched.
             dest_dir.mkdir(parents=True, exist_ok=True)
             payload_dir.mkdir(exist_ok=True)
-
-            # Move payload into the payload directory.
             dest_payload = payload_dir / path.name
             try:
                 shutil.move(str(path), str(dest_payload))
             except Exception as exc:
-                # VET142-excluded: lifecycle primitive rollback — undoes the dest dir
-                # creation when the move itself failed; original payload is untouched.
                 shutil.rmtree(dest_dir, ignore_errors=True)
-                raise OSError(f"retire: failed to move {path} — original is untouched") from exc
-
+                raise OSError(
+                    f"retire: failed to move path_sha256={_path_sha256(path)}; original is untouched"
+                ) from exc
             record = LifecycleRecord(
                 record_id=record_id,
                 original_path=str(path),
@@ -271,48 +314,70 @@ class LifecycleStore:
                 retired_at_utc=now.isoformat(),
                 reason=reason,
                 work_receipt_id=work_receipt_id,
+                work_receipt_id_sha256=hashlib.sha256(work_receipt_id.encode("utf-8", errors="replace")).hexdigest()
+                if work_receipt_id
+                else None,
+                entity_type=entity_type,
                 policy=self._policy.name,
                 store_path=dest_dir,
             )
-
+            self._restore_targets[record_id] = path
             try:
                 _write_manifest_atomic(manifest_path, record.to_manifest_dict())
             except Exception as exc:
-                # VET142-excluded: lifecycle primitive rollback — restores the original
-                # payload and drops the half-built dest after a manifest write failure.
                 shutil.move(str(dest_payload), str(path))
                 shutil.rmtree(dest_dir, ignore_errors=True)
-                raise OSError(f"retire: manifest write failed for {path} — original has been restored") from exc
-
+                raise OSError(
+                    f"retire: manifest write failed for path_sha256={_path_sha256(path)}; original has been restored"
+                ) from exc
             logger.info(
-                "lifecycle.retire: %s -> %s (policy=%s, reason=%s)",
-                path,
-                dest_dir,
+                "lifecycle.retire: path_sha256=%s -> record_id=%s (policy=%s, reason=%s)",
+                _path_sha256(path),
+                record_id,
                 self._policy.name,
-                reason,
+                redact_text(reason),
             )
             return record
 
-    def restore(self, record_id: str) -> None:
+    def restore(self, record_id: str, *, target_path: Path | str | None = None) -> None:
         """Move the payload back to its original path and mark as restored.
 
         Args:
             record_id: The UUID hex identifying the record to restore.
+            target_path: Explicit restore destination required when a manifest
+                intentionally redacts the original absolute path.
 
         Raises:
             KeyError: If no record with this ID exists in the store.
             FileExistsError: If the original path is already occupied.
         """
         record = self._load_record(record_id)
-        original = Path(record.original_path)
+        if target_path is not None:
+            original = Path(target_path)
+        elif record.record_id in self._restore_targets:
+            original = self._restore_targets[record.record_id]
+        elif record.original_path == REDACTED_PATH or record.original_path.startswith(REDACTED_PATH):
+            raise StorageError(
+                f"restore: record {record_id} has a privacy-redacted original path; pass target_path explicitly"
+            )
+        else:
+            original = Path(record.original_path)
         if original.exists():
-            raise FileExistsError(f"restore: original path already exists: {original} — move it away first")
+            raise FileExistsError(f"restore: original path already exists: {_redacted_path(original)}")
 
         payload_dir = record.store_path / _PAYLOAD_DIRNAME
-        # Payload dir should contain exactly one entry (the original name).
+        # Payload dir MUST contain exactly one entry (the original name);
+        # anything else means the manifest has been tampered with or a prior
+        # retire wrote a corrupt record.  Surface as StorageError rather than
+        # silently restoring only the first entry.
         entries = list(payload_dir.iterdir())
         if not entries:
             raise FileNotFoundError(f"restore: payload directory is empty for record {record_id}")
+        if len(entries) != 1:
+            raise StorageError(
+                f"restore: payload directory for record {record_id} has {len(entries)} entries, expected exactly 1 — "
+                "manifest may be corrupt; investigate the store before restoring",
+            )
         payload_entry = entries[0]
 
         original.parent.mkdir(parents=True, exist_ok=True)
@@ -325,12 +390,13 @@ class LifecycleStore:
         _write_manifest_atomic(manifest_path, data)
 
         logger.info(
-            "lifecycle.restore: record %s -> %s",
+            "lifecycle.restore: record %s -> path_sha256=%s",
             record_id,
-            original,
+            _path_sha256(original),
         )
+        self._restore_targets.pop(record_id, None)
 
-    def list(self, filter: PolicyFilter | None = None) -> list[LifecycleRecord]:
+    def list(self, filter: PolicyFilter | None = None) -> builtins.list[LifecycleRecord]:
         """Return all records, optionally narrowed by a ``PolicyFilter``.
 
         Args:
@@ -361,8 +427,11 @@ class LifecycleStore:
                     data = json.loads(manifest_path.read_text(encoding="utf-8"))
                     record = LifecycleRecord.from_manifest_dict(data, record_dir)
                 except Exception as exc:
-                    logger.warning(
-                        "lifecycle.list: skipping malformed manifest at %s — %s",
+                    # Audit-relevant: a malformed manifest means a record exists
+                    # on disk that callers cannot see.  Log at ERROR so operators
+                    # notice in production rather than swallow as WARNING.
+                    logger.error(
+                        "lifecycle.list: malformed manifest at %s — record hidden from listing: %s",
                         manifest_path,
                         exc,
                     )
@@ -386,34 +455,43 @@ class LifecycleStore:
         records.sort(key=lambda r: r.retired_at_utc, reverse=True)
         return records
 
-    def purge(self, record_id: str) -> None:
+    def purge(self, record_id: str, *, force: bool = False) -> None:
         """Permanently delete a record's payload and manifest from disk.
 
         This is the ONLY path in the lifecycle subsystem that hard-deletes
-        bytes.  It is gated by ``policy.allows_hard_delete`` and, at the
-        application layer, must only be reachable via ``@protected_mutation``.
+        bytes.  It is gated by ``policy.allows_hard_delete``; callers whose
+        policy disallows hard delete (e.g. ``ArchivePolicy``) MUST pass
+        ``force=True`` and MUST themselves be wrapped by
+        ``@protected_mutation(DestructiveAction.PURGE_ARCHIVE)``.  This is
+        the contract that makes archive purge reachable from user-facing
+        code without weakening the default-deny posture.
 
         Args:
             record_id: The UUID hex of the record to purge.
+            force: When True, skip the ``policy.allows_hard_delete`` check.
+                Only safe when the caller is itself decorated with
+                ``@protected_mutation`` so a confirmed intent and a
+                ``DESTRUCTIVE_OP`` ``WorkReceipt`` were produced.  Default
+                False keeps the policy-driven guard for normal callers.
 
         Raises:
-            PermissionError: If the policy does not permit hard delete.
+            PermissionError: If the policy does not permit hard delete and
+                ``force`` is False.
             KeyError: If no record with this ID exists.
         """
-        if not self._policy.allows_hard_delete:
+        if not force and not self._policy.allows_hard_delete:
             raise PermissionError(
                 f"Policy '{self._policy.name}' does not permit hard delete — "
-                "use @protected_mutation(DestructiveAction.PURGE_ARCHIVE) to override."
+                "wrap the caller with @protected_mutation(DestructiveAction.PURGE_ARCHIVE) "
+                "and pass force=True from inside that wrapper.",
             )
         record = self._load_record(record_id)
-        # VET142-excluded: lifecycle primitive — guarded by Policy.allows_hard_delete
-        # check above; callers (RecycleStore.purge_expired, ArchiveStore purge paths)
-        # supply the @protected_mutation gate when invoked from user-facing code.
         shutil.rmtree(record.store_path)
         logger.info(
-            "lifecycle.purge: record %s permanently deleted (policy=%s)",
+            "lifecycle.purge: record %s permanently deleted (policy=%s, force=%s)",
             record_id,
             self._policy.name,
+            force,
         )
 
     # ------------------------------------------------------------------

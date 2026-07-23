@@ -19,9 +19,12 @@ import logging
 import threading
 from typing import TypedDict
 
+from vetinari.boundary_guards import account_evidence_drop
 from vetinari.database import get_connection
+from vetinari.learning.episode_memory import get_episode_memory
 
 logger = logging.getLogger(__name__)
+
 
 # Module-level lock protects DB writes. Reads are safe without a lock
 # because the database runs in WAL mode (readers don't block writers).
@@ -108,6 +111,10 @@ def record_difficulty_feedback(
         signals: Observed execution signals from the completed task.
         episode_id: Optional episode ID from get_episode_memory().record().
             When provided, the episode's metadata row is updated in place.
+
+    Raises:
+        Exception: Propagates persistence failures after accounting the
+            rejected calibration evidence.
     """
     observed = compute_observed_difficulty(signals)
     delta = observed - predicted
@@ -131,27 +138,46 @@ def record_difficulty_feedback(
                 (episode_id,),
             ).fetchone()
             if row is None:
-                logger.debug(
-                    "Episode %s not found — difficulty feedback not persisted",
-                    episode_id,
-                )
-                return
-            meta = json.loads(row[0] or "{}")  # noqa: VET112 — row[0] is a nullable DB column
+                meta = _load_canonical_episode_metadata(episode_id)
+                if meta is None:
+                    logger.debug(
+                        "Episode %s not found; difficulty feedback not persisted",
+                        episode_id,
+                    )
+                    return
+            else:
+                meta = json.loads(row[0] or "{}")
             meta["predicted_difficulty"] = round(predicted, 3)
             meta["observed_difficulty"] = round(observed, 3)
             meta["difficulty_delta"] = round(delta, 3)
             meta.update({k: v for k, v in signals.items() if v is not None})
-            conn.execute(
-                "UPDATE episode_memory_store SET metadata = ? WHERE episode_id = ?",
-                (json.dumps(meta), episode_id),
-            )
-            conn.commit()
+            if row is not None:
+                conn.execute(
+                    "UPDATE episode_memory_store SET metadata = ? WHERE episode_id = ?",
+                    (json.dumps(meta), episode_id),
+                )
+                conn.commit()
+            _update_canonical_episode_metadata(episode_id, meta)
         except Exception:
-            logger.warning(
-                "Failed to persist difficulty feedback for episode %s — calibration data lost for this task",
+            account_evidence_drop(episode_id, "difficulty_feedback", logger=logger)
+            logger.error(
+                "Failed to persist difficulty feedback for episode %s; calibration data was not accepted",
                 episode_id,
                 exc_info=True,
             )
+            raise
+
+
+def _load_canonical_episode_metadata(episode_id: str) -> dict[str, object] | None:
+    episodic = get_episode_memory()._episodic
+    if episodic.get(episode_id) is None:
+        return None
+    return episodic._store.get_episode_metadata(episode_id)
+
+
+def _update_canonical_episode_metadata(episode_id: str, metadata: dict[str, object]) -> None:
+    episodic = get_episode_memory()._episodic
+    episodic._store.update_episode_metadata(episode_id, metadata)
 
 
 def get_calibration_bias(task_type: str, window: int = 50) -> float:
@@ -172,10 +198,16 @@ def get_calibration_bias(task_type: str, window: int = 50) -> float:
     """
     try:
         conn = get_connection()
-        rows = conn.execute(
-            "SELECT metadata FROM episode_memory_store WHERE task_type = ? ORDER BY created_at DESC LIMIT ?",
-            (task_type, window),
-        ).fetchall()
+        if _table_exists(conn, "episode_memory_store"):
+            rows = conn.execute(
+                "SELECT metadata FROM episode_memory_store WHERE task_type = ? ORDER BY created_at DESC LIMIT ?",
+                (task_type, window),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT metadata_json FROM memory_episodes WHERE task_type = ? ORDER BY created_at DESC LIMIT ?",
+                (task_type, window),
+            ).fetchall()
     except Exception:
         logger.warning(
             "Calibration bias query failed for task_type %s — using uncalibrated difficulty",
@@ -200,3 +232,11 @@ def get_calibration_bias(task_type: str, window: int = 50) -> float:
 
     mean_delta = sum(deltas) / len(deltas)
     return min(max(mean_delta, -_MAX_CALIBRATION_BIAS), _MAX_CALIBRATION_BIAS)
+
+
+def _table_exists(conn, name: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (name,),
+    ).fetchone()
+    return row is not None

@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_hardware_digital_twin.schema.json",
+  "title": "Workbench Hardware Digital Twin Snapshot",
+  "type": "object",
+  "required": [
+    "snapshot_id",
+    "project_id",
+    "generated_at_utc",
+    "observations",
+    "fingerprint",
+    "evidence_ids",
+    "status",
+    "degradation_reasons",
+    "schema_version"
+  ],
+  "properties": {
+    "snapshot_id": {"type": "string", "minLength": 1},
+    "project_id": {"type": "string", "minLength": 1},
+    "generated_at_utc": {"type": "string", "minLength": 1},
+    "status": {"enum": ["ready", "degraded", "unavailable", "blocked"]},
+    "schema_version": {"const": 1},
+    "evidence_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "degradation_reasons": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "observations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/observation"}
+    },
+    "fingerprint": {
+      "anyOf": [
+        {"$ref": "#/$defs/fingerprint"},
+        {"type": "null"}
+      ]
+    }
+  },
+  "$defs": {
+    "observation": {
+      "type": "object",
+      "required": ["kind", "status", "value", "unit", "evidence_id", "measured_at_utc", "details", "stale"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "cpu",
+            "ram",
+            "disk",
+            "gpu_vram",
+            "model_load",
+            "embedding_vector_search",
+            "windows_wsl_path",
+            "service_residency",
+            "thermal_power",
+            "runtime_version"
+          ]
+        },
+        "status": {"enum": ["ready", "degraded", "unavailable", "blocked"]},
+        "value": {
+          "anyOf": [
+            {"type": "number"},
+            {"type": "integer"},
+            {"type": "null"}
+          ]
+        },
+        "unit": {"type": "string"},
+        "evidence_id": {"type": "string", "minLength": 1},
+        "measured_at_utc": {"type": "string", "minLength": 1},
+        "details": {"type": "object"},
+        "stale": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "fingerprint": {
+      "type": "object",
+      "required": [
+        "cpu_signature",
+        "ram_signature",
+        "gpu_device",
+        "storage_signature",
+        "driver_version",
+        "firmware_version",
+        "cuda_version",
+        "wsl_version",
+        "docker_version",
+        "model_server_version",
+        "model_store_path",
+        "evidence_id"
+      ],
+      "properties": {
+        "cpu_signature": {"type": "string", "minLength": 1},
+        "ram_signature": {"type": "string", "minLength": 1},
+        "gpu_device": {"type": "string", "minLength": 1},
+        "storage_signature": {"type": "string", "minLength": 1},
+        "driver_version": {"type": "string", "minLength": 1},
+        "firmware_version": {"type": "string", "minLength": 1},
+        "cuda_version": {"type": "string", "minLength": 1},
+        "wsl_version": {"type": "string", "minLength": 1},
+        "docker_version": {"type": "string", "minLength": 1},
+        "model_server_version": {"type": "string", "minLength": 1},
+        "model_store_path": {"type": "string", "minLength": 1},
+        "evidence_id": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

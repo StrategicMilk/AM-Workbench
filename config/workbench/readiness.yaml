@@ -1,0 +1,64 @@
+schema_version: 1
+readiness_kind: operator_readiness
+critical_signals:
+  - identity
+  - config
+  - policy
+  - tool_pin
+  - run_kernel
+expected_signals:
+  - setup
+  - identity
+  - config
+  - provider
+  - capability_pack
+  - policy
+  - scheduler
+  - memory
+  - connector
+  - tool_pin
+  - run_kernel
+  - verified_history
+  - probe
+mode_thresholds:
+  full:
+    required_statuses: [passing, verified]
+    requires_verified_history: true
+    requires_passing_probes: true
+  minimal:
+    required_critical_statuses: [passing, verified]
+    optional_unknown_allowed: true
+  restricted:
+    confirmation_required_when:
+      - stale
+      - unknown
+      - degraded
+      - confirmation_required
+  blocked:
+    critical_statuses:
+      - missing
+      - unreadable
+      - corrupt
+      - incompatible
+      - failing
+feature_gates:
+  mission_control: [policy, run_kernel, provider]
+  launcher_first_run_setup: [identity, config]
+  automation_admission: [policy, tool_pin, run_kernel, provider]
+  provider_use: [provider]
+  capability_pack_use: [capability_pack, tool_pin]
+  connector_use: [connector, policy]
+  run_kernel_operations: [run_kernel]
+reason_order:
+  - identity
+  - config
+  - policy
+  - tool_pin
+  - run_kernel
+  - provider
+  - capability_pack
+  - connector
+  - scheduler
+  - memory
+  - verified_history
+  - probe

@@ -19,6 +19,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 # Absolute quality drop that triggers automatic rollback and demotion
 _REGRESSION_THRESHOLD = 0.05  # 5% absolute drop
 
@@ -29,7 +30,7 @@ _REGRESSION_WINDOW_HOURS = 24
 # -- ActionRecord --------------------------------------------------------------
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ActionRecord:
     """Immutable record of a single autonomous action logged for rollback tracking.
 
@@ -268,6 +269,8 @@ class RollbackRegistry:
         Returns:
             List of ActionRecord objects ordered by timestamp descending.
         """
+        if hours <= 0:
+            return []
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
         with self._lock:
             recent = [r for r in self._actions.values() if datetime.fromisoformat(r.timestamp) >= cutoff]

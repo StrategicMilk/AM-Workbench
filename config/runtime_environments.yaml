@@ -1,0 +1,108 @@
+schema_version: 1
+default_tier: core
+tiers:
+  core:
+    extras:
+      - core
+      - dev
+    env_var: VETINARI_ENV_TIER
+    present_when:
+      value: core
+    install_command: pip install -e ".[core,dev]"
+    verification_command: python scripts/check_environment_split.py --check
+    reason: Lightweight Windows-native developer loop and common runtime tooling.
+    capabilities:
+      - goal_decomposition
+      - task_sequencing
+      - context_management
+      - user_clarification
+      - plan_consolidation
+      - dependency_resolution
+      - code_pattern_search
+      - domain_analysis
+      - api_documentation_lookup
+      - lateral_thinking
+      - ui_ux_design
+      - database_schema_design
+      - devops_pipeline_design
+      - git_workflow_analysis
+      - architecture_decision_support
+      - risk_and_tradeoff_analysis
+      - ontological_analysis
+      - contrarian_review
+      - code_scaffolding
+      - documentation_generation
+      - creative_writing
+      - cost_analysis
+      - experiment_management
+      - error_recovery
+      - synthesis
+      - improvement_suggestions
+      - monitoring
+      - reporting
+      - code_review
+      - security_audit
+      - test_generation
+      - code_simplification
+  gpu:
+    extras:
+      - gpu
+      - ml
+      - local
+      - vllm
+      - sglang
+      - image
+      - comfyui
+    env_var: VETINARI_ENV_GPU
+    install_command: pip install -e ".[gpu]"
+    verification_command: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_gpu_tests.ps1
+    reason: Local GPU inference, embeddings, image generation, and ML-heavy adapters.
+    capabilities:
+      - image_generation
+  browser:
+    extras:
+      - browser
+      - scraping-dynamic
+    env_var: VETINARI_ENV_BROWSER
+    install_command: pip install -e ".[browser]"
+    verification_command: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_browser_tests.ps1
+    reason: Playwright-backed dynamic browser and scraping workflows.
+    capabilities: []
+  training:
+    extras:
+      - training
+      - llmlingua
+    env_var: VETINARI_ENV_TRAINING
+    install_command: pip install -e ".[training]"
+    verification_command: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_gpu_tests.ps1
+    reason: Fine-tuning, dataset, DPO/DAPO, and compression workflows.
+    capabilities: []
+  audio:
+    extras:
+      - audio
+    env_var: VETINARI_ENV_AUDIO
+    install_command: pip install -e ".[audio]"
+    verification_command: python scripts/check_environment_split.py --check
+    reason: Audio transcription and microphone/soundfile runtime support.
+    capabilities: []
+  video:
+    extras:
+      - video
+    env_var: VETINARI_ENV_VIDEO
+    install_command: pip install -e ".[video]"
+    verification_command: python scripts/check_environment_split.py --check
+    reason: Video and frame-processing runtime support.
+    capabilities: []
+core_forbidden_packages:
+  - accelerate
+  - bitsandbytes
+  - diffusers
+  - llama-cpp-python
+  - onnxruntime
+  - peft
+  - playwright
+  - sentence-transformers
+  - torch
+  - transformers
+  - trl
+  - unsloth

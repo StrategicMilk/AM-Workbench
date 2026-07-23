@@ -1,12 +1,12 @@
 # Training and Self-Improvement
 
-Vetinari continuously improves itself through three interconnected systems:
+AM Workbench continuously improves itself through three interconnected systems:
 
 1. **Idle-Time Training Pipeline** — QLoRA fine-tuning executed during idle periods
 2. **Kaizen Continuous Improvement** — PDCA lifecycle for systematic improvement tracking
 3. **Feedback Loop** — Execution outcomes feed back into model selection and learning
 
-These systems are designed to close the loop: every task Vetinari executes produces signals that eventually influence how it performs future tasks.
+These systems are designed to close the loop: every task AM Workbench executes produces signals that eventually influence how it performs future tasks.
 
 ---
 
@@ -141,18 +141,17 @@ Each skill gets its own LoRA adapter, preventing cross-skill interference.
 
 ### Adapter Inventory API
 
-The mounted adapter inventory endpoints in `litestar_training_api_part2.py` are
-read routes without `admin_guard`:
+Training control and inventory endpoints are owned by the Rust kernel, with
+framework-neutral support in `vetinari/training/api_runtime.py`:
 
-| Endpoint | Current fields exposed | Release classification |
+| Endpoint | Current owner | Release classification |
 |---|---|---|
-| `GET /api/v1/training/models` | adapter ID, task type, adapter path, eval score, deployment status | Public exposure risk until 34F proves auth/redaction and 34G proves bounded registry reads |
-| `GET /api/v1/training/adapters?task_type=...` | adapter ID, base model, task type, adapter path, eval score, deployment status | Public exposure risk until 34F/34G close proof |
-| `GET /api/v1/training/adapters/deployed` | deployed adapter ID, base model, task type, adapter path, eval score | Public exposure risk until 34F/34G close proof |
+| `GET /api/v1/training/models` | Rust kernel route surface, Python training runtime support | Native kernel-owned |
+| `GET /api/v1/training/adapters?task_type=...` | Rust kernel route surface, Python training runtime support | Native kernel-owned |
+| `GET /api/v1/training/adapters/deployed` | Rust kernel route surface, Python training runtime support | Native kernel-owned |
 
-Do not describe adapter paths, base model IDs, eval scores, or deployment state
-as safe public data. Keep these endpoints on trusted localhost or route them to
-future public proof for guarded, redacted, paginated behavior.
+Do not reintroduce Python web route wrappers for these endpoints. Keep sensitive
+adapter details behind trusted localhost/native-kernel policy.
 
 ---
 
@@ -175,14 +174,17 @@ When real execution data is sparse, the pipeline generates synthetic training da
 
 **File:** `vetinari/training/data_seeder.py`
 
-On first run, bootstrap datasets are downloaded to provide an initial training corpus.
+On first run, bootstrap datasets are candidates for an initial training corpus.
+The downloader uses the license gate in `vetinari/training/external_data.py`;
+datasets with blocked or review-required license status do not enter default
+training without an explicit internal-only override.
 
-| Dataset | Records | Purpose |
-|---|---|---|
-| `codeparrot/apps` | 5,000 | Coding evaluations |
-| `mbpp` | 1,000 | Python basics |
-| `hendrycks/competition_math` | 5,000 | Reasoning problems |
-| `tatsu-lab/alpaca` | 10,000 | Instruction following |
+| Dataset | Records | Purpose | Release/license status |
+|---|---|---|---|
+| `codeparrot/apps` | 5,000 | Coding evaluations | Allowed only through the reviewed external-data catalog. |
+| `mbpp` | 1,000 | Python basics | Allowed only through the reviewed external-data catalog. |
+| `hendrycks/competition_math` | 5,000 | Reasoning problems | Allowed only through the reviewed external-data catalog. |
+| `tatsu-lab/alpaca` | 10,000 | Instruction following | Blocked for default/commercial release use because the catalog records `blocked:cc-by-nc-4.0-noncommercial`. |
 
 **Location:** `~/.vetinari/training_data/`
 
@@ -268,6 +270,11 @@ Default heuristic: role sections first, constraints near the end, examples immed
 
 **Directory:** `vetinari/kaizen/`
 
+Runtime status: the production scheduler path proposes improvements and reports
+PDCA state. Apply/revert automation is available only where a concrete
+`ImprovementApplicator` is registered; it is not a blanket code-edit or
+execution-loop automation path.
+
 Kaizen applies a PDCA (Plan-Do-Check-Act) lifecycle to systematic improvement tracking. It operates alongside the training pipeline and addresses process-level issues that gradient descent cannot fix directly.
 
 ### Improvement States
@@ -294,7 +301,9 @@ AutoGembaWalk analyzes execution history for patterns that indicate a systemic p
 
 **Do**
 
-The `PDCAController` applies the proposed improvement through a registered applicator. Each improvement type has its own applicator (e.g., prompt rewrite, threshold adjustment, routing rule change).
+The `PDCAController` applies a proposed improvement only when a registered
+applicator exists for that metric. Otherwise the improvement remains a proposal
+for review/reporting.
 
 **Check**
 
@@ -302,8 +311,10 @@ The system monitors outcomes over an observation window (default: 7 days). At th
 
 **Act**
 
-- If improvement is confirmed: persist override to the overrides file and mark `CONFIRMED`
-- If regression detected (> 5%): revert the change and mark `REVERTED`
+- If improvement is confirmed and has a registered applicator: persist the
+  supported override and mark `CONFIRMED`
+- If regression is detected for an applied override (> 5%): run the matching
+  applicator revert and mark `REVERTED`
 
 ### Defect Categories
 
@@ -441,7 +452,15 @@ Training requires optional GPU dependencies that are not installed by default:
 pip install -e ".[training]"
 ```
 
-This installs: `torch`, `peft`, `trl`, `bitsandbytes`, `unsloth`, `datasets`, `transformers`.
+This installs the vanilla training profile: `torch`, `peft`, `trl>=0.24,<0.25`, `bitsandbytes>=0.49,<0.50`, `datasets>=3.4.1,<4.4`, `transformers>=4.57,<5.0`, and `huggingface-hub>=0.36,<2.0`. This profile is designed to coexist with normal runtime, image, and ComfyUI extras.
+
+Use the accelerated Unsloth profile only in a dedicated training environment:
+
+```bash
+pip install -e ".[training-unsloth]"
+```
+
+The accelerated profile installs `unsloth>=2026.5.9,<2027.0` and `transformers>=5.1,<5.5`; it is intentionally mutually exclusive with the `all`, `gpu`, `vllm`, `image`, and `comfyui` extras because those serving/image profiles remain on the validated Transformers 4.x boundary. Treat this command as the dedicated "training-all" environment: create a separate virtualenv and install only `.[training-unsloth]` plus development tools needed for that training run.
 
 Without these packages, the pipeline operates in **data collection and curriculum planning mode only** — it gathers training records and plans activities but does not execute fine-tuning runs.
 
@@ -460,6 +479,15 @@ All persistent training state lives under `~/.vetinari/` by default. `VETINARI_S
 | `$KAIZEN_DB_PATH` | Kaizen improvement store (SQLite) |
 | `$VETINARI_STATE_DIR/operator_selector_state.json` | Thompson Sampling arm states for prompt mutation |
 | `outputs/feedback/feedback.jsonl` | User thumbs-up/thumbs-down feedback for replay |
+
+## RCG-0069-P01 Privacy Gate
+
+Training records and replay buffers are represented as FLOW-006 in
+`docs/reference/privacy-manifest.json`. RCG-0069-P01 keeps default training use
+disabled for every privacy-bearing flow until consent, redaction, retention, and
+delete/export linkage are proven by a future runtime owner. The pack verifier is
+`scripts/check_privacy_compliance.py`, with branch-discriminating coverage in
+`tests/test_privacy_compliance_checker.py`.
 
 ---
 

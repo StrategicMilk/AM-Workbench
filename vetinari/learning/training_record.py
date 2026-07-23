@@ -14,7 +14,7 @@ from typing import Any
 from vetinari.utils.serialization import dataclass_to_dict
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TrainingRecord:
     """A single execution record for training data collection.
 
@@ -42,6 +42,7 @@ class TrainingRecord:
             ``"missing_error_handling"``); empty string when accepted.
         inspector_feedback: Full Inspector feedback summary text; empty string
             when no feedback was recorded.
+        schema_version: JSONL schema evolution version.
         metadata: Free-form dict of additional context.
     """
 
@@ -66,6 +67,7 @@ class TrainingRecord:
     rejection_category: str = ""  # Failure category of the rejection (e.g., "missing_error_handling")
     inspector_feedback: str = ""  # Full Inspector feedback text
     trace_id: str = ""  # Pipeline trace identifier for end-to-end observability
+    schema_version: int = 1  # JSONL schema evolution version; increment when record layout changes
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __repr__(self) -> str:

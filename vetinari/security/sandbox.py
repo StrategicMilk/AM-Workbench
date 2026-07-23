@@ -17,11 +17,15 @@ import fnmatch
 import logging
 import os
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
 from vetinari.exceptions import SandboxPolicyViolation
+
+logger = logging.getLogger(__name__)
+
 
 # -- Module-level constants --------------------------------------------------
 
@@ -32,7 +36,12 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # 2026-04-25 to enforce style.md "One owner per concept".
 _DEFAULT_POLICY_PATH = _PROJECT_ROOT / "config" / "sandbox_policy.yaml"
 
-__all__ = ["enforce_blocked_paths", "reset_blocked_paths_cache"]
+__all__ = [
+    "RustSandboxAuthorityBridge",
+    "RustSandboxDecision",
+    "enforce_blocked_paths",
+    "reset_blocked_paths_cache",
+]
 
 # -- Module-level cache and lock ---------------------------------------------
 # Maps policy_path (as string) -> (exact_paths tuple, glob_patterns tuple).
@@ -40,8 +49,6 @@ __all__ = ["enforce_blocked_paths", "reset_blocked_paths_cache"]
 # at most once per unique policy path per process lifetime.
 _BLOCKED_PATHS_CACHE: dict[str, tuple[tuple[Path, ...], tuple[str, ...]]] = {}
 _CACHE_LOCK = threading.Lock()
-
-logger = logging.getLogger(__name__)
 
 
 # -- Private helpers ---------------------------------------------------------
@@ -161,6 +168,92 @@ def _path_is_under(target: Path, candidate: Path) -> bool:
     return target.is_relative_to(candidate)
 
 
+@dataclass(frozen=True, slots=True)
+class RustSandboxDecision:
+    """Python-visible decision object mirroring the Rust sandbox authority contract."""
+
+    allowed: bool
+    reason: str
+    resolved_path: Path | None = None
+
+
+class RustSandboxAuthorityBridge:
+    """Fail-closed Python bridge for the Rust sandbox authority contract.
+
+    The Rust kernel owns the branch contract and tests. Python callers use this
+    bridge to preserve the same denial semantics at runtime until the packaged
+    kernel is loaded directly by the Workbench process.
+    """
+
+    _KNOWN_PERMISSIONS = {"read", "write", "delete", "list", "info", "exists", "mkdir", "move"}
+
+    def __init__(self, root: str | Path, allowed_permissions: set[str] | None = None) -> None:
+        self.root = Path(root).resolve(strict=False)
+        self.allowed_permissions = (
+            set(self._KNOWN_PERMISSIONS) if allowed_permissions is None else set(allowed_permissions)
+        )
+
+    def check_permission(self, permission: str, path: str | Path) -> RustSandboxDecision:
+        """Check whether a sandbox permission is allowed for a path.
+
+        Args:
+            permission: File-system operation requested by the caller.
+            path: Candidate path, absolute or relative to the sandbox root.
+
+        Returns:
+            Decision with an allow flag, reason, and resolved path when allowed.
+        """
+        if permission not in self._KNOWN_PERMISSIONS:
+            return RustSandboxDecision(False, f"unknown_permission:{permission}")
+        if permission not in self.allowed_permissions:
+            return RustSandboxDecision(False, f"permission_denied:{permission}")
+
+        raw_path = Path(path)
+        if ".." in raw_path.parts:
+            return RustSandboxDecision(False, f"traversal_denied:{path}")
+
+        candidate = raw_path if raw_path.is_absolute() else self.root / raw_path
+        try:
+            resolved = candidate.resolve(strict=False)
+        except OSError as exc:
+            logger.warning("Rust sandbox bridge could not resolve path %s", candidate, exc_info=True)
+            return RustSandboxDecision(False, f"unreadable_path:{type(exc).__name__}:{exc}")
+
+        if not resolved.is_relative_to(self.root) and candidate.exists():
+            return RustSandboxDecision(False, f"symlink_escape_denied:{resolved}")
+        if not resolved.is_relative_to(self.root):
+            return RustSandboxDecision(False, f"traversal_denied:{resolved}")
+
+        try:
+            if candidate.exists() and candidate.is_symlink():
+                target = candidate.resolve(strict=True)
+                if not target.is_relative_to(self.root):
+                    return RustSandboxDecision(False, f"symlink_escape_denied:{target}")
+        except OSError as exc:
+            logger.warning("Rust sandbox bridge could not resolve symlink %s", candidate, exc_info=True)
+            return RustSandboxDecision(False, f"symlink_unreadable:{type(exc).__name__}:{exc}")
+
+        return RustSandboxDecision(True, "allowed", resolved)
+
+    def require_path(self, permission: str, path: str | Path) -> Path:
+        """Resolve a sandbox path or raise on denied access.
+
+        Args:
+            permission: File-system operation requested by the caller.
+            path: Candidate path, absolute or relative to the sandbox root.
+
+        Returns:
+            Resolved path inside the sandbox root.
+
+        Raises:
+            PermissionError: If the Rust sandbox decision denies access.
+        """
+        decision = self.check_permission(permission, path)
+        if not decision.allowed or decision.resolved_path is None:
+            raise PermissionError(decision.reason)
+        return decision.resolved_path
+
+
 # -- Public API --------------------------------------------------------------
 
 
@@ -216,7 +309,9 @@ def enforce_blocked_paths(target: Path, policy_path: Path | None = None) -> None
         raise
     except Exception as exc:
         # Fail closed: ANY unexpected error during the check is a denial.
-        # No exception may silently permit a write that the policy was meant to block.
+        # Lines 181-186 implement the Rule 2 fail-closed contract from
+        # the repository governance contract — no exception may silently permit
+        # a write that the policy was meant to block.
         logger.warning(
             "Sandbox denied write to %s — error during policy check: %s",
             target,

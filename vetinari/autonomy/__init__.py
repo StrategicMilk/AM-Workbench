@@ -17,6 +17,7 @@ from vetinari.autonomy.governor import (
     PromotionSuggestion,
     get_governor,
 )
+from vetinari.autonomy.governor_permissions import enforce_scope_boundary
 from vetinari.autonomy.wiring import wire_autonomy_and_notifications
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "AutonomyGovernor",
     "PermissionResult",
     "PromotionSuggestion",
+    "enforce_scope_boundary",
     "get_approval_queue",
     "get_governor",
     "wire_autonomy_and_notifications",

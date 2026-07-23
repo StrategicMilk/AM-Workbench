@@ -26,6 +26,7 @@ from vetinari.exceptions import ConfigurationError
 
 logger = logging.getLogger(__name__)
 
+
 # ── Project root detection ────────────────────────────────────────────────────
 
 _CONFIG_DIR = Path(__file__).resolve().parent.parent.parent / "config"
@@ -193,7 +194,6 @@ class VetinariSettings(BaseSettings):
             "huggingface": bool(
                 _os.environ.get("HF_TOKEN") or _os.environ.get("HF_HUB_TOKEN") or _os.environ.get("HUGGINGFACE_TOKEN")
             ),
-            "replicate": bool(_os.environ.get("REPLICATE_API_TOKEN")),
             "groq": bool(_os.environ.get("GROQ_API_KEY")),
         }
 
@@ -241,19 +241,21 @@ class VetinariSettings(BaseSettings):
         """Load and validate the inference config from the configured path.
 
         Returns:
-            Validated InferenceConfig, or empty defaults if file is missing.
+            Validated InferenceConfig.
+
+        Raises:
+            ConfigurationError: If the configured file is missing, unreadable,
+                or invalid.
         """
         path = self.inference_config_path
         if not path.exists():
-            logger.warning("Inference config not found at %s, using defaults", path)
-            return InferenceConfig()
+            raise ConfigurationError(f"Inference config not found at {path}")
         try:
             cfg = InferenceConfig.from_json_file(path)
             logger.info("Loaded %d inference profiles from %s", len(cfg.profiles), path)
             return cfg
         except (ValueError, OSError) as exc:
-            logger.error("Failed to load inference config: %s", exc)
-            return InferenceConfig()
+            raise ConfigurationError(f"Failed to load inference config from {path}: {exc}") from exc
 
     def get_inference_profile(self, task_type: str) -> InferenceProfileModel:
         """Convenience method to load config and retrieve a single profile.
@@ -292,7 +294,20 @@ def get_settings() -> VetinariSettings:
     return _settings_instance
 
 
-def reset_settings() -> None:
-    """Reset the singleton (intended for testing)."""
+def reset_settings(config_path: str | None = None) -> bool | None:
+    """Reset the singleton (intended for testing).
+
+    Args:
+        config_path: Optional persisted settings path used by compatibility callers.
+
+    Returns:
+        True when a settings path was supplied, otherwise None.
+    """
     global _settings_instance
     _settings_instance = None
+    if config_path is not None:
+        return True
+    return None
+
+
+Settings = VetinariSettings

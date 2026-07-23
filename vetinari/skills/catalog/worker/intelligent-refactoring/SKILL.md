@@ -66,7 +66,7 @@ Intelligent Refactoring performs structural code transformations using AST-aware
 
 6. **Test verification** -- Run the full test suite for renamed/moved symbols. Run targeted tests for extracted/simplified code. Verify that test count has not decreased (no tests accidentally broken or removed).
 
-7. **Documentation update** -- Update docstrings, comments, and markdown documentation that reference renamed or moved symbols, including architecture docs.
+7. **Documentation update** -- Update docstrings, comments, and markdown documentation that reference renamed or moved symbols. This includes AGENTS.md, CLAUDE.md, and any architecture docs.
 
 8. **Consistency check** -- After refactoring, grep the entire codebase for the old name/pattern to verify no references were missed. Check strings, comments, YAML configs, and documentation.
 

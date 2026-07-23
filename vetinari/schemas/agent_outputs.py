@@ -11,73 +11,79 @@ enabling structured validation and IDE autocompletion.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from vetinari.errors import FailClosedError
 
 logger = logging.getLogger(__name__)
 
-try:
+
+if TYPE_CHECKING:
     from pydantic import BaseModel, Field
-except ImportError:
-    # Fallback: use dataclasses to mimic Pydantic when not installed
+else:
+    try:
+        from pydantic import BaseModel, Field
+    except ImportError:
+        # Fallback: use dataclasses to mimic Pydantic when not installed
 
-    class _BaseMeta(type):
-        """Metaclass that adds model_validate and model_json_schema."""
+        class _BaseMeta(type):
+            """Metaclass that adds model_validate and model_json_schema."""
 
-        def __new__(mcs, name, bases, namespace):
-            return super().__new__(mcs, name, bases, namespace)
+            def __new__(mcs, name, bases, namespace):
+                return super().__new__(mcs, name, bases, namespace)
 
-    class BaseModel(metaclass=_BaseMeta):  # type: ignore[no-redef]
-        """Minimal Pydantic-like base when pydantic is not installed."""
+        class BaseModel(metaclass=_BaseMeta):
+            """Minimal Pydantic-like base when pydantic is not installed."""
 
-        def __init__(self, **kwargs):
-            """Initialize model fields from keyword arguments.
+            def __init__(self, **kwargs):
+                """Initialize model fields from keyword arguments.
+
+                Args:
+                    **kwargs: Field name-value pairs to set on the model instance.
+                """
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+            @classmethod
+            def model_validate(cls, data: dict) -> BaseModel:
+                """Validate and construct a model instance from a raw dictionary.
+
+                Args:
+                    data: Dictionary of field values to validate.
+
+                Returns:
+                    A new model instance populated with the validated data.
+                """
+                return cls(**data)
+
+            @classmethod
+            def model_json_schema(cls) -> dict:
+                """Return a minimal JSON Schema representation of the model.
+
+                Returns:
+                    Dictionary with a basic JSON Schema object type definition.
+                """
+                return {"type": "object", "properties": {}}
+
+            def model_dump(self) -> dict:
+                """Serialize the model instance to a plain dictionary, excluding private fields.
+
+                Returns:
+                    Dictionary of all public field name-value pairs.
+                """
+                return {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
+
+        def Field(default=None, **kwargs) -> Any:
+            """Fallback Field function that returns the default value when Pydantic is unavailable.
 
             Args:
-                **kwargs: Field name-value pairs to set on the model instance.
-            """
-            for k, v in kwargs.items():
-                setattr(self, k, v)
-
-        @classmethod
-        def model_validate(cls, data: dict) -> BaseModel:
-            """Validate and construct a model instance from a raw dictionary.
-
-            Args:
-                data: Dictionary of field values to validate.
+                default: The default value to return.
+                **kwargs: Ignored keyword arguments for Pydantic API compatibility.
 
             Returns:
-                A new model instance populated with the validated data.
+                The provided default value unchanged.
             """
-            return cls(**data)
-
-        @classmethod
-        def model_json_schema(cls) -> dict:
-            """Return a minimal JSON Schema representation of the model.
-
-            Returns:
-                Dictionary with a basic JSON Schema object type definition.
-            """
-            return {"type": "object", "properties": {}}
-
-        def model_dump(self) -> dict:
-            """Serialize the model instance to a plain dictionary, excluding private fields.
-
-            Returns:
-                Dictionary of all public field name-value pairs.
-            """
-            return {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
-
-    def Field(default=None, **kwargs) -> Any:  # type: ignore[no-redef]
-        """Fallback Field function that returns the default value when Pydantic is unavailable.
-
-        Args:
-            default: The default value to return.
-            **kwargs: Ignored keyword arguments for Pydantic API compatibility.
-
-        Returns:
-            The provided default value unchanged.
-        """
-        return default
+            return kwargs["default_factory"]() if "default_factory" in kwargs else default
 
 
 # ── Planner Agent Schemas ─────────────────────────────────────────────
@@ -308,7 +314,7 @@ class MonitorOutput(BaseModel):
 
 # ── Schema Registry ──────────────────────────────────────────────────
 
-OUTPUT_SCHEMAS: dict[str, type] = {
+OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     # Planner
     "plan": PlanOutput,
     "clarify": ClarifyOutput,
@@ -338,6 +344,19 @@ OUTPUT_SCHEMAS: dict[str, type] = {
     "synthesis": SynthesisOutput,
     "monitor": MonitorOutput,
 }
+
+
+def _get_schema_class(mode: str) -> type[BaseModel] | None:
+    """Return the registered output schema class for ``mode``."""
+    return OUTPUT_SCHEMAS.get(mode)
+
+
+def _schema_field_names(schema_cls: type[BaseModel]) -> set[str]:
+    model_fields = getattr(schema_cls, "model_fields", None)
+    if isinstance(model_fields, dict):
+        return set(model_fields)
+    annotations = getattr(schema_cls, "__annotations__", {})
+    return set(annotations) if isinstance(annotations, dict) else set()
 
 
 def validate_output(mode: str, data: Any) -> BaseModel | None:
@@ -374,16 +393,21 @@ def validate_output(mode: str, data: Any) -> BaseModel | None:
         )
         return None
 
+    field_names = _schema_field_names(schema_cls)
+    if field_names and not any(key in field_names for key in data):
+        logger.warning(
+            "validate_output for mode '%s' received no recognized schema fields; validation failed",
+            mode,
+        )
+        return None
+
     try:
         return schema_cls.model_validate(data)
     except Exception:
         # Auto-repair: try to construct with available fields
         try:
-            return schema_cls(
-                **{k: v for k, v in data.items() if k in schema_cls.__annotations__}
-                if hasattr(schema_cls, "__annotations__")
-                else data,
-            )
+            repair_data = {k: v for k, v in data.items() if k in field_names} if field_names else data
+            return schema_cls(**repair_data)
         except Exception:
             logger.warning(
                 "Auto-repair of %s output schema failed — could not construct from available fields, returning None",
@@ -392,7 +416,7 @@ def validate_output(mode: str, data: Any) -> BaseModel | None:
             return None
 
 
-def get_schema_for_mode(mode: str) -> type | None:
+def get_schema_for_mode(mode: str) -> type[BaseModel] | None:
     """Look up the Pydantic output schema class registered for a given agent mode.
 
     Args:
@@ -402,3 +426,27 @@ def get_schema_for_mode(mode: str) -> type | None:
         The schema class, or ``None`` if the mode has no registered schema.
     """
     return OUTPUT_SCHEMAS.get(mode)
+
+
+def validate_output_or_raise(mode: str, data: Any) -> BaseModel:
+    """Validate agent output and raise a structured error on invalid state.
+
+    Args:
+        mode: Agent mode key used to select the expected output schema.
+        data: Raw agent output payload to validate.
+
+    Returns:
+        The validated Pydantic model instance for ``mode``.
+
+    Raises:
+        FailClosedError: Raised when ``mode`` has no schema or ``data`` cannot
+            be validated into that schema.
+    """
+    result = validate_output(mode, data)
+    if result is None:
+        raise FailClosedError(
+            "agent_output.schema_validation",
+            f"could not validate output for mode '{mode}'",
+            recovery="register the mode schema and provide a dictionary payload",
+        )
+    return result

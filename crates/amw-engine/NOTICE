@@ -1,0 +1,21 @@
+AM Workbench Engine — third-party design attribution
+====================================================
+
+The engine is original Vetinari code. Its architecture deliberately learns from the
+following projects; this borrow map records design influence and license obligations.
+
+| Source | License / obligation | Design influence |
+| --- | --- | --- |
+| llama.cpp, including tools/server | MIT; attribution | Target C API, slot management, continuous batching, cache reuse, and session save/restore concepts. The pinned source snapshot is vendored below this crate. |
+| Ollama, including its Go engine | MIT; attribution | `keep_alive` lifecycle semantics: five-minute default, zero immediate unload, negative one never unload, and per-request override. |
+| mistral.rs | MIT; attribution | Rust runtime layering, continuous batching, CUDA paged-attention structure, prefix caching, server layering, and LoRA/X-LoRA handling concepts. |
+| vLLM | Apache-2.0; attribution and NOTICE preservation | Scheduling, paged-KV design, and LoRA hot-swap serving semantics. |
+| SGLang | Apache-2.0; attribution and NOTICE preservation | Prefix and RadixAttention concepts. |
+| Jan | Apache-2.0; attribution and NOTICE preservation | Desktop llama.cpp integration, per-model overrides, and engine settings UX. |
+| GPT4All | MIT; attribution | Desktop packaging patterns. |
+| llama-cpp-python | MIT; attribution | Compatibility lessons from the Python path being replaced. |
+
+koboldcpp (AGPL-3.0) is an ideas-only reference. No koboldcpp code is copied or adapted,
+and it is intentionally excluded from the borrowed-code attribution table above.
+
+The vendored llama.cpp snapshot retains its upstream LICENSE and repository notices.

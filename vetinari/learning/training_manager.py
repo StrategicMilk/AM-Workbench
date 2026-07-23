@@ -6,7 +6,8 @@ Unified interface for managing fine-tuning workflows:
 
 - Prepares training datasets from collected execution records
 - Provides recommended hyperparameter configurations
-- Submits local (Unsloth/LoRA) and cloud (HuggingFace) training jobs
+- Submits local (Unsloth/LoRA) training jobs and records cloud-training
+  requests as failed jobs until a concrete provider integration is wired
 - Tracks job status and recommends retraining when quality degrades
 
 All heavy optional dependencies (unsloth, huggingface_hub) are handled
@@ -16,18 +17,16 @@ results with installation instructions rather than raising ImportError.
 
 from __future__ import annotations
 
-import fnmatch
-import json
 import logging
-import tempfile
 import threading
-import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from vetinari.types import AgentType
+from .training_manager_cloud import TrainingManagerCloudMixin
+from .training_manager_jobs import TrainingManagerJobRegistryMixin, _resolve_training_jobs_path
+from .training_manager_local import _train_local_impl
+from .training_manager_retraining import TrainingManagerRetrainingMixin
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +85,7 @@ class TrainingJob:
         )
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class RetrainingRecommendation:
     """Whether a model/task combination warrants retraining."""
 
@@ -120,16 +119,26 @@ _BASELINE_QUALITY = 0.80
 _MIN_QLORA_RECORDS = 100
 
 
-class TrainingManager:
+class TrainingManager(TrainingManagerJobRegistryMixin, TrainingManagerRetrainingMixin, TrainingManagerCloudMixin):
     """Unified training workflow coordinator.
 
     Uses :func:`get_training_collector` internally to access accumulated
     execution records without requiring a path argument on every call.
     """
 
-    def __init__(self, data_path: str | None = None):
+    def __init__(self, data_path: str | None = None, jobs_path: str | Path | None = None) -> None:
+        """Initialize the manager and reload durable training job state.
+
+        Args:
+            data_path: Optional training data JSONL path used for collector
+                isolation and default job-registry placement.
+            jobs_path: Optional explicit JSON registry path for tests or
+                operator-managed storage.
+        """
         self._data_path = data_path
-        self._jobs: dict[str, TrainingJob] = {}
+        self._jobs_path = _resolve_training_jobs_path(data_path, jobs_path)
+        self._jobs_lock = threading.RLock()
+        self._jobs: dict[str, TrainingJob] = self._load_jobs()
 
     # ------------------------------------------------------------------
     # Internal helper
@@ -292,313 +301,17 @@ class TrainingManager:
         Returns:
             The TrainingResult result.
         """
-        start = time.monotonic()
-        job_id = f"local-{int(start * 1000)}"
-
-        def _record_job(status: str, progress: float, result: TrainingResult | None = None) -> None:
-            self._jobs[job_id] = TrainingJob(
-                job_id=job_id,
-                status=status,
-                provider="local",
-                model_id=model_id,
-                created_at=datetime.now(timezone.utc).isoformat(),
-                progress=progress,
-                result=result,
-            )
-
-        _record_job("running", 0.0)
-
-        # Validate dataset size
-        min_records = _MIN_QLORA_RECORDS if method == "qlora" else 50
-        if len(dataset.records) < min_records:
-            duration = round(time.monotonic() - start, 2)
-            result = TrainingResult(
-                success=False,
-                model_path=None,
-                metrics={},
-                duration_seconds=duration,
-                error=(
-                    f"Dataset too small: {len(dataset.records)} records "
-                    f"(minimum {min_records} required for {method}). "
-                    "Collect more execution data or lower min_score."
-                ),
-            )
-            _record_job("failed", 1.0, result)
-            return result
-
-        # Merge config
-        hparams = self.get_training_config(method)
-        if config:
-            hparams.update(config)
-
-        # Delegate to the actual training pipeline
-        try:
-            from vetinari.training.pipeline import TrainingPipeline
-
-            pipeline = TrainingPipeline()
-            reqs = pipeline.check_requirements()
-            if not reqs.get("ready_for_training", False):
-                missing = [lib for lib, avail in reqs.get("libraries", {}).items() if not avail]
-                duration = round(time.monotonic() - start, 2)
-                result = TrainingResult(
-                    success=False,
-                    model_path=None,
-                    metrics={},
-                    duration_seconds=duration,
-                    error=(
-                        "Training libraries not installed. Missing: "
-                        + ", ".join(missing)
-                        + ". Install with: pip install trl peft bitsandbytes transformers"  # noqa: VET301 — user guidance string
-                    ),
-                )
-                _record_job("failed", 1.0, result)
-                return result
-        except (ImportError, ValueError):
-            # ValueError: torch.__spec__ is None when torch is partially installed
-            duration = round(time.monotonic() - start, 2)
-            logger.warning(
-                "Training pipeline module not importable — trl/peft/transformers may be missing; "
-                "training aborted after %.2fs",
-                duration,
-            )
-            result = TrainingResult(
-                success=False,
-                model_path=None,
-                metrics={},
-                duration_seconds=duration,
-                error="Training pipeline module not available.",
-            )
-            _record_job("failed", 1.0, result)
-            return result
-
-        # Derive the dominant task type from the dataset's breakdown stats so
-        # the pipeline can label the run correctly even when curation is skipped.
-        task_type_from_dataset: str | None = None
-        if dataset.stats.get("task_type_breakdown"):
-            breakdown = dataset.stats["task_type_breakdown"]
-            if isinstance(breakdown, dict) and breakdown:
-                task_type_from_dataset = max(breakdown, key=lambda k: breakdown[k])
-
-        # Serialize the validated dataset to a JSONL file so the pipeline uses
-        # exactly the records that were validated above rather than re-curating
-        # from the collector (which may include new, un-validated data).
-        _ds_dir = tempfile.mkdtemp(prefix="vetinari_train_")
-        _ds_path = str(Path(_ds_dir) / "dataset.jsonl")
-        try:
-            with Path(_ds_path).open("w", encoding="utf-8") as _f:
-                for rec in dataset.records:
-                    _rec_dict = rec.to_dict() if hasattr(rec, "to_dict") else (
-                        rec if isinstance(rec, dict) else vars(rec)
-                    )
-                    _f.write(json.dumps(_rec_dict, ensure_ascii=False) + "\n")
-            logger.info(
-                "[TrainingManager] Serialized %d validated records to %s",
-                len(dataset.records),
-                _ds_path,
-            )
-        except Exception as _exc:
-            logger.warning(
-                "[TrainingManager] Could not serialize dataset to JSONL (%s) — pipeline will re-curate",
-                _exc,
-            )
-            _ds_path = None  # type: ignore[assignment]
-
-        logger.info("[TrainingManager] Starting local %s training for %s", method, model_id)
-        try:
-            run = pipeline.run(
-                base_model=model_id,
-                task_type=task_type_from_dataset,
-                min_score=0.8,
-                epochs=hparams.get("num_train_epochs", 3),
-                dataset_path=_ds_path,
-            )
-        except Exception as exc:
-            duration = round(time.monotonic() - start, 2)
-            logger.exception("[TrainingManager] Training pipeline failed for %s", model_id)
-            result = TrainingResult(
-                success=False,
-                model_path=None,
-                metrics={},
-                duration_seconds=duration,
-                error=str(exc),
-            )
-            _record_job("failed", 1.0, result)
-            return result
-
-        duration = round(time.monotonic() - start, 2)
-
-        # Record training outcome for agent-level tracking
-        try:
-            from vetinari.training.agent_trainer import AgentTrainer
-
-            trainer = AgentTrainer()
-            trainer.record_training(
-                agent_type=AgentType.WORKER.value,
-                model_path=model_id,
-                metrics={
-                    "method": method,
-                    "success": run.success,
-                    "training_examples": run.training_examples,
-                    "eval_score": run.eval_score,
-                },
-            )
-        except Exception:
-            logger.warning("[TrainingManager] Could not record training to agent history", exc_info=True)
-
-        result = TrainingResult(
-            success=run.success,
-            model_path=run.output_model_path,
-            metrics={
-                "training_examples": run.training_examples,
-                "eval_score": run.eval_score,
-            },
-            duration_seconds=duration,
-            error=None if run.success else "Training pipeline reported failure",
-        )
-        _record_job("completed" if result.success else "failed", 1.0, result)
-        return result
+        return _train_local_impl(self, model_id, dataset, method, config)
 
     # ------------------------------------------------------------------
     # Cloud training
     # ------------------------------------------------------------------
 
-    def train_cloud(
-        self,
-        model_id: str,
-        dataset: TrainingDataset,
-        provider: str = "huggingface",
-        config: dict[str, Any] | None = None,
-    ) -> TrainingJob:
-        """Submit a cloud fine-tuning job.
-
-        Returns a :class:`TrainingJob` in ``"pending"`` status.  Full API
-        integration is an optional feature — if the provider SDK is not
-        configured, the job stub includes setup instructions in the job ID.
-
-        Parameters
-        ----------
-        model_id:
-            Base model identifier.
-        dataset:
-            Prepared dataset from :meth:`prepare_training_data`.
-        provider:
-            ``"huggingface"`` (default) or another provider name.
-        config:
-            Optional provider-specific configuration overrides.
-
-        Args:
-            model_id: The model id.
-            dataset: The dataset.
-            provider: The provider.
-            config: The config.
-
-        Returns:
-            The TrainingJob result.
-
-        Raises:
-            RuntimeError: Always — cloud training is not yet implemented.
-        """
-        raise RuntimeError(
-            f"Cloud training via '{provider}' is not yet implemented. "
-            "Use train_local() for on-device fine-tuning with QLoRA/DoRA, "
-            "or contribute a provider integration."
-        )
-
-    # ------------------------------------------------------------------
-    # Job registry
-    # ------------------------------------------------------------------
-
-    def get_training_status(self, job_id: str) -> TrainingJob | None:
-        """Look up a training job by its ID."""
-        return self._jobs.get(job_id)
-
-    def list_jobs(self) -> list[TrainingJob]:
-        """Return all tracked training jobs."""
-        return list(self._jobs.values())
-
-    # ------------------------------------------------------------------
-    # Retraining recommendations
-    # ------------------------------------------------------------------
-
-    def should_retrain(self, model_id: str, task_type: str) -> RetrainingRecommendation:
-        """Evaluate whether a model warrants retraining for a task type.
-
-        Compares the rolling average quality of recent records against
-        :data:`_BASELINE_QUALITY`.  Recommends retraining when degradation
-        exceeds :data:`_RETRAIN_DEGRADATION_THRESHOLD` (15 %).
-
-        Parameters
-        ----------
-        model_id:
-            Model to evaluate.
-        task_type:
-            Task category to filter records by.
-
-        Args:
-            model_id: The model id.
-            task_type: The task type.
-
-        Returns:
-            The RetrainingRecommendation result.
-        """
-        collector = self._get_collector()
-        try:
-            all_records = collector._load_all()
-        except Exception:
-            all_records = []
-
-        # Filter to this model + task. Support wildcard patterns in model_id so
-        # callers can match a family of models (e.g., "qwen/*") without enumerating
-        # every variant. fnmatch.fnmatch() treats non-wildcard strings as exact matches,
-        # so "qwen-7b" only matches records for that exact model.
-        relevant = [
-            r
-            for r in all_records
-            if fnmatch.fnmatch(r.model_id, model_id) and fnmatch.fnmatch(r.task_type, task_type)
-        ]
-
-        if not relevant:
-            return RetrainingRecommendation(
-                model_id=model_id,
-                task_type=task_type,
-                current_avg_quality=0.0,
-                baseline_quality=_BASELINE_QUALITY,
-                degradation=0.0,
-                recommended=False,
-                reason="No records found for this model/task combination.",
-            )
-
-        current_avg = round(sum(r.score for r in relevant) / len(relevant), 4)
-        degradation = round(max(0.0, (_BASELINE_QUALITY - current_avg) / _BASELINE_QUALITY), 4)
-        recommended = degradation >= _RETRAIN_DEGRADATION_THRESHOLD
-
-        if recommended:
-            reason = (
-                f"Quality degraded {degradation * 100:.1f}% below baseline "
-                f"({current_avg:.3f} vs {_BASELINE_QUALITY:.3f} baseline). "
-                f"Retraining on {len(relevant)} records recommended."
-            )
-        else:
-            reason = (
-                f"Quality acceptable: {current_avg:.3f} "
-                f"(baseline {_BASELINE_QUALITY:.3f}, "
-                f"degradation {degradation * 100:.1f}%)."
-            )
-
-        return RetrainingRecommendation(
-            model_id=model_id,
-            task_type=task_type,
-            current_avg_quality=current_avg,
-            baseline_quality=_BASELINE_QUALITY,
-            degradation=degradation,
-            recommended=recommended,
-            reason=reason,
-        )
-
 
 # ---------------------------------------------------------------------------
 # Module-level singleton
 # ---------------------------------------------------------------------------
+
 
 _manager: TrainingManager | None = None
 _manager_lock = threading.Lock()

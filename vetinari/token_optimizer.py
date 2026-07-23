@@ -31,16 +31,22 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
+from vetinari.context.window_manager import count_tokens
 from vetinari.token_compression import (
-    _COMPRESS_THRESHOLD_CHARS,  # noqa: F401 — re-exported for callers
-    _CONTEXT_WINDOW_CHARS,  # noqa: F401 — re-exported for callers
+    _COMPRESS_THRESHOLD_CHARS as _TOKEN_COMPRESSION_THRESHOLD_CHARS,
+)
+from vetinari.token_compression import (
     LocalPreprocessor,
 )
 
 logger = logging.getLogger(__name__)
+
+
+_COMPRESS_THRESHOLD_CHARS = _TOKEN_COMPRESSION_THRESHOLD_CHARS
 
 # ---------------------------------------------------------------------------
 # Task-type profiles: (max_tokens, temperature, prefer_json)
@@ -77,15 +83,6 @@ TASK_PROFILES: dict[str, tuple[int, float, bool]] = {
     "explorer": (1500, 0.3, True),
     "general": (2048, 0.3, False),
 }
-
-# Per-content-type character-to-token ratios
-# Code ≈ 3 chars/token (operators, short names), text ≈ 5 chars/token
-_CHARS_PER_TOKEN_BY_TYPE: dict[str, int] = {
-    "code": 3,
-    "text": 5,
-    "mixed": 4,
-}
-_CHARS_PER_TOKEN = 4  # default fallback for callers that don't specify type
 
 
 @dataclass
@@ -157,8 +154,7 @@ class TokenOptimizer:
         self._budgets: dict[str, TokenBudget] = {}
         self._preprocessor = LocalPreprocessor()
         # Bounded dedup cache — prevents unbounded memory growth
-        self._context_cache: dict[str, str] = {}
-        self._context_cache_order: list[str] = []
+        self._context_cache: OrderedDict[str, str] = OrderedDict()
         self._max_context_cache: int = 1024
 
     # ------------------------------------------------------------------
@@ -245,97 +241,49 @@ class TokenOptimizer:
         task_id: str | None = None,
         budget: TokenBudget | None = None,
     ) -> dict[str, Any]:
-        """Prepare an optimised prompt for inference.
+        """Prepare an optimized prompt for inference.
 
         Args:
-            prompt: The raw prompt to optimise.
-            context: Additional context to prepend; compressed when it
-                exceeds 70% of the model's context window.
-            task_type: Task type used to select the inference profile.
-            task_description: Human-readable description forwarded to the
-                local preprocessor for guided compression.
-            is_cloud_model: Passed through for metadata; compression now
-                applies to all models based on context_length.
-            context_length: Token capacity of the target model's context
-                window (default 8192).  Used to compute the compression
-                threshold — local 4K-8K models benefit most.
-            plan_id: Plan whose TokenBudget should be checked. If both
-                plan_id and budget are given, the explicit budget wins.
-            task_id: Task identifier used for per-task budget accounting.
-            budget: Explicit TokenBudget override.
+            prompt: Prompt value consumed by prepare_prompt().
+            context: Context value consumed by prepare_prompt().
+            task_type: Task type value consumed by prepare_prompt().
+            task_description: Task description value consumed by prepare_prompt().
+            is_cloud_model: Is cloud model value consumed by prepare_prompt().
+            context_length: Context length value consumed by prepare_prompt().
+            plan_id: Plan id value consumed by prepare_prompt().
+            task_id: Task id value consumed by prepare_prompt().
+            budget: Budget value consumed by prepare_prompt().
 
         Returns:
-            Dictionary with keys:
-            - prompt: optimised prompt string
-            - context: optimised context string
-            - max_tokens: recommended max output tokens
-            - temperature: recommended temperature
-            - prefer_json: whether to request JSON output
-            - metadata: dict of compression/optimisation stats
-            - budget_ok: whether the current budget allows this task
+            Value produced for the caller.
         """
         max_tokens, temperature, prefer_json = self.get_task_profile(task_type)
-
         meta: dict[str, Any] = {
             "task_type": task_type,
             "task_profile": {"max_tokens": max_tokens, "temperature": temperature},
             "is_cloud_model": is_cloud_model,
         }
-
-        # Budget check — use content-type-aware char/token ratio
-        content_type = (
-            "code"
-            if task_type in ("coding", "code_gen", "builder", "testing", "test_automation")
-            else "text"
-            if task_type in ("documentation", "documentation_agent", "research", "researcher")
-            else "mixed"
-        )
-        chars_per_tok = _CHARS_PER_TOKEN_BY_TYPE.get(content_type, _CHARS_PER_TOKEN)
-        estimated_input_tokens = (len(prompt) + len(context)) // chars_per_tok
-        estimated_total = estimated_input_tokens + max_tokens
-        budget_ok = True
-
-        active_budget = budget or (self._budgets.get(plan_id) if plan_id else None)
-        if active_budget:
-            budget_ok = active_budget.check_task(task_id or "unknown", estimated_total)
-            meta["budget_remaining"] = active_budget.remaining
-            meta["budget_ok"] = budget_ok
-            if not budget_ok:
-                logger.warning(
-                    "[TokenOptimizer] Task %s would exceed budget (estimated %s tokens, remaining %s)",
-                    task_id,
-                    estimated_total,
-                    active_budget.remaining,
-                )
-
-        # Compress context when it exceeds 70% of the model's context window.
-        # Applies to local and cloud models alike — local 4K-8K models are most space-constrained.
-        _compress_threshold_chars = int(context_length * 0.7 * _CHARS_PER_TOKEN)
-        if context and len(context) >= _compress_threshold_chars:
+        context_tokens = count_tokens(context) if context else 0
+        if context and context_tokens >= int(context_length * 0.7):
             prompt, context, compress_meta = self._preprocessor.preprocess_for_cloud(prompt, context, task_description)
             meta.update(compress_meta)
-
-        # Deduplicate context: if this exact context was recently seen, skip it
+        estimated_input_tokens = count_tokens(f"{prompt}\n{context}" if context else prompt)
+        estimated_total = estimated_input_tokens + max_tokens
+        active_budget = budget or (self._budgets.get(plan_id) if plan_id else None)
+        budget_ok = self._apply_budget_meta(active_budget, task_id, estimated_total, meta)
         context_hash = hashlib.md5(context.encode(), usedforsecurity=False).hexdigest() if context else ""
         if context_hash and context_hash in self._context_cache:
-            # Context hasn't changed — reference it but don't repeat it
             meta["context_deduplicated"] = True
-            # Keep a brief reference instead
+            self._context_cache.move_to_end(context_hash)
             context = f"[Context unchanged from previous task — key points: {context[:200]}...]"
         elif context_hash:
-            # Bounded eviction — prevent unbounded memory growth
-            if len(self._context_cache_order) >= self._max_context_cache:
-                oldest = self._context_cache_order.pop(0)
-                self._context_cache.pop(oldest, None)
-            self._context_cache_order.append(context_hash)
+            if len(self._context_cache) >= self._max_context_cache:
+                self._context_cache.popitem(last=False)
             self._context_cache[context_hash] = context
-
-        # Assemble final prompt
         if context:
             final_prompt = f"Context:\n{context}\n\n{prompt}"
         else:
             final_prompt = prompt
-
         return {
             "prompt": final_prompt,
             "context": context,
@@ -345,6 +293,27 @@ class TokenOptimizer:
             "metadata": meta,
             "budget_ok": budget_ok,
         }
+
+    @staticmethod
+    def _apply_budget_meta(
+        active_budget: TokenBudget | None,
+        task_id: str | None,
+        estimated_total: int,
+        meta: dict[str, Any],
+    ) -> bool:
+        if not active_budget:
+            return True
+        budget_ok = active_budget.check_task(task_id or "unknown", estimated_total)
+        meta["budget_remaining"] = active_budget.remaining
+        meta["budget_ok"] = budget_ok
+        if not budget_ok:
+            logger.warning(
+                "[TokenOptimizer] Task %s would exceed budget (estimated %s tokens, remaining %s)",
+                task_id,
+                estimated_total,
+                active_budget.remaining,
+            )
+        return budget_ok
 
     def summarise_results(self, results: list[dict[str, Any]], max_chars: int = 2000) -> str:
         """Summarise a list of task results for inclusion in subsequent prompts.

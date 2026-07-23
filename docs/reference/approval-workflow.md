@@ -1,10 +1,10 @@
 # Plan Approval Workflow
 
-This document describes the approval workflow for coding tasks in Vetinari's plan mode.
+This document describes the approval workflow for coding tasks in AM Workbench's plan mode.
 
 ## Overview
 
-Vetinari implements a governance model where:
+AM Workbench implements a governance model where:
 - **Plan mode**: Coding tasks require human approval before execution
 - **Build mode**: Execution proceeds without blocking (governance checks still apply)
 
@@ -30,6 +30,7 @@ class ApprovalEntry:
     entry_type: MemoryType = MemoryType.APPROVAL
     content: str  # JSON of ApprovalDetails
     summary: str  # Human-readable summary
+
 
 @dataclass
 class ApprovalDetails:
@@ -165,12 +166,12 @@ All approval decisions are logged to memory:
         "approver": "john_doe",
         "reason": "Code review passed",
         "risk_score": 0.15,
-        "timestamp": "2026-03-03T10:30:00Z"
+        "timestamp": "2026-03-03T10:30:00Z",
     },
     "summary": "Approved coding task subtask_001 by john_doe",
     "timestamp": 1709478600000,
     "provenance": "plan_approval_api",
-    "source_backends": ["oc", "mnemosyne"]
+    "source_backends": ["oc", "mnemosyne"],
 }
 ```
 

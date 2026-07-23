@@ -1,4 +1,4 @@
-"""@protected_mutation decorator — guard for lifecycle-fenced destructive operations.
+"""@protected_mutation decorator â€” guard for lifecycle-fenced destructive operations.
 
 Any function that permanently deletes, purges, clears, or resets data must be
 wrapped with this decorator.  The decorator:
@@ -8,7 +8,7 @@ wrapped with this decorator.  The decorator:
 2. If ``recycle=True`` (default), retires the target via ``RecycleStore`` BEFORE
    invoking the wrapped function so the entity is restorable within the grace
    window.  If the recycle step fails, ``RecycleFailedAbort`` is raised and the
-   destructive operation is aborted — the target is left untouched.  Rollback
+   destructive operation is aborted â€” the target is left untouched.  Rollback
    is the user's responsibility.
 3. Invokes the wrapped function.
 4. Emits a ``WorkReceipt(kind=DESTRUCTIVE_OP)`` with ``basis=HUMAN_ATTESTED``
@@ -26,6 +26,7 @@ import asyncio
 import functools
 import inspect
 import logging
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -35,15 +36,72 @@ from typing import Any
 
 from vetinari.exceptions import RecycleFailedAbort
 from vetinari.safety.recycle import RecycleStore
+from vetinari.security.redaction import redact_text
 
 logger = logging.getLogger(__name__)
+
 
 _SOURCE = "vetinari.safety.protected_mutation"
 
 
-# ---------------------------------------------------------------------------
+def _safe_audit_text(value: object | None) -> str:
+    """Return a redacted one-line string for logs and receipts."""
+    if value is None:
+        return ""
+    return redact_text(str(value)).replace("\r", " ").replace("\n", " ")
+
+
+# Module-level singleton â€” RecycleStore() resolves config from
+# safety_defaults.yaml on every construction.  Cache it so guarded calls do
+# not pay that cost per invocation while keeping the established
+# double-checked locking pattern.
+_recycle_store_singleton: RecycleStore | None = None
+_recycle_store_lock = threading.Lock()
+
+
+def _get_recycle_store() -> RecycleStore:
+    """Return the cached process-wide RecycleStore, creating it on first call.
+
+    Returns:
+        A shared ``RecycleStore`` instance configured from
+        ``config/safety_defaults.yaml``.
+    """
+    global _recycle_store_singleton
+    if _recycle_store_singleton is None:
+        with _recycle_store_lock:
+            if _recycle_store_singleton is None:
+                _recycle_store_singleton = RecycleStore()
+    return _recycle_store_singleton
+
+
+def get_recycle_store() -> RecycleStore:
+    """Return the shared process-wide RecycleStore singleton.
+
+    Public alias for ``_get_recycle_store()``.  Use this from code outside
+    the ``protected_mutation`` module (e.g. route handlers and cleanup paths)
+    so they participate in the test-isolation contract provided by
+    ``_reset_recycle_store_singleton_for_tests()``.
+
+    Returns:
+        A shared ``RecycleStore`` instance configured from
+        ``config/safety_defaults.yaml``.
+    """
+    return _get_recycle_store()
+
+
+def _reset_recycle_store_singleton_for_tests() -> None:
+    """Test-only: drop the cached RecycleStore so the next call re-constructs.
+
+    Tests that monkeypatch ``RecycleStore`` after the cache has been
+    populated should call this before exercising the decorator so the
+    patched class wins.
+    """
+    global _recycle_store_singleton
+    with _recycle_store_lock:
+        _recycle_store_singleton = None
+
+
 # Public types
-# ---------------------------------------------------------------------------
 
 
 class DestructiveAction(str, Enum):
@@ -61,7 +119,7 @@ class DestructiveAction(str, Enum):
     RESET_PROJECT = "reset_project"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ConfirmedIntent:
     """Proof of human confirmation required by ``@protected_mutation``.
 
@@ -98,13 +156,11 @@ class UnconfirmedDestructiveAction(Exception):
     """Raised when a protected_mutation call lacks a valid ConfirmedIntent.
 
     This is the fail-closed sentinel: if confirmation is missing or invalid
-    the operation NEVER proceeds (Rule 2 — no default-pass on security checks).
+    the operation NEVER proceeds (Rule 2 â€” no default-pass on security checks).
     """
 
 
-# ---------------------------------------------------------------------------
 # Decorator
-# ---------------------------------------------------------------------------
 
 
 def protected_mutation(
@@ -116,110 +172,119 @@ def protected_mutation(
 ) -> Callable:
     """Decorator that guards a destructive function with a confirmed-intent check.
 
-    The wrapped function MUST accept an ``intent: ConfirmedIntent`` keyword
-    argument.  Callers that omit it receive ``UnconfirmedDestructiveAction``.
-
-    Workflow:
-    1. Extract and validate ``intent`` from ``kwargs`` (fail-closed if absent).
-    2. If ``recycle=True``, look up ``recycle_target_param`` in the call's
-       bound arguments and retire it via ``RecycleStore`` BEFORE calling the
-       function.
-    3. Call the wrapped function.
-    4. Emit a ``WorkReceipt(kind=DESTRUCTIVE_OP)`` recording the outcome.
-
-    Args:
-        action: The ``DestructiveAction`` this decorator guards.
-        recycle: If True, retire the target path via ``RecycleStore`` before
-            the function executes.
-        recycle_target_param: Name of the parameter holding the path to recycle.
-        project_id_param: Name of the parameter holding the project ID (used
-            in receipt emission).
-
     Returns:
-        A decorator that wraps the target function with the guard logic.
+        Value produced for the caller.
     """
 
-    def decorator(fn: Callable) -> Callable:  # noqa: VET093, VET094 — inner closure; return/raise from outer fn
+    def decorator(fn: Callable) -> Callable:
         """Apply the guard to the target function, returning the appropriate wrapper."""
         if asyncio.iscoroutinefunction(fn):
-
-            @functools.wraps(fn)
-            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:  # noqa: VET093, VET094 — closure
-                """Async guard: validate intent, recycle target, call fn, emit receipt."""
-                intent, err = _extract_intent(kwargs)
-                if err:
-                    raise UnconfirmedDestructiveAction(err)
-
-                recycle_record_id, target_path = _maybe_recycle(
-                    fn, args, kwargs, recycle, recycle_target_param, intent, action
-                )
-
-                project_id = _extract_project_id(fn, args, kwargs, project_id_param)
-                success = False
-                error_msg = ""
-                result = None
-                try:
-                    result = await fn(*args, **kwargs)
-                    success = True
-                    return result
-                except Exception as exc:
-                    error_msg = str(exc)
-                    raise
-                finally:
-                    _emit_receipt(
-                        action=action,
-                        intent=intent,
-                        project_id=project_id,
-                        target_path=target_path,
-                        recycle_record_id=recycle_record_id,
-                        success=success,
-                        error_msg=error_msg,
-                    )
-
-            return async_wrapper
-
-        else:
-
-            @functools.wraps(fn)
-            def sync_wrapper(*args: Any, **kwargs: Any) -> Any:  # noqa: VET093, VET094 — closure
-                """Sync guard: validate intent, recycle target, call fn, emit receipt."""
-                intent, err = _extract_intent(kwargs)
-                if err:
-                    raise UnconfirmedDestructiveAction(err)
-
-                recycle_record_id, target_path = _maybe_recycle(
-                    fn, args, kwargs, recycle, recycle_target_param, intent, action
-                )
-
-                project_id = _extract_project_id(fn, args, kwargs, project_id_param)
-                success = False
-                error_msg = ""
-                try:
-                    result = fn(*args, **kwargs)
-                    success = True
-                    return result
-                except Exception as exc:
-                    error_msg = str(exc)
-                    raise
-                finally:
-                    _emit_receipt(
-                        action=action,
-                        intent=intent,
-                        project_id=project_id,
-                        target_path=target_path,
-                        recycle_record_id=recycle_record_id,
-                        success=success,
-                        error_msg=error_msg,
-                    )
-
-            return sync_wrapper
+            return _build_async_protected_wrapper(fn, action, recycle, recycle_target_param, project_id_param)
+        return _build_sync_protected_wrapper(fn, action, recycle, recycle_target_param, project_id_param)
 
     return decorator
 
 
-# ---------------------------------------------------------------------------
 # Internal helpers
-# ---------------------------------------------------------------------------
+
+
+def _prepare_protected_call(
+    fn: Callable,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    action: DestructiveAction,
+    recycle: bool,
+    recycle_target_param: str,
+    project_id_param: str,
+) -> tuple[ConfirmedIntent, str | None, str | None, str]:
+    """Validate intent and perform pre-call recycling for a protected mutation."""
+    intent, err = _extract_intent(kwargs)
+    if err:
+        raise UnconfirmedDestructiveAction(err)
+    recycle_record_id, target_path = _maybe_recycle(fn, args, kwargs, recycle, recycle_target_param, intent, action)
+    project_id = _extract_project_id(fn, args, kwargs, project_id_param)
+    return intent, recycle_record_id, target_path, project_id
+
+
+def _emit_protected_call_receipt(
+    action: DestructiveAction,
+    intent: ConfirmedIntent,
+    project_id: str,
+    target_path: str | None,
+    recycle_record_id: str | None,
+    success: bool,
+    error_msg: str,
+) -> None:
+    """Emit the protected mutation receipt for a completed wrapper call."""
+    emit_destructive_op_receipt(
+        action=action,
+        intent=intent,
+        project_id=project_id,
+        target_path=target_path,
+        recycle_record_id=recycle_record_id,
+        success=success,
+        error_msg=error_msg,
+    )
+
+
+def _build_async_protected_wrapper(
+    fn: Callable,
+    action: DestructiveAction,
+    recycle: bool,
+    recycle_target_param: str,
+    project_id_param: str,
+) -> Callable:
+    """Build the async protected mutation wrapper."""
+
+    @functools.wraps(fn)
+    async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+        intent, recycle_record_id, target_path, project_id = _prepare_protected_call(
+            fn, args, kwargs, action, recycle, recycle_target_param, project_id_param
+        )
+        success = False
+        error_msg = ""
+        try:
+            result = await fn(*args, **kwargs)
+            success = True
+            return result
+        except Exception as exc:
+            error_msg = str(exc)
+            raise
+        finally:
+            _emit_protected_call_receipt(action, intent, project_id, target_path, recycle_record_id, success, error_msg)
+
+    async_wrapper.__dict__["_is_protected_mutation"] = True
+    return async_wrapper
+
+
+def _build_sync_protected_wrapper(
+    fn: Callable,
+    action: DestructiveAction,
+    recycle: bool,
+    recycle_target_param: str,
+    project_id_param: str,
+) -> Callable:
+    """Build the sync protected mutation wrapper."""
+
+    @functools.wraps(fn)
+    def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+        intent, recycle_record_id, target_path, project_id = _prepare_protected_call(
+            fn, args, kwargs, action, recycle, recycle_target_param, project_id_param
+        )
+        success = False
+        error_msg = ""
+        try:
+            result = fn(*args, **kwargs)
+            success = True
+            return result
+        except Exception as exc:
+            error_msg = str(exc)
+            raise
+        finally:
+            _emit_protected_call_receipt(action, intent, project_id, target_path, recycle_record_id, success, error_msg)
+
+    sync_wrapper.__dict__["_is_protected_mutation"] = True
+    return sync_wrapper
 
 
 def _extract_intent(kwargs: dict[str, Any]) -> tuple[ConfirmedIntent | None, str]:
@@ -295,34 +360,36 @@ def _maybe_recycle(
     target_path = Path(raw_path) if not isinstance(raw_path, Path) else raw_path
 
     if not target_path.exists():
-        # Path already gone — nothing to recycle.
+        # Path already gone â€” nothing to recycle.
         return None, str(target_path)
 
     try:
-        record = RecycleStore().retire(
+        record = _get_recycle_store().retire(
             target_path,
-            reason=intent.reason,
+            reason=_safe_audit_text(intent.reason),
             work_receipt_id=None,
         )
         logger.info(
             "protected_mutation: recycled %s -> record_id=%s (action=%s, reason=%s, confirmed_by=%s)",
-            target_path,
+            _safe_audit_text(target_path),
             record.record_id,
             action.value if action is not None else "unknown",
-            intent.reason,
-            intent.confirmed_by,
+            _safe_audit_text(intent.reason),
+            _safe_audit_text(intent.confirmed_by),
         )
         return record.record_id, str(target_path)
     except Exception as exc:
+        safe_target = _safe_audit_text(target_path)
+        safe_cause = _safe_audit_text(exc)
         logger.error(
-            "protected_mutation: recycle of %s failed — %s — aborting destructive op (target untouched)",
-            target_path,
-            exc,
+            "protected_mutation: recycle of %s failed â€” %s â€” aborting destructive op (target untouched)",
+            safe_target,
+            safe_cause,
         )
         raise RecycleFailedAbort(
-            f"Recycle of {target_path} failed; destructive operation aborted. "
-            f"Investigate disk/permission issues before retrying. Cause: {exc}",
-            target=str(target_path),
+            f"Recycle of {safe_target} failed; destructive operation aborted. "
+            f"Investigate disk/permission issues before retrying. Cause: {safe_cause}",
+            target=safe_target,
         ) from exc
 
 
@@ -357,7 +424,7 @@ def _extract_project_id(
     return "unknown"
 
 
-def _emit_receipt(
+def emit_destructive_op_receipt(
     *,
     action: DestructiveAction,
     intent: ConfirmedIntent | None,
@@ -369,7 +436,7 @@ def _emit_receipt(
 ) -> None:
     """Emit a DESTRUCTIVE_OP WorkReceipt for audit purposes.
 
-    Never raises — a failing receipt emission MUST NOT crash the caller.
+    Never raises â€” a failing receipt emission MUST NOT crash the caller.
 
     Args:
         action: The destructive action that was attempted.
@@ -386,22 +453,24 @@ def _emit_receipt(
         from vetinari.receipts.store import WorkReceiptStore
         from vetinari.types import AgentType, EvidenceBasis
 
-        confirmed_by = intent.confirmed_by if intent else "unknown"
+        confirmed_by = _safe_audit_text(intent.confirmed_by if intent else "unknown") or "unknown"
+        safe_target = _safe_audit_text(target_path or "none") or "none"
+        safe_error = _safe_audit_text(error_msg)
 
-        inputs_summary = (f"action={action.value} | target={target_path or 'none'} | confirmed_by={confirmed_by}")[:200]
+        inputs_summary = (f"action={action.value} | target={safe_target} | confirmed_by={confirmed_by}")[:200]
 
         outputs_parts = [f"success={success}"]
         if recycle_record_id:
             outputs_parts.append(f"recycle_record_id={recycle_record_id}")
-        if error_msg:
-            outputs_parts.append(f"error={error_msg[:80]}")
+        if safe_error:
+            outputs_parts.append(f"error={safe_error[:80]}")
         outputs_summary = " | ".join(outputs_parts)[:200]
 
         outcome = OutcomeSignal(
             passed=success,
             score=1.0 if success else 0.0,
             basis=EvidenceBasis.HUMAN_ATTESTED,
-            issues=(error_msg,) if error_msg else (),
+            issues=(safe_error,) if safe_error else (),
             use_case="INTENT_CONFIRMATION",
             provenance=Provenance(
                 source=_SOURCE,
@@ -428,9 +497,59 @@ def _emit_receipt(
         )
     except Exception as exc:
         logger.warning(
-            "protected_mutation: failed to emit DESTRUCTIVE_OP receipt for action=%s — %s",
+            "protected_mutation: failed to emit DESTRUCTIVE_OP receipt for action=%s â€” %s",
             action.value,
             exc,
+        )
+
+
+def requires_confirmed_intent(task: Any) -> bool:
+    """Return True when a task carries the protected-mutation intent flag.
+
+    Reads ``task.metadata.get("protected_mutation_intent_required", False)``
+    so the flag written by ``mark_requires_tool_evidence`` has a canonical
+    consumer (Rule 13 â€” no write-only data).
+
+    Args:
+        task: Any object with a ``metadata`` mapping attribute, typically a
+            ``vetinari.agents.contracts.Task``.
+
+    Returns:
+        True if the task's metadata signals that a ``ConfirmedIntent`` is
+        required before the destructive operation may proceed.
+    """
+    try:
+        return task.metadata.get("protected_mutation_intent_required", False) is True
+    except (AttributeError, TypeError) as exc:
+        logger.debug("Task metadata unavailable while checking protected mutation intent: %s", exc)
+        return False
+
+
+def enforce_task_intent(task: Any, intent: ConfirmedIntent | None) -> None:
+    """Raise if a protected task is dispatched without a confirmed intent.
+
+    Call this at the Worker dispatch site before executing any task whose
+    metadata carries ``protected_mutation_intent_required = True``.  This
+    closes the write-only-data gap: ``mark_requires_tool_evidence`` writes
+    the flag; this function enforces it.
+
+    Args:
+        task: Task-like object with a ``metadata`` mapping.
+        intent: The caller-supplied ``ConfirmedIntent``, or ``None`` when
+            no confirmation was provided.
+
+    Raises:
+        UnconfirmedDestructiveAction: If the task requires a confirmed intent
+            but ``intent`` is ``None`` or not a ``ConfirmedIntent`` instance.
+    """
+    if not requires_confirmed_intent(task):
+        return
+    if intent is None or not isinstance(intent, ConfirmedIntent):
+        task_id = getattr(task, "id", repr(task))
+        raise UnconfirmedDestructiveAction(
+            f"Task {task_id!r} carries protected_mutation_intent_required=True but "
+            "no ConfirmedIntent was supplied. Pass intent=ConfirmedIntent(confirmed_by=..., "
+            "reason=...) to the dispatch call before executing this destructive task."
         )
 
 
@@ -438,5 +557,9 @@ __all__ = [
     "ConfirmedIntent",
     "DestructiveAction",
     "UnconfirmedDestructiveAction",
+    "emit_destructive_op_receipt",
+    "enforce_task_intent",
+    "get_recycle_store",
     "protected_mutation",
+    "requires_confirmed_intent",
 ]

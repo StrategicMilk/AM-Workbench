@@ -1,14 +1,7 @@
 """Vetinari Builder Agent (v0.4.0).
 
-The Builder agent handles code scaffolding, boilerplate generation, test
-scaffolding, writing generated files to disk, and image generation.
-
-Absorbs: IMAGE_GENERATOR (image_generation mode)
-Modes: build, image_generation
-
-Build execution methods live in ``builder_build.py`` (BuilderBuildMixin).
-Image generation helpers live in ``builder_agent_image.py`` (module functions).
-Mode prompts live in ``builder_prompts.py`` (BUILDER_MODE_PROMPTS).
+Handles code scaffolding, generated-file writes, and image generation.
+Delegates build, image, and prompt details to focused helper modules.
 """
 
 from __future__ import annotations
@@ -17,7 +10,7 @@ import ast
 import logging
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from vetinari.agents.builder_agent_image import (
     _MAX_CFG_SCALE,
@@ -60,7 +53,7 @@ from vetinari.agents.builder_agent_image import (
 from vetinari.agents.builder_agent_image import (
     save_svg as _save_svg_fn,
 )
-from vetinari.agents.builder_build import BuilderBuildMixin
+from vetinari.agents.builder_build import BuilderBuildBehavior
 from vetinari.agents.builder_prompts import BUILDER_MODE_PROMPTS
 from vetinari.agents.contracts import (
     AgentResult,
@@ -79,6 +72,7 @@ from vetinari.constants import (
     TRUNCATE_CODE_ANALYSIS,
     TRUNCATE_OUTPUT_PREVIEW,
 )
+from vetinari.learning.atomic_writers import _write_text_atomic
 from vetinari.sandbox_manager import get_sandbox_manager
 from vetinari.security.sandbox import enforce_blocked_paths
 from vetinari.types import AgentType
@@ -86,15 +80,10 @@ from vetinari.types import AgentType
 logger = logging.getLogger(__name__)
 
 
-class BuilderAgent(BuilderBuildMixin, MultiModeAgent):
+class BuilderAgent(BuilderBuildBehavior, MultiModeAgent):
     """Builder agent — code scaffolding, boilerplate, and image generation.
 
-    Consolidates the former IMAGE_GENERATOR agent into a single build agent
-    with two modes: ``build`` (code scaffolding) and ``image_generation``
-    (Stable Diffusion / SVG fallback).
-
-    Build execution is provided by ``BuilderBuildMixin`` (builder_build.py).
-    Image generation delegates to module functions in builder_agent_image.py.
+    Consolidates build and image-generation modes behind one Worker agent.
     """
 
     MODES = {
@@ -147,7 +136,6 @@ class BuilderAgent(BuilderBuildMixin, MultiModeAgent):
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__(AgentType.WORKER, config)
         self._language = self._config.get("language", "python")
-        # Image generation config (in-process via diffusers)
         self._image_enabled = bool(self._config.get("image_enabled", True))
         self._default_width = _bounded_int(self._config.get("width"), 1024, _MIN_IMAGE_SIZE, _MAX_IMAGE_SIZE)
         self._default_height = _bounded_int(self._config.get("height"), 1024, _MIN_IMAGE_SIZE, _MAX_IMAGE_SIZE)
@@ -166,18 +154,8 @@ class BuilderAgent(BuilderBuildMixin, MultiModeAgent):
         )
 
     def _get_mode_system_prompt(self, mode: str) -> str:
-        """Return the LLM system prompt for the given Builder mode.
-
-        Prompts are stored in builder_prompts.py to keep this file under
-        the 550-line limit.
-
-        Args:
-            mode: One of ``build``, ``image_generation``.
-
-        Returns:
-            System prompt string, or empty string for unknown modes.
-        """
-        return BUILDER_MODE_PROMPTS.get(mode, "")
+        """Return the LLM system prompt for the given Builder mode."""
+        return str(BUILDER_MODE_PROMPTS.get(mode, ""))
 
     def verify(self, output: Any) -> VerificationResult:
         """Verify output is well-formed — mode-aware for build vs image.
@@ -275,7 +253,7 @@ class BuilderAgent(BuilderBuildMixin, MultiModeAgent):
             # is missing.
             enforce_blocked_paths(p)
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(content, encoding="utf-8")
+            _write_text_atomic(p, content)
             return True
         except Exception as exc:
             logger.warning(
@@ -456,11 +434,12 @@ class BuilderAgent(BuilderBuildMixin, MultiModeAgent):
         Returns:
             Specification dict with sd_prompt, style_preset, dimensions, etc.
         """
-        return _build_image_spec_fn(self, description, context)  # type: ignore[return-value]
+        return cast(dict[str, Any], _build_image_spec_fn(self, description, context))
 
     # Thin wrappers so subclasses and tests can override methods individually.
 
-    def _detect_style(self, description: str) -> str:
+    @staticmethod
+    def _detect_style(description: str) -> str:
         """Detect the appropriate style preset from the image description.
 
         Args:
@@ -469,9 +448,10 @@ class BuilderAgent(BuilderBuildMixin, MultiModeAgent):
         Returns:
             Style preset key such as logo, icon, diagram, banner, or background.
         """
-        return _detect_style_fn(description)
+        return str(_detect_style_fn(description))
 
-    def _get_default_size(self, style: str) -> tuple:
+    @staticmethod
+    def _get_default_size(style: str) -> tuple[int, int]:
         """Return default (width, height) pixels for a style preset.
 
         Args:
@@ -480,7 +460,7 @@ class BuilderAgent(BuilderBuildMixin, MultiModeAgent):
         Returns:
             Tuple of (width, height) integers.
         """
-        return _get_default_size_fn(style)
+        return cast(tuple[int, int], _get_default_size_fn(style))
 
     def _get_diffusion_engine(self) -> Any:
         """Lazy-initialize the diffusion engine and return it.
@@ -499,7 +479,7 @@ class BuilderAgent(BuilderBuildMixin, MultiModeAgent):
         Returns:
             List of generated image info dicts, or empty list if unavailable.
         """
-        return _generate_via_diffusers_fn(self, spec)
+        return cast(list[dict[str, Any]], _generate_via_diffusers_fn(self, spec))
 
     def _generate_svg_fallback(self, description: str, spec: dict[str, Any]) -> str:
         """Ask the LLM to generate SVG code as a fallback.
@@ -511,9 +491,10 @@ class BuilderAgent(BuilderBuildMixin, MultiModeAgent):
         Returns:
             Valid SVG string, or a minimal placeholder SVG on failure.
         """
-        return _generate_svg_fallback_fn(self, description, spec)
+        return str(_generate_svg_fallback_fn(self, description, spec))
 
-    def _minimal_svg_placeholder(self, description: str, size: tuple) -> str:
+    @staticmethod
+    def _minimal_svg_placeholder(description: str, size: tuple[int, int]) -> str:
         """Generate a descriptive placeholder SVG with keyword-based theming.
 
         Args:
@@ -523,7 +504,7 @@ class BuilderAgent(BuilderBuildMixin, MultiModeAgent):
         Returns:
             Complete SVG string with colored background and description text.
         """
-        return _minimal_svg_placeholder_fn(description, size)  # type: ignore[arg-type]
+        return str(_minimal_svg_placeholder_fn(description, size))
 
     def _save_svg(self, svg_code: str, description: str) -> Path:
         """Save SVG code to the agent's output directory.
@@ -535,7 +516,7 @@ class BuilderAgent(BuilderBuildMixin, MultiModeAgent):
         Returns:
             Path to the saved SVG file.
         """
-        return _save_svg_fn(self, svg_code, description)
+        return cast(Path, _save_svg_fn(self, svg_code, description))
 
 
 # -- Singleton --

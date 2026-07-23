@@ -1,0 +1,62 @@
+{
+  "cjk_labels": [
+    {
+      "label": "任务名称: 完整的工作流程上下文恢复批准",
+      "locale": "zh-Hans",
+      "expected_behavior": "wrap-without-overflow"
+    },
+    {
+      "label": "タスク名: 完全なワークフローコンテキスト復元承認",
+      "locale": "ja",
+      "expected_behavior": "wrap-without-overflow"
+    },
+    {
+      "label": "작업 이름: 전체 워크플로 컨텍스트 복구 승인",
+      "locale": "ko",
+      "expected_behavior": "wrap-without-overflow"
+    }
+  ],
+  "domain_kits": [
+    {
+      "benchmark_provider_ids": ["benchmark-provider-with-expanded-localized-label"],
+      "capability_pack_ids": ["capability-pack-with-expanded-localized-label"],
+      "domain": "legal_document_review",
+      "eval_fixtures": ["fixture-with-expanded-localized-label"],
+      "kit_id": "kit-with-expanded-localized-label",
+      "label_locale": "pseudo-expanded",
+      "pathological_label": "Arbeitsbereichsuebergreifende-Kontextwiederherstellungsfreigabe-mit-sehr-langer-Bezeichnung",
+      "rate_limit_policy": {
+        "burst": 1,
+        "requests_per_minute": 4
+      },
+      "redacted_preview": "Preview with expanded locale text.",
+      "refusal_boundaries": [
+        "NichtausfuehrbareRisikoerklaerungsGrenzeMitSehrLangerBezeichnung"
+      ],
+      "required_caveat_acknowledgements": [
+        "operator-review-required"
+      ],
+      "sample_notebook_refs": ["notebook-with-expanded-localized-label"],
+      "source_kinds": ["document"],
+      "supported_claim_kinds": ["risk_summary"],
+      "supported_workflows": ["document_review"],
+      "title": "Arbeitsbereichsuebergreifende Kontextwiederherstellungsfreigabe mit sehr langer Bezeichnung",
+      "tool_kinds": ["review"],
+      "unsupported_claims": ["final_legal_advice"]
+    }
+  ],
+  "status_badges": [
+    {
+      "component": "HardwareFitBadge",
+      "required_non_color_signal": "fitLabel"
+    },
+    {
+      "component": "PolicyBadge",
+      "required_non_color_signal": "aria-label"
+    },
+    {
+      "component": "PromotionGateBadge",
+      "required_non_color_signal": "tokenized-status"
+    }
+  ]
+}

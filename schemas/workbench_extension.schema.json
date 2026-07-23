@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_extension.schema.json",
+  "title": "Workbench Extension Manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "extension_id",
+    "source_kind",
+    "version",
+    "compatibility",
+    "declared_tools",
+    "requested_secrets",
+    "authority_owner",
+    "risk_verdict",
+    "disabled_by_default",
+    "marketplace_metadata"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "extension_id": { "type": "string", "minLength": 1 },
+    "source_kind": {
+      "type": "string",
+      "enum": ["mcp_server", "plugin", "capability_pack", "local_bundle"]
+    },
+    "version": { "type": "string", "minLength": 1 },
+    "compatibility": { "type": "string", "minLength": 1 },
+    "declared_tools": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "requested_secrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "scope"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "scope": { "type": "string", "minLength": 1 },
+          "required": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "stdio": { "type": "boolean" },
+    "network": { "type": "boolean" },
+    "filesystem": { "type": "boolean" },
+    "dependencies": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "dependency_findings": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "overlap_categories": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["browser", "filesystem", "memory", "document", "channel", "shell", "network", "destructive"]
+      },
+      "uniqueItems": true
+    },
+    "destructive_capabilities": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "authority_owner": { "type": "string", "minLength": 1 },
+    "risk_verdict": {
+      "type": "object",
+      "required": ["status", "allowed", "reasons", "disabled_by_default", "manual_selection_required"],
+      "properties": {
+        "status": { "type": "string", "enum": ["allowed", "blocked", "degraded"] },
+        "allowed": { "type": "boolean" },
+        "reasons": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "disabled_by_default": { "type": "boolean" },
+        "manual_selection_required": { "type": "boolean" },
+        "details": { "type": "object", "additionalProperties": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "disabled_by_default": { "type": "boolean" },
+    "marketplace_metadata": {
+      "type": "object",
+      "required": ["source_id"],
+      "properties": {
+        "source_id": { "type": "string", "minLength": 1 },
+        "source_url": { "type": "string" },
+        "retrieved_at_utc": { "type": "string" },
+        "published_at_utc": { "type": "string" },
+        "package_pin": { "type": "string" },
+        "provenance": { "type": "string" },
+        "risk_tags": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      },
+      "additionalProperties": false
+    },
+    "shell_capable": { "type": "boolean" },
+    "import_paths": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "package_pin": { "type": "string" },
+    "oauth": {
+      "type": ["object", "null"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "authorization_url": { "type": "string", "minLength": 1 },
+        "token_url": { "type": "string", "minLength": 1 },
+        "scopes": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "pkce_required": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "license_id": { "type": "string" }
+  },
+  "additionalProperties": true
+}

@@ -41,12 +41,12 @@ calls do not re-inspect the signature.
 
 ## Fallback Chain
 
-Vetinari uses a three-level fallback so that speculative decoding failure never
+AM Workbench uses a three-level fallback so that speculative decoding failure never
 blocks inference:
 
 1. **Full speculative decoding** — `draft_model_id` is configured in settings AND
    the installed llama_cpp exposes the `draft_model` parameter on `Llama.__init__`.
-   The adapter attaches the draft model at load time via `LlamaCppModelCacheMixin`.
+   The adapter attaches the draft model at load time via `LlamaCppModelCache`.
 
 2. **PromptLookupDecoding** — No `draft_model_id` configured (or draft model not
    found on disk), but `use_prompt_lookup_fallback = True` (default) AND the

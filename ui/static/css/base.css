@@ -1,0 +1,95 @@
+@layer base {
+
+/* ── Reset ────────────────────────────────────────────────────────── */
+
+*, *::before, *::after {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+/* ── Root elements ────────────────────────────────────────────────── */
+
+html {
+    font-size: 16px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    scroll-behavior: smooth;
+}
+
+body {
+    font-family: var(--font-family);
+    font-size: var(--text-sm);
+    line-height: var(--leading-normal);
+    color: var(--text-primary);
+    background: var(--base-bg);
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+/* ── Accessibility ────────────────────────────────────────────────── */
+
+*:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+::selection {
+    background: var(--primary);
+    color: white;
+}
+
+/* ── Scrollbar ────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+
+    &-track {
+        background: transparent;
+    }
+
+    &-thumb {
+        background: var(--border-strong);
+        border-radius: var(--radius-full);
+
+        &:hover {
+            background: var(--text-muted);
+        }
+    }
+}
+
+/* Skip link for keyboard users */
+.skip-link {
+    position: absolute;
+    top: -100px;
+    left: var(--space-4);
+    background: var(--primary);
+    color: white;
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-md);
+    z-index: 10000;
+    font-size: var(--text-sm);
+    font-weight: var(--font-semibold);
+    text-decoration: none;
+    transition: top var(--transition-fast);
+}
+
+.skip-link:focus {
+    top: var(--space-4);
+}
+
+/* Screen-reader-only content — hidden visually but accessible to assistive tech */
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+}

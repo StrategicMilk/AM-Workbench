@@ -1,0 +1,278 @@
+@layer reset, tokens, base, layout, components, views, utilities;
+
+@layer tokens {
+
+:root {
+    /* ==================== DESIGN TOKENS ==================== */
+
+    /* Color Palette - Dark Theme (Gemini/OpenCode Inspired) */
+    --base-bg: #0b111a;
+    --surface-bg: #131820;
+    --surface-elevated: #1a202d;
+    --surface-hover: #242d3d;
+    --surface-pressed: #2a3547;
+
+    /* Text Colors - High Contrast for Legibility */
+    --text-primary: #e6eaf3;
+    --text-secondary: #a8b4c4;
+    --text-muted: #9ca3af;
+    --text-disabled: #4a5568;
+
+    /* Borders & Dividers */
+    --border-subtle: rgba(255, 255, 255, 0.05);
+    --border-default: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.12);
+
+    /* Primary Brand Colors (Blue-centric for clarity) */
+    --primary: #4e9af9;
+    --primary-hover: #6aacff;
+    --primary-active: #3c88e8;
+    --primary-muted: rgba(78, 154, 249, 0.12);
+    --primary-lighter: rgba(78, 154, 249, 0.08);
+    --text-on-primary: #ffffff;
+
+    /* Accent alias (used by code-canvas and tab-bar components) */
+    --accent: var(--primary);
+    --accent-color: var(--primary);
+
+    /* Secondary Accent (Teal for vibrancy) */
+    --secondary: #21d4fd;
+    --secondary-hover: #3dd9ff;
+    --secondary-muted: rgba(33, 212, 253, 0.12);
+
+    /* Status Colors */
+    --success: #38d39f;
+    --success-muted: rgba(56, 211, 159, 0.12);
+    --warning: #f5a524;
+    --warning-muted: rgba(245, 165, 36, 0.12);
+    --danger: #f06262;
+    --danger-muted: rgba(240, 98, 98, 0.12);
+    --error: var(--danger);  /* Alias used by task status and form validation components */
+    --info: #5dade2;
+    --info-muted: rgba(93, 173, 226, 0.12);
+
+    /* Layout Dimensions */
+    --header-height: 64px;
+
+    /* Surface Aliases (used by legacy components) */
+    --bg-primary: var(--surface-bg);
+    --bg-secondary: var(--surface-elevated);
+    --bg-tertiary: var(--surface-hover);
+    --bg-hover: var(--surface-hover);
+    --border-primary: var(--border-default);
+    --surface-active: var(--surface-pressed);
+    --text-tertiary: var(--text-muted);
+
+    /* Agent Accent Colors */
+    --agent-operations: #9b59b6;
+    --agent-operations-muted: rgba(155, 89, 182, 0.12);
+    --agent-design: #e91e63;
+    --agent-design-muted: rgba(233, 30, 99, 0.12);
+
+    /* Glassmorphism & Elevation */
+    --glass-bg: rgba(19, 24, 32, 0.85);
+    --glass-border: rgba(255, 255, 255, 0.08);
+    --glass-blur: blur(12px);
+
+    /* Shadows - Clean and Minimal */
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.12);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.16), 0 1px 2px rgba(0, 0, 0, 0.08);
+    --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.16), 0 2px 4px rgba(0, 0, 0, 0.08);
+    --shadow-lg: 0 10px 20px rgba(0, 0, 0, 0.2), 0 4px 8px rgba(0, 0, 0, 0.1);
+    --shadow-xl: 0 20px 40px rgba(0, 0, 0, 0.25), 0 10px 16px rgba(0, 0, 0, 0.12);
+    --shadow-glow: 0 0 16px rgba(78, 154, 249, 0.2);
+
+    /* Typography - Inter Family (Modern & Legible) */
+    --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Monaco', monospace;
+
+    --text-xs: 0.75rem;
+    --text-sm: 0.875rem;
+    --text-base: 1rem;
+    --text-lg: 1.125rem;
+    --text-xl: 1.25rem;
+    --text-2xl: 1.5rem;
+    --text-3xl: 1.875rem;
+    --text-4xl: 2.25rem;
+
+    --font-normal: 400;
+    --font-medium: 500;
+    --font-semibold: 600;
+    --font-bold: 700;
+
+    --leading-tight: 1.2;
+    --leading-normal: 1.5;
+    --leading-relaxed: 1.6;
+
+    /* Spacing - 8px Base Unit */
+    --space-1: 0.25rem;
+    --space-2: 0.5rem;
+    --space-3: 0.75rem;
+    --space-4: 1rem;
+    --space-5: 1.25rem;
+    --space-6: 1.5rem;
+    --space-8: 2rem;
+    --space-10: 2.5rem;
+    --space-12: 3rem;
+    --space-16: 4rem;
+    --space-20: 5rem;
+
+    /* Border Radius */
+    --radius-sm: 0.375rem;
+    --radius-md: 0.5rem;
+    --radius-lg: 0.75rem;
+    --radius-xl: 1rem;
+    --radius-2xl: 1.5rem;
+    --radius-full: 9999px;
+
+    /* Transitions - Smooth and Purposeful */
+    --transition-fast: 100ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-base: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-slow: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-slowest: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+
+    /* Z-Index Scale */
+    --z-dropdown: 100;
+    --z-sticky: 200;
+    --z-modal-backdrop: 300;
+    --z-modal: 400;
+    --z-toast: 500;
+    --z-tooltip: 600;
+
+    /* ── Semantic tokens ── */
+    --color-interactive: var(--primary);
+    --color-interactive-hover: var(--primary-hover);
+    --color-interactive-active: var(--primary-active);
+    --color-interactive-muted: var(--primary-muted);
+
+    --color-surface-1: var(--surface-bg);
+    --color-surface-2: var(--surface-elevated);
+    --color-surface-3: var(--surface-hover);
+
+    --color-feedback-success: var(--success);
+    --color-feedback-warning: var(--warning);
+    --color-feedback-danger: var(--danger);
+    --color-feedback-info: var(--info);
+
+    --color-text-primary: var(--text-primary);
+    --color-text-secondary: var(--text-secondary);
+    --color-text-muted: var(--text-muted);
+
+    /* ── Component tokens ── */
+    --btn-bg: var(--color-interactive);
+    --btn-bg-hover: var(--color-interactive-hover);
+    --btn-text: var(--text-on-primary, #ffffff);
+
+    --card-bg: var(--color-surface-1);
+    --card-border: var(--border-default);
+    --card-shadow: var(--shadow-sm);
+
+    --toast-bg: var(--color-surface-2);
+    --toast-border: var(--border-default);
+
+    --input-bg: var(--color-surface-1);
+    --input-border: var(--border-default);
+    --input-focus-ring: var(--color-interactive);
+
+    --tab-bg: transparent;
+    --tab-active-bg: var(--color-surface-2);
+    --tab-active-border: var(--color-interactive);
+    --tab-text: var(--color-text-secondary);
+    --tab-active-text: var(--color-text-primary);
+}
+
+/* Reduced Motion Support */
+@media (prefers-reduced-motion: reduce) {
+    :root {
+        --transition-fast: 0ms;
+        --transition-base: 0ms;
+        --transition-slow: 0ms;
+        --transition-slowest: 0ms;
+    }
+}
+
+/* Light Theme Fallback */
+@media (prefers-color-scheme: light) {
+    :root:not([data-theme]) {
+        --base-bg: #f8fafc;
+        --surface-bg: #ffffff;
+        --surface-elevated: #f1f5f9;
+        --surface-hover: #e8ecf1;
+        --surface-pressed: #e0e8f0;
+
+        --text-primary: #0f172a;
+        --text-secondary: #334155;
+        --text-muted: #4b5563;
+        --text-disabled: #94a3b8;
+
+        --border-subtle: rgba(0, 0, 0, 0.06);
+        --border-default: rgba(0, 0, 0, 0.12);
+        --border-strong: rgba(0, 0, 0, 0.18);
+
+        --agent-operations: #7c3aed;
+        --agent-design: #c2185b;
+
+        --primary-muted: rgba(78, 154, 249, 0.14);
+        --success-muted: rgba(56, 211, 159, 0.14);
+        --warning-muted: rgba(245, 165, 36, 0.16);
+        --danger-muted: rgba(240, 98, 98, 0.14);
+        --info-muted: rgba(93, 173, 226, 0.14);
+        --secondary-muted: rgba(33, 212, 253, 0.14);
+        --agent-operations-muted: rgba(155, 89, 182, 0.14);
+        --agent-design-muted: rgba(233, 30, 99, 0.14);
+
+        --glass-bg: rgba(255, 255, 255, 0.92);
+        --glass-border: rgba(0, 0, 0, 0.06);
+
+        --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.06);
+        --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+        --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.1), 0 2px 4px rgba(0, 0, 0, 0.06);
+        --shadow-lg: 0 10px 20px rgba(0, 0, 0, 0.12), 0 4px 8px rgba(0, 0, 0, 0.08);
+        --shadow-xl: 0 20px 40px rgba(0, 0, 0, 0.15), 0 10px 16px rgba(0, 0, 0, 0.1);
+        --shadow-glow: 0 0 16px rgba(78, 154, 249, 0.12);
+    }
+}
+
+/* Light Theme Override (Optional) */
+[data-theme="light"] {
+    --base-bg: #f8fafc;
+    --surface-bg: #ffffff;
+    --surface-elevated: #f1f5f9;
+    --surface-hover: #e8ecf1;
+    --surface-pressed: #e0e8f0;
+
+    --text-primary: #0f172a;
+    --text-secondary: #334155;
+    --text-muted: #4b5563; /* gray-600 — 7:1 contrast on white (exceeds WCAG AA) */
+    --text-disabled: #94a3b8;
+
+    --border-subtle: rgba(0, 0, 0, 0.06);
+    --border-default: rgba(0, 0, 0, 0.12);
+    --border-strong: rgba(0, 0, 0, 0.18);
+
+    /* Agent accent base colors — override dark-theme values for light mode contrast */
+    --agent-operations: #7c3aed;
+    --agent-design: #c2185b;
+
+    /* Agent accent muted backgrounds — increased opacity for visibility on white */
+    --primary-muted: rgba(78, 154, 249, 0.14);
+    --success-muted: rgba(56, 211, 159, 0.14);
+    --warning-muted: rgba(245, 165, 36, 0.16);
+    --danger-muted: rgba(240, 98, 98, 0.14);
+    --info-muted: rgba(93, 173, 226, 0.14);
+    --secondary-muted: rgba(33, 212, 253, 0.14);
+    --agent-operations-muted: rgba(155, 89, 182, 0.14);
+    --agent-design-muted: rgba(233, 30, 99, 0.14);
+
+    --glass-bg: rgba(255, 255, 255, 0.92);
+    --glass-border: rgba(0, 0, 0, 0.06);
+
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.06);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+    --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.1), 0 2px 4px rgba(0, 0, 0, 0.06);
+    --shadow-lg: 0 10px 20px rgba(0, 0, 0, 0.12), 0 4px 8px rgba(0, 0, 0, 0.08);
+    --shadow-xl: 0 20px 40px rgba(0, 0, 0, 0.15), 0 10px 16px rgba(0, 0, 0, 0.1);
+    --shadow-glow: 0 0 16px rgba(78, 154, 249, 0.12);
+}
+
+}

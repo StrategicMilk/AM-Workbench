@@ -1,271 +1,550 @@
 {
   "version": "2.0",
+  "fail_closed_policy": {
+    "missing_profile": "error",
+    "malformed_profile": "error",
+    "unreadable_config": "error",
+    "default_fallback_allowed": false
+  },
+  "user_editable_parameters": {
+    "temperature": {
+      "type": "number",
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.05,
+      "default": 0.3
+    },
+    "top_p": {
+      "type": "number",
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.01,
+      "default": 0.9
+    },
+    "top_k": {
+      "type": "integer",
+      "min": 1,
+      "max": 100,
+      "step": 1,
+      "default": 40
+    },
+    "max_tokens": {
+      "type": "integer",
+      "min": 256,
+      "max": 32768,
+      "step": 256,
+      "default": 4096
+    },
+    "prefer_json": {
+      "type": "boolean",
+      "default": false
+    }
+  },
   "profiles": {
     "coding": {
-      "temperature": 0.10, "top_p": 0.92, "top_k": 40,
-      "max_tokens": 16384, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.1,
+      "top_p": 0.92,
+      "top_k": 40,
+      "max_tokens": 16384,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Code generation — very low temp for deterministic code; 16K output for multi-function implementations"
     },
     "code_gen": {
-      "temperature": 0.15, "top_p": 0.92, "top_k": 40,
-      "max_tokens": 16384, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.15,
+      "top_p": 0.92,
+      "top_k": 40,
+      "max_tokens": 16384,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Alias for coding"
     },
     "builder": {
-      "temperature": 0.15, "top_p": 0.92, "top_k": 40,
-      "max_tokens": 16384, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.15,
+      "top_p": 0.92,
+      "top_k": 40,
+      "max_tokens": 16384,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Alias for coding"
     },
     "code_review": {
-      "temperature": 0.2, "top_p": 0.88, "top_k": 35,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.2,
+      "top_p": 0.88,
+      "top_k": 35,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Code review — structured output with detailed findings, evidence, and fixes"
     },
     "planning": {
-      "temperature": 0.35, "top_p": 0.9, "top_k": 40,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.35,
+      "top_p": 0.9,
+      "top_k": 40,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Plan generation — 5-15 tasks with IDs, deps, agents, effort, criteria"
     },
     "planner": {
-      "temperature": 0.35, "top_p": 0.9, "top_k": 40,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.35,
+      "top_p": 0.9,
+      "top_k": 40,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Alias for planning"
     },
     "creative_writing": {
-      "temperature": 0.85, "top_p": 0.95, "top_k": 50,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.85,
+      "top_p": 0.95,
+      "top_k": 50,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Creative writing — high diversity for creative range"
     },
     "security_audit": {
-      "temperature": 0.05, "top_p": 0.82, "top_k": 30,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.05,
+      "top_p": 0.82,
+      "top_k": 30,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Security audit — very low temp, detailed findings with severity and remediation"
     },
     "security": {
-      "temperature": 0.05, "top_p": 0.82, "top_k": 30,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.05,
+      "top_p": 0.82,
+      "top_k": 30,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Alias for security_audit"
     },
     "security_auditor": {
-      "temperature": 0.05, "top_p": 0.82, "top_k": 30,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.05,
+      "top_p": 0.82,
+      "top_k": 30,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Alias for security_audit"
     },
     "summarization": {
-      "temperature": 0.3, "top_p": 0.9, "top_k": 40,
-      "max_tokens": 4096, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.3,
+      "top_p": 0.9,
+      "top_k": 40,
+      "max_tokens": 4096,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Summarization — balanced, preserving key information"
     },
     "summarisation": {
-      "temperature": 0.3, "top_p": 0.9, "top_k": 40,
-      "max_tokens": 4096, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.3,
+      "top_p": 0.9,
+      "top_k": 40,
+      "max_tokens": 4096,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Alias for summarization"
     },
     "analysis": {
-      "temperature": 0.25, "top_p": 0.88, "top_k": 35,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.25,
+      "top_p": 0.88,
+      "top_k": 35,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Analysis tasks — structured, precise, detailed reasoning"
     },
     "oracle": {
-      "temperature": 0.25, "top_p": 0.88, "top_k": 35,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.25,
+      "top_p": 0.88,
+      "top_k": 35,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Alias for analysis"
     },
     "decomposition": {
-      "temperature": 0.2, "top_p": 0.85, "top_k": 35,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.2,
+      "top_p": 0.85,
+      "top_k": 35,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Task decomposition — structured breakdown with dependencies"
     },
     "research": {
-      "temperature": 0.4, "top_p": 0.92, "top_k": 45,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.4,
+      "top_p": 0.92,
+      "top_k": 45,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Research — broader exploration, synthesis of findings"
     },
     "researcher": {
-      "temperature": 0.4, "top_p": 0.92, "top_k": 45,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.4,
+      "top_p": 0.92,
+      "top_k": 45,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Alias for research"
     },
     "testing": {
-      "temperature": 0.15, "top_p": 0.9, "top_k": 40,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.15,
+      "top_p": 0.9,
+      "top_k": 40,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Test generation — deterministic, multi-case test suites"
     },
     "test_automation": {
-      "temperature": 0.15, "top_p": 0.9, "top_k": 40,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.15,
+      "top_p": 0.9,
+      "top_k": 40,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Alias for testing"
     },
     "documentation": {
-      "temperature": 0.4, "top_p": 0.92, "top_k": 45,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.4,
+      "top_p": 0.92,
+      "top_k": 45,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Documentation — natural language, comprehensive coverage"
     },
     "documentation_agent": {
-      "temperature": 0.4, "top_p": 0.92, "top_k": 45,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.4,
+      "top_p": 0.92,
+      "top_k": 45,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Alias for documentation"
     },
     "refactoring": {
-      "temperature": 0.1, "top_p": 0.88, "top_k": 35,
-      "max_tokens": 16384, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.1,
+      "top_p": 0.88,
+      "top_k": 35,
+      "max_tokens": 16384,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Refactoring — very low temp, preserving semantics, multi-function output"
     },
     "debugging": {
-      "temperature": 0.15, "top_p": 0.85, "top_k": 30,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.15,
+      "top_p": 0.85,
+      "top_k": 30,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Debugging — precise diagnosis with root cause analysis"
     },
     "architecture": {
-      "temperature": 0.4, "top_p": 0.9, "top_k": 40,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.4,
+      "top_p": 0.9,
+      "top_k": 40,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Architecture design — moderate creativity, detailed component design"
     },
     "conversation": {
-      "temperature": 0.65, "top_p": 0.92, "top_k": 45,
-      "max_tokens": 4096, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.65,
+      "top_p": 0.92,
+      "top_k": 45,
+      "max_tokens": 4096,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Conversational — slightly warmer for natural variation"
     },
     "ui_design": {
-      "temperature": 0.4, "top_p": 0.92, "top_k": 45,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.4,
+      "top_p": 0.92,
+      "top_k": 45,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "UI design — creative structured output"
     },
     "ui_planner": {
-      "temperature": 0.4, "top_p": 0.92, "top_k": 45,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.4,
+      "top_p": 0.92,
+      "top_k": 45,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Alias for ui_design"
     },
     "data_engineering": {
-      "temperature": 0.2, "top_p": 0.88, "top_k": 35,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.2,
+      "top_p": 0.88,
+      "top_k": 35,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Data engineering — structured, precise pipelines"
     },
     "data_engineer": {
-      "temperature": 0.2, "top_p": 0.88, "top_k": 35,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.2,
+      "top_p": 0.88,
+      "top_k": 35,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Alias for data_engineering"
     },
     "classification": {
-      "temperature": 0.0, "top_p": 0.8, "top_k": 20,
-      "max_tokens": 512, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.0,
+      "top_p": 0.8,
+      "top_k": 20,
+      "max_tokens": 512,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Classification — zero temp, deterministic label output"
     },
     "extraction": {
-      "temperature": 0.0, "top_p": 0.8, "top_k": 20,
-      "max_tokens": 2048, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.0,
+      "top_p": 0.8,
+      "top_k": 20,
+      "max_tokens": 2048,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Data extraction — zero temp, deterministic structured output"
     },
     "synthesis": {
-      "temperature": 0.3, "top_p": 0.9, "top_k": 40,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.3,
+      "top_p": 0.9,
+      "top_k": 40,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Synthesis — balanced generation combining multiple inputs"
     },
     "synthesizer": {
-      "temperature": 0.3, "top_p": 0.9, "top_k": 40,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.3,
+      "top_p": 0.9,
+      "top_k": 40,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Alias for synthesis"
     },
     "evaluation": {
-      "temperature": 0.1, "top_p": 0.85, "top_k": 30,
-      "max_tokens": 4096, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.1,
+      "top_p": 0.85,
+      "top_k": 30,
+      "max_tokens": 4096,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Evaluation — low temp, structured scoring with reasoning"
     },
     "evaluator": {
-      "temperature": 0.1, "top_p": 0.85, "top_k": 30,
-      "max_tokens": 4096, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.1,
+      "top_p": 0.85,
+      "top_k": 30,
+      "max_tokens": 4096,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Alias for evaluation"
     },
     "exploration": {
-      "temperature": 0.35, "top_p": 0.92, "top_k": 45,
-      "max_tokens": 4096, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.35,
+      "top_p": 0.92,
+      "top_k": 45,
+      "max_tokens": 4096,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Exploration — moderate creativity for discovery"
     },
     "explorer": {
-      "temperature": 0.35, "top_p": 0.92, "top_k": 45,
-      "max_tokens": 4096, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.35,
+      "top_p": 0.92,
+      "top_k": 45,
+      "max_tokens": 4096,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Alias for exploration"
     },
     "goal_check": {
-      "temperature": 0.05, "top_p": 0.82, "top_k": 25,
-      "max_tokens": 2048, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.05,
+      "top_p": 0.82,
+      "top_k": 25,
+      "max_tokens": 2048,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Goal verification — precise pass/fail with evidence"
     },
     "search": {
-      "temperature": 0.2, "top_p": 0.88, "top_k": 35,
-      "max_tokens": 2048, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.2,
+      "top_p": 0.88,
+      "top_k": 35,
+      "max_tokens": 2048,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Search query generation"
     },
     "quality_check": {
-      "temperature": 0.1, "top_p": 0.85, "top_k": 30,
-      "max_tokens": 4096, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.1,
+      "top_p": 0.85,
+      "top_k": 30,
+      "max_tokens": 4096,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Quality checking — detailed evaluation with scoring rationale"
     },
     "vagueness_check": {
-      "temperature": 0.05, "top_p": 0.82, "top_k": 25,
-      "max_tokens": 1024, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.05,
+      "top_p": 0.82,
+      "top_k": 25,
+      "max_tokens": 1024,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Vagueness detection — binary classification with explanation"
     },
     "compression": {
-      "temperature": 0.2, "top_p": 0.88, "top_k": 35,
-      "max_tokens": 4096, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.2,
+      "top_p": 0.88,
+      "top_k": 35,
+      "max_tokens": 4096,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Context compression — preserve key information at reduced size"
     },
     "verification": {
-      "temperature": 0.1, "top_p": 0.85, "top_k": 30,
-      "max_tokens": 4096, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.1,
+      "top_p": 0.85,
+      "top_k": 30,
+      "max_tokens": 4096,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Verification tasks — precise, structured pass/fail with evidence"
     },
     "formatting": {
-      "temperature": 0.1, "top_p": 0.88, "top_k": 35,
-      "max_tokens": 4096, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.1,
+      "top_p": 0.88,
+      "top_k": 35,
+      "max_tokens": 4096,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Output formatting — deterministic restructuring"
     },
     "brainstorming": {
-      "temperature": 0.90, "top_p": 0.95, "top_k": 50,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.9,
+      "top_p": 0.95,
+      "top_k": 50,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Brainstorming — highest diversity for maximum creative range"
     },
     "translation": {
-      "temperature": 0.15, "top_p": 0.9, "top_k": 40,
-      "max_tokens": 4096, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.15,
+      "top_p": 0.9,
+      "top_k": 40,
+      "max_tokens": 4096,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "Translation — faithful, low temp"
     },
     "data_extraction": {
-      "temperature": 0.0, "top_p": 0.8, "top_k": 20,
-      "max_tokens": 4096, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.0,
+      "top_p": 0.8,
+      "top_k": 20,
+      "max_tokens": 4096,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Structured data extraction — deterministic"
     },
     "comparison": {
-      "temperature": 0.2, "top_p": 0.88, "top_k": 35,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.2,
+      "top_p": 0.88,
+      "top_k": 35,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Comparison analysis — structured side-by-side"
     },
     "error_handling": {
-      "temperature": 0.1, "top_p": 0.85, "top_k": 30,
-      "max_tokens": 4096, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.1,
+      "top_p": 0.85,
+      "top_k": 30,
+      "max_tokens": 4096,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Error handling — precise recovery with root cause"
     },
     "orchestration": {
-      "temperature": 0.2, "top_p": 0.88, "top_k": 35,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": true,
+      "temperature": 0.2,
+      "top_p": 0.88,
+      "top_k": 35,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": true,
       "description": "Orchestration — structured coordination"
     },
     "general": {
-      "temperature": 0.35, "top_p": 0.9, "top_k": 40,
-      "max_tokens": 8192, "stop_sequences": [], "prefer_json": false,
+      "temperature": 0.35,
+      "top_p": 0.9,
+      "top_k": 40,
+      "max_tokens": 8192,
+      "stop_sequences": [],
+      "prefer_json": false,
       "description": "General-purpose fallback — versatile default"
+    },
+    "cross_validation": {
+      "temperature": 0.2,
+      "top_p": 0.88,
+      "top_k": 35,
+      "max_tokens": 256,
+      "stop_sequences": [],
+      "prefer_json": false,
+      "description": "Secondary-model agreement check with a deliberately small response budget"
     }
   },
   "model_size_adjustments": {
-    "small": { "note": "<=10B params", "temperature_offset": -0.10, "top_p_offset": -0.03, "top_k_offset": -5 },
-    "medium": { "note": "10B-40B params", "temperature_offset": -0.05, "top_p_offset": 0.0, "top_k_offset": 0 },
-    "large": { "note": "40B-80B params", "temperature_offset": 0.0, "top_p_offset": 0.0, "top_k_offset": 0 },
-    "xlarge": { "note": ">80B params", "temperature_offset": 0.05, "top_p_offset": 0.02, "top_k_offset": 5 }
+    "small": {
+      "note": "<=10B params",
+      "temperature_offset": -0.1,
+      "top_p_offset": -0.03,
+      "top_k_offset": -5
+    },
+    "medium": {
+      "note": "10B-40B params",
+      "temperature_offset": -0.05,
+      "top_p_offset": 0.0,
+      "top_k_offset": 0
+    },
+    "large": {
+      "note": "40B-80B params",
+      "temperature_offset": 0.0,
+      "top_p_offset": 0.0,
+      "top_k_offset": 0
+    },
+    "xlarge": {
+      "note": ">80B params",
+      "temperature_offset": 0.05,
+      "top_p_offset": 0.02,
+      "top_k_offset": 5
+    }
   },
   "model_overrides": {
-    "qwen2.5-coder-7b": { "temperature_offset": -0.1, "note": "Strong coder, keep tight" },
-    "deepseek-r1-distill-qwen-32b": { "top_p_offset": -0.05, "note": "Reasoning model, lower diversity" }
+    "qwen2.5-coder-7b": {
+      "temperature_offset": -0.1,
+      "note": "Strong coder, keep tight"
+    },
+    "deepseek-r1-distill-qwen-32b": {
+      "top_p_offset": -0.05,
+      "note": "Reasoning model, lower diversity"
+    }
   },
   "per_mode_token_budgets": {
     "_doc": "Max system prompt tokens per agent mode. Sized for 32K-64K context models. 7B models may need shorter prompts but modern 7B models (Qwen2.5, Llama3.1) handle 2K+ system prompts fine.",

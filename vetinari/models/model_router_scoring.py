@@ -18,6 +18,7 @@ from vetinari.types import GoalCategory, ModelProvider
 
 logger = logging.getLogger(__name__)
 
+
 __all__ = [
     "assess_difficulty",
     "assess_warm_model_bonus",

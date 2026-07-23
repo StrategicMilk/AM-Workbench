@@ -1,0 +1,26 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "amw-workbench-main",
+  "description": "Main AM Workbench window capability. Native command access is constrained by src-tauri/src/commands.rs policy and by per-command permission entries.",
+  "platforms": [
+    "linux",
+    "macOS",
+    "windows"
+  ],
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "allow-workbench-lifecycle-command",
+    "allow-vetinari-kernel-request",
+    "allow-vetinari-status",
+    "allow-vetinari-api-domains",
+    "allow-vetinari-require-domain",
+    "allow-vetinari-workbench-surfaces",
+    "allow-vetinari-resource-action",
+    "allow-vetinari-training-status",
+    "allow-vetinari-mcp-tools",
+    "allow-vetinari-mission-control-snapshot"
+  ]
+}

@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_run_kernel.schema.json",
+  "title": "Workbench Run Kernel Snapshot",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "project_id",
+    "run_id",
+    "workload_kind",
+    "status",
+    "created_at_utc",
+    "updated_at_utc",
+    "heartbeat_at_utc",
+    "recovery_action",
+    "restart_count",
+    "evidence_links",
+    "checkpoint",
+    "events"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "project_id": { "type": "string", "minLength": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "workload_kind": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["running", "interrupted", "succeeded", "failed", "blocked", "recovery_needed"]
+    },
+    "created_at_utc": { "type": "string", "minLength": 1 },
+    "updated_at_utc": { "type": "string", "minLength": 1 },
+    "heartbeat_at_utc": { "type": "string", "minLength": 1 },
+    "recovery_action": {
+      "type": "string",
+      "enum": ["none", "resume", "reap", "ask", "block"]
+    },
+    "restart_count": { "type": "integer", "minimum": 0 },
+    "lease_id": { "type": "string" },
+    "policy_decision_ref": { "type": "string" },
+    "dry_run_ref": { "type": "string" },
+    "shadow_run_ref": { "type": "string" },
+    "context_manifest_ref": { "type": "string" },
+    "artifacts": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "final_verdict_ref": { "type": "string" },
+    "evidence_links": {
+      "type": "object",
+      "required": ["trace_refs", "eval_refs", "repro_capsule_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "trace_refs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "eval_refs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "repro_capsule_refs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "required": ["checkpoint_id", "sealed", "created_at_utc", "payload_ref", "payload_hash"],
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_id": { "type": "string" },
+        "sealed": { "type": "boolean" },
+        "created_at_utc": { "type": "string" },
+        "payload_ref": { "type": "string" },
+        "payload_hash": { "type": "string" }
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

@@ -5,17 +5,16 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vetinari"
 dynamic = ["version"]
-description = "AM Workbench orchestration engine with multi-agent factory pipeline execution, token optimization, and local-cloud hybrid inference"
+description = "Comprehensive AI Orchestration System with multi-agent factory pipeline execution, token optimization, and local-cloud hybrid inference"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE", "NOTICE"]
-requires-python = ">=3.10"
-authors = [{ name = "AM Workbench contributors" }]
+requires-python = ">=3.11,<3.14"
+authors = [{ name = "Vetinari" }]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -29,30 +28,39 @@ dependencies = [
     "psutil>=5.9.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
-    "huggingface-hub>=0.20",
+    "huggingface-hub>=0.36,<2.0",
     "rich>=13.0",
     "structlog>=24.0",
     "litestar>=2.12",
     "msgspec>=0.18.0",
+    "pypdf>=4.0",
     "uvicorn>=0.30",
     "asgiref>=3.7",
     "stamina>=24.0.0",
     "defusedxml>=0.7.0",
+    "sigstore>=4.3,<5",
 ]
 
 [project.optional-dependencies]
+core = [
+    "vetinari[watcher,crypto,observability,redteam,search,scraping,notifications]",
+]
+gpu = [
+    "vetinari[local,vllm,sglang,comfyui,image,ml]",
+]
+browser = [
+    "vetinari[scraping,scraping-dynamic]",
+]
 local = [
-    "llama-cpp-python>=0.3.0",
+    "llama-cpp-python>=0.3.23,<0.4.0",
 ]
 watcher = [
     "watchfiles>=0.21",
 ]
 cloud = [
-    "anthropic>=0.20.0",
+    "anthropic>=0.103.1,<1.0",
     "openai>=1.0.0",
-    "google-generativeai>=0.4.0",
-    "cohere>=5.0.0",
-    "litellm>=1.50,<2.0,!=1.82.7,!=1.82.8",
+    "google-genai>=2.5.0,<3.0",
 ]
 vllm = [
     # vLLM 0.13.0 is the first release with SM120 (Blackwell) NVFP4 MoE kernels;
@@ -60,6 +68,30 @@ vllm = [
     # config/runtime/supported_matrix.yaml and the runtime doctor for details.
     "vllm>=0.13,!=0.18.1; platform_system != 'Windows'",  # Optional GPU-only local inference backend (ADR-0066); Windows uses WSL/endpoint mode
 ]
+sglang = [
+    "sglang>=0.4.4; platform_system != 'Windows'",
+    "openai>=1.0.0",
+]
+audio = [
+    "faster-whisper>=1.1.0",
+    "sounddevice>=0.4.7",
+    "soundfile>=0.12.1",
+    "numpy>=1.26.0",
+]
+video = [
+    "imageio>=2.34.0",
+    "imageio-ffmpeg>=0.5.0",
+    "moviepy>=1.0.3",
+]
+comfyui = [
+    "diffusers>=0.31.0",
+    "torch>=2.7.0",
+    "transformers>=4.57,<5.0",
+    "Pillow>=10.0.0",
+    "accelerate>=0.25.0",
+]
+speculators = ["speculators>=0.3.0"]
+embeddings_remote = ["sentence-transformers>=3.0.0"]
 crypto = ["cryptography>=41.0.0"]
 image = [
     "diffusers>=0.31.0",
@@ -68,14 +100,19 @@ image = [
     "torch>=2.7.0",
     "accelerate>=0.25.0",
     "Pillow>=10.0.0",
-    "transformers>=4.30.0",
+    "transformers>=4.57,<5.0",
 ]
 search = [
     "ddgs>=9.0.0",
-    "brave-search-python-client>=0.4.0",
+]
+scraping = [
+    "trafilatura>=1.10",
+]
+scraping-dynamic = [
+    "playwright>=1.45",
 ]
 ml = [
-    "numpy>=1.24.0",
+    "numpy>=1.26.0",
     "sqlite-vec>=0.1.6",
     "nvidia-ml-py>=12.0",
     "onnxruntime>=1.16.0",
@@ -83,11 +120,12 @@ ml = [
     "gguf>=0.6.0",
     "scikit-learn>=1.3.0",
     "sentence-transformers>=3.0.0",
-    "lancedb>=0.20.0",
 ]
 guardrails = [
     "nemoguardrails>=0.20.0",
-    "llm_guard==0.3.16",
+    # llm_guard 0.3.16 pins transformers==4.51.3, which conflicts with
+    # the Blackwell-capable vLLM floor. The runtime scanner degrades when
+    # llm_guard is absent until a compatible release is available.
     "fastembed>=0.8.0",
 ]
 observability = [
@@ -95,24 +133,52 @@ observability = [
     "opentelemetry-exporter-otlp-proto-http>=1.20",
     "opentelemetry-sdk>=1.20",
 ]
+redteam = [
+    "jsonschema>=4.0.0",
+]
 training = [
-    "sentence-transformers>=2.2",
-    "faiss-cpu>=1.7",
+    "sentence-transformers>=3.0,<6.0",
     "scipy>=1.10",
-    "tiktoken>=0.5",
+    "tiktoken>=0.13,<1.0",
     # torch 2.7 is the first stable release with official sm_120 cu128 wheels.
-    "torch>=2.7.0",
-    "datasets>=2.14",
-    "peft>=0.9",
-    "trl>=0.14",
-    "transformers>=4.30.0",
+    "torch>=2.7.0,<2.11",
+    "datasets>=3.4.1,<4.4",
+    "peft>=0.19,<1.0",
+    "trl>=0.24,<0.25",
+    # Vanilla cell in the ENG-P30-owned coordinated training lattice; it
+    # intentionally stays on Transformers 4.x while the accelerator cell is 5.x.
+    # Vanilla training stays compatible with image and ComfyUI runtime extras.
+    "transformers>=4.57,<5.0",
     # bitsandbytes has no stable sm_120 wheel as of April 2026
     # (https://github.com/bitsandbytes-foundation/bitsandbytes/issues/1642);
     # the runtime doctor warns when this is imported on a Blackwell GPU
     # without a source build. Keeping the existing floor for CPU/older GPUs.
-    "bitsandbytes>=0.42",
-    "unsloth",
-    "huggingface-hub>=0.20",
+    "bitsandbytes>=0.49,<0.50",
+    "huggingface-hub>=0.36,<2.0",
+]
+training-unsloth = [
+    "sentence-transformers>=5.5,<6.0",
+    "scipy>=1.10",
+    "tiktoken>=0.13,<1.0",
+    # torch 2.7 is the first stable release with official sm_120 cu128 wheels;
+    # Unsloth 2026.5.x training remains on the torch 2.10 line.
+    "torch>=2.7.0,<2.11",
+    # Unsloth 2026.x still caps datasets below 4.4 and TRL below 0.25.
+    "datasets>=3.4.1,<4.4",
+    "peft>=0.19,<1.0",
+    # Current GPU training proof covers TRL 0.24; 0.25+ conflicts with Unsloth 2026.5.x.
+    "trl>=0.24,<0.25",
+    # ENG-P30 owns coordinated bump windows for this accelerator-only cell.
+    # Unsloth's current dependency chain requires Transformers 5.x; image and
+    # ComfyUI extras keep their separately validated 4.x major boundary.
+    "transformers>=5.1,<5.5",
+    # bitsandbytes has no stable sm_120 wheel as of April 2026
+    # (https://github.com/bitsandbytes-foundation/bitsandbytes/issues/1642);
+    # the runtime doctor warns when this is imported on a Blackwell GPU
+    # without a source build. Keeping the existing floor for CPU/older GPUs.
+    "bitsandbytes>=0.49,<0.50",
+    "unsloth>=2026.5.9,<2027.0; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    "huggingface-hub>=0.36,<2.0",
 ]
 llmlingua = [
     "llmlingua>=0.1.0",
@@ -124,6 +190,8 @@ notifications = [
 dev = [
     "pytest>=7.0.0",
     "build>=1.2.0",
+    "license-expression>=30.4,<31",
+    "packaging>=24,<27",
     "pytest-cov>=4.0.0",
     "pytest-xdist>=3.0.0",
     "pytest-timeout>=2.0.0",
@@ -134,14 +202,43 @@ dev = [
     "ruff>=0.4.0",
     "mypy>=1.8.0",
     "cryptography>=41.0.0",
+    "opentelemetry-api>=1.20",
+    "opentelemetry-exporter-otlp-proto-http>=1.20",
+    "opentelemetry-sdk>=1.20",
     "pytest-asyncio>=0.24.0",
     "semgrep==1.161.0; platform_system != 'Windows'",
     "pyright>=1.1.380",
     "types-PyYAML>=6.0.12",
     "vulture>=2.11",
 ]
+supply-chain = [
+    "pip-licenses>=5.5.5,<6",
+]
+audit-deterministic = [
+    # Static analysis and security audit tools consumed by run_deterministic_lane.py.
+    # semgrep Windows note: semgrep is Linux/macOS only; package installation succeeds but
+    # the binary is unavailable on Windows — the runner emits status="skip" on Windows.
+    "semgrep==1.161.0; platform_system != 'Windows'",
+    "bandit>=1.7.0",
+    "pip-audit>=2.7.0",
+    "safety>=3.0.0",
+    "vulture>=2.11",
+    "mutmut>=2.4.0",
+    "ruff>=0.4.0",
+    "mypy>=1.8.0",
+    "pyright>=1.1.380",
+    "licensecheck>=2024.1",
+]
+audit-inference-eval = [
+    # Inference-quality eval lane (H2-15) — schema validation for rubric instances.
+    "jsonschema>=4.0.0",
+]
 all = [
-    "vetinari[local,cloud,vllm,crypto,image,search,ml,guardrails,observability,training,watcher,notifications,llmlingua,dev]",
+    # guardrails remains opt-in because runtime guardrail stacks pull
+    # ML-heavy dependencies that do not belong in the core developer loop.
+    # training profiles remain opt-in because they install large ML toolchains;
+    # accelerated Unsloth training is a dedicated environment profile.
+    "vetinari[core,gpu,browser,local,cloud,vllm,sglang,audio,video,comfyui,speculators,embeddings_remote,crypto,image,search,scraping,scraping-dynamic,ml,observability,redteam,watcher,notifications,llmlingua,dev,audit-deterministic,audit-inference-eval]",
 ]
 
 [project.scripts]
@@ -153,6 +250,34 @@ Repository = "https://github.com/StrategicMilk/AM-Workbench"
 # ---------------------------------------------------------------------------
 # Tool Configuration
 # ---------------------------------------------------------------------------
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "training-unsloth" },
+        { extra = "training" },
+    ],
+    [
+        { extra = "training-unsloth" },
+        { extra = "all" },
+    ],
+    [
+        { extra = "training-unsloth" },
+        { extra = "gpu" },
+    ],
+    [
+        { extra = "training-unsloth" },
+        { extra = "vllm" },
+    ],
+    [
+        { extra = "training-unsloth" },
+        { extra = "image" },
+    ],
+    [
+        { extra = "training-unsloth" },
+        { extra = "comfyui" },
+    ],
+]
 
 [tool.setuptools.dynamic]
 version = { attr = "vetinari.__version__" }
@@ -191,7 +316,9 @@ line-length = 120
 src = ["vetinari"]
 preview = true
 cache-dir = ".vetinari/ruff-cache"
+force-exclude = true
 extend-exclude = [
+    ".ai-codex",
     ".agents",
     ".claude",
     ".claire",
@@ -204,10 +331,24 @@ extend-exclude = [
     # Intentionally-bad Python used by VET rule fixture tests — ruff should not
     # enforce style on files whose only purpose is to contain violations.
     "tests/fixtures/vet_rules",
+    "tests/fixtures/atomic_writes",
+    "tests/fixtures/per_call_adapter",
+    "tests/fixtures/hardcoded_interpreter",
+    "tests/fixtures/http_exception_detail_leak",
+    "tests/fixtures/local_user_guard",
+    "tests/fixtures/audit_vet_lane",
+    "_r*.py",
+    "tmp_*.py",
+    "update_lane_evidence_r3.py",
+    "write_findings.py",
+    "scripts/_build_extbench*.py",
+    "scripts/_r[0-9]*.py",
+    "scripts/_restore_deleted_fingerprints.py",
+    "scripts/_tmp*.py",
 ]
 
 [tool.ruff.lint]
-# VET* are custom project rules from scripts/quality/check_vetinari_rules.py; mark as external
+# VET* are custom project rules from scripts/check_vetinari_rules.py; mark as external
 # so ruff does not flag them as unknown noqa codes.
 external = ["VET"]
 select = [
@@ -269,22 +410,70 @@ ignore = [
     "PT009", "PT013", "PT017", "PT019",  # unittest-style assertions OK in tests
     "PT006", "PT018",                    # stylistic pytest tuple/composite-assertion rules are too noisy in legacy tests
     "TID251",                            # banned imports OK in tests (typing.Optional etc.)
-    "S105", "S106", "S107", "S108", "S110", "S113", "S104", "S324", "S607", "S311",  # security OK in test fixtures
+    "S105", "S106", "S107", "S108", "S110", "S113", "S104", "S324", "S603", "S607", "S608", "S311",  # security OK in test fixtures
     "E402",                              # late imports OK in tests (imports after fixture setup)
     "E701", "E702",                      # multiple statements OK in test helpers
     "RUF001", "RUF002", "RUF003",        # ambiguous unicode OK in test strings/data
     "RUF005", "RUF059",                  # readability-focused test helpers often prefer concatenation / unpacked values
     "SIM105", "SIM115", "SIM117",        # simplification preferences flexible in tests
     "FURB", "PERF",                      # refactoring and performance rules relaxed in tests
+    "B903", "F811",                      # fixture/local classes and duplicate imports are acceptable in legacy tests
     "PT012",                             # multiple statements in pytest.raises OK for context manager combos
     "F401",                              # unused imports OK (imports for side-effects / conftest)
     "F841",                              # unused locals OK in tests when patch handles are intentionally retained for clarity
     "RUF029",                            # async test/lifespan helpers mirror framework protocols
 ]
-"scripts/**/*.py" = ["T20", "D", "PIE810", "PERF401", "RUF005", "FURB113", "S108", "S324"]  # CLI-style scripts favor clarity over micro-optimizations; S108/S324 suppressed for intentional temp-dir and md5 hash usage in non-security session tooling
+"tests/fixtures/vet_rules/*" = ["B904", "BLE001", "F403"]  # rule fixtures intentionally contain broad catches, unchained raises, and wildcard imports
+"scripts/*" = ["T20", "D", "E402", "PIE810", "PERF401", "RUF005", "FURB113", "S108", "S311", "S314", "S324", "S603", "S608"]  # CLI-style scripts favor clarity; subprocess and SQL patterns are trusted local tooling with parameterized inputs
+"scripts/check_test_reliability.py" = ["S603"]  # subprocess argv is a local pytest probe assembled without shell interpolation
+"scripts/check_mutation_sentinels.py" = ["S603"]  # subprocess argv is local git/pytest sentinel execution assembled without shell interpolation
+"scripts/run_tests.py" = ["S603"]  # subprocess argv is local pytest/test-summary invocation assembled without shell interpolation
+"verify_bypass_detector_logic.py" = ["T201"]  # standalone verification script reports to stdout
+"vetinari/agents/skill_contract.py" = ["S105"]  # verdict enum value PASS is not a secret
+"vetinari/analytics/isolation_forest.py" = ["S311"]  # seeded pseudo-random sampling is required for reproducible isolation forests
+"vetinari/code_sandbox.py" = ["S603"]  # sandbox runner executes local, explicit argv without shell interpolation
+"vetinari/code_search.py" = ["S603"]  # code-search backend checks pinned local tooling with explicit argv
+"vetinari/context/window_manager.py" = ["E402"]  # late compatibility re-exports preserve the window-manager public API
+"vetinari/credentials.py" = ["S105"]  # token_source is metadata, not a token literal
+"vetinari/dashboard/__init__.py" = ["E402"]  # package re-exports preserve public import surface
+"vetinari/dashboard/log_aggregator.py" = ["E402"]  # late backend re-exports avoid a circular import
+"vetinari/drift/__init__.py" = ["E402"]  # package re-exports preserve public import surface
+"vetinari/grep_context.py" = ["S603"]  # ripgrep invocation is local explicit argv
+"vetinari/learning/episode_memory.py" = ["S608"]  # dynamic SQL uses static predicates plus bound parameters
+"vetinari/learning/prompt_evolver.py" = ["S311"]  # non-cryptographic randomness drives prompt variation only
+"vetinari/mcp/client.py" = ["S603"]  # MCP subprocess launch uses explicit configured argv
+"vetinari/memory/_store_episode.py" = ["S608"]  # dynamic SQL uses generated placeholders plus bound parameters
+"vetinari/memory/_store_ops.py" = ["E402"]  # late re-exports avoid circular imports between memory helpers
+"vetinari/memory/_store_search.py" = ["S608"]  # dynamic SQL uses generated placeholders plus bound parameters
+"vetinari/memory/episode_recorder.py" = ["S608"]  # dynamic SQL uses generated placeholders plus bound parameters
+"vetinari/memory/memory_search.py" = ["S608"]  # dynamic SQL uses generated placeholders plus bound parameters
+"vetinari/models/landscape_monitor.py" = ["S310"]  # _http_get validates http/https scheme before opening model source URLs
+"vetinari/orchestration/git_checkpoint.py" = ["S603"]  # git checkpoint wrapper executes local git argv
+"vetinari/orchestration/pipeline_stages.py" = ["S311"]  # post-hoc audit sampling is not security-sensitive randomness
+"vetinari/planning/context_bundle.py" = ["S603"]  # semgrep helper executes local explicit argv
+"vetinari/project/sandbox.py" = ["S603"]  # sandbox lifecycle executes local git/python/ruff argv
+"vetinari/project/scanner.py" = ["S603"]  # static-analysis scanner executes known local analysis tools
+"vetinari/rag/knowledge_base_search.py" = ["S608"]  # dynamic SQL uses generated placeholders plus bound parameters
+"vetinari/receipts/record.py" = ["S105"]  # inspector_pass enum value is not a secret
+"vetinari/release/fsa_closure.py" = ["S603"]  # closure reruns execute validated explicit argv without shell interpolation
+"vetinari/sandbox_policy.py" = ["S603"]  # sandbox probe executes explicit configured command with stdin payload
+"vetinari/scraping/robots.py" = ["S310"]  # robots cache validates http/https scheme before opening robots.txt
+"vetinari/setup/backend_installer.py" = ["S603", "S607"]  # installer runs pinned local PowerShell scripts
+"vetinari/setup/nim_container.py" = ["S603"]  # Docker orchestration uses explicit argv assembled from setup plan
+"vetinari/setup/vllm_container.py" = ["S104", "S603"]  # vLLM binds inside the container; Docker port mapping controls host exposure
+"vetinari/testing/evolved_benchmarks.py" = ["S311"]  # deterministic seeded RNG is part of benchmark generation
+"vetinari/tools/git_tool.py" = ["S603"]  # git tool executes explicit argv through the configured git binary
+"vetinari/tools/semgrep_tool.py" = ["S603"]  # semgrep tool executes explicit argv
+"vetinari/training/dapo_stages.py" = ["S603"]  # training stages execute generated local scripts with explicit argv
+"vetinari/training/pipeline_core.py" = ["S603"]  # optional package installer executes python -m pip with explicit argv
+"vetinari/training/pipeline_trainers.py" = ["S603"]  # training pipeline executes generated local scripts with explicit argv
+"vetinari/training/synthetic_data.py" = ["S311"]  # deterministic seeded RNG is part of synthetic-data generation
+"vetinari/web/litestar_dashboard_api.py" = ["S608"]  # event-log queries use generated placeholders plus bound parameters
 "vetinari/__main__.py" = ["T20"]          # print ok in entry point
 "vetinari/cli.py" = ["T20"]              # print ok in CLI interface
 "vetinari/cli_commands.py" = ["T20"]     # print ok in CLI interface
+"vetinari/cli_health_commands.py" = ["T20"]  # print ok in CLI interface
+"vetinari/cli_management_commands.py" = ["T20"]  # print ok in CLI interface
 "vetinari/cli_command_groups.py" = ["T20"]  # print ok in CLI interface
 "vetinari/cli_devops.py" = ["T20"]       # print ok in CLI interface
 "vetinari/cli_startup.py" = ["T20"]      # print ok in CLI interface
@@ -299,12 +488,15 @@ ignore = [
 "vetinari/cli_doctor.py" = ["T20"]           # print ok in CLI interface
 "vetinari/cli_models.py" = ["T20"]           # print ok in CLI interface
 "vetinari/setup/init_wizard.py" = ["T20"]  # print ok in setup wizard (CLI-facing)
+"vetinari/workflows/__main__.py" = ["T20"]  # print ok in workflows CLI entry point
+"vetinari/workbench/__main__.py" = ["T20"]  # print ok in workbench CLI entry point
 "vetinari/preflight.py" = ["T20", "S110", "S603"]  # print ok in CLI-facing preflight; subprocess calls are trusted pip/torch installs
 "vetinari/system/hardware_detect.py" = ["S110", "S603", "S607"]  # subprocess calls for hardware probing are trusted
 "vetinari/tools/static_analysis.py" = ["S603", "S607"]  # subprocess calls to known hardcoded tools (pyright, ruff, vulture)
 "vetinari/benchmarks/*" = ["T20", "D"]   # print ok, docstrings relaxed in benchmarks
 "vetinari/web/*.py" = ["RUF029"]  # Litestar route/lifespan callables are async protocols even when bodies do not await
 "tests/runtime/test_restart_recovery.py" = ["S603", "S608"]  # subprocess/SQL snippets are the persistence contract under test
+"scripts/hook_*.py" = ["S110"]                                             # hook scripts intentionally suppress exceptions to avoid disrupting tool flow
 "conftest.py" = ["S101", "D", "E402", "RUF003", "S105", "S110", "SIM105"]  # test harness intentionally mutates import state and uses benign test-only secrets/cleanup
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
@@ -332,15 +524,22 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+norecursedirs = [".*", ".hypothesis", "build", "dist", "CVS", "_darcs", "{arch}", "*.egg", "venv", ".venv", ".venv312", "tests/fixtures"]
+asyncio_default_fixture_loop_scope = "function"
 addopts = [
     "-q",
     "--tb=short",
     "--strict-markers",
     "--timeout=30",
     "--junitxml=.vetinari/test-results.xml",
-    "-m", "not benchmark",
+    "--randomly-seed=42",
+    "-n", "auto",
+    "--dist=loadscope",
+    "-m", "not benchmark and not integration and not slow and not operator",
 ]
 markers = [
+    "engine_binary: requires or explicitly verifies absence of the pinned AM Engine binary",
+    "operator: internal Claude/Codex workflow-tooling tests (kaizen/audit/program/brainstorm/hooks); excluded from the default product run, run with '-m operator'",
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks integration tests requiring LM Studio",
     "security: marks security-related tests",
@@ -348,25 +547,9 @@ markers = [
     "chaos: marks chaos injection tests",
     "replay: marks deterministic replay tests",
     "property: marks property-based (Hypothesis) tests",
-]
-filterwarnings = [
-    # Litestar's pydantic plugin imports pydantic.v1 which is incompatible with Python 3.14+.
-    # This is a third-party issue tracked upstream — suppress until litestar releases a fix.
-    "ignore:Core Pydantic V1 functionality:UserWarning",
-    # SWIG-generated wrappers (SwigPyPacked/SwigPyObject) emit DeprecationWarnings in Python 3.12+.
-    # These come from third-party C extensions (e.g. llama-cpp-python) and are not actionable.
-    "ignore:.*SwigPyPacked.*:DeprecationWarning",
-    "ignore:.*SwigPyObject.*:DeprecationWarning",
-    # SWIG bindings in llama-cpp-python lack __module__ on builtin types — upstream issue.
-    "ignore:builtin type Swig.*has no __module__:DeprecationWarning",
-    # desktop_notifier uses deprecated asyncio.DefaultEventLoopPolicy — upstream issue (6.2.0 is latest).
-    "ignore:'asyncio.DefaultEventLoopPolicy' is deprecated:DeprecationWarning",
-    # scipy may emit RuntimeWarning about precision loss in statistical functions.
-    # This is expected for edge-case inputs in tests.
-    "ignore:.*invalid value encountered.*:RuntimeWarning:scipy",
-    "ignore:.*divide by zero encountered.*:RuntimeWarning:scipy",
-    "ignore:.*overflow encountered.*:RuntimeWarning:scipy",
-    "ignore:.*Precision loss occurred in moment calculation.*:RuntimeWarning:scipy",
+    "scraping_browser: requires real Playwright Chromium install",
+    "upstream_blocked: Mark test as blocked pending upstream pack delivery",
+    "unit: fast unit-level tests that do not require integration services",
 ]
 
 # ---------------------------------------------------------------------------
@@ -396,7 +579,7 @@ disallow_untyped_defs = true
 # ---------------------------------------------------------------------------
 
 [tool.bandit]
-exclude_dirs = ["tests", "outputs", "projects", "examples"]
+exclude_dirs = ["tests", "outputs", "projects", "examples", ".ai-codex", "templates"]
 skips = [
     "B101",  # assert used intentionally in validation helpers and guard code
     "B105",  # Ruff S105 remains the primary hardcoded-secret check; Bandit is too noisy on status constants/tests

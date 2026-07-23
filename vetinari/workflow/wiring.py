@@ -20,6 +20,7 @@ from vetinari.workflow.wip import WIPConfig, WIPTracker
 
 logger = logging.getLogger(__name__)
 
+
 # -- Module-level WIPTracker singleton --------------------------------------
 #
 # Written by: _get_wip_tracker() on first call.

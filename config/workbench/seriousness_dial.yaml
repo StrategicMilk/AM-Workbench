@@ -1,0 +1,76 @@
+persistence:
+  storage_key: vetinari:seriousness-dial:selected-level
+  update_endpoint: /api/workbench/rigor/level
+  receipt_kind: seriousness_dial_level_changed
+  fail_closed_when_unavailable: true
+policies:
+  - level: just_talk
+    label: Just Talk
+    mode: default
+    clarification_pressure: 0
+    citation_required: false
+    memory_policy: session_only
+    tool_approval: ask_before_tools
+    artifact_creation: none_by_default
+    evidence_visibility: hidden_unless_needed
+    reversible_to: [help_me_think]
+    authority_ref: authority:seriousness-dial
+    provenance_ref: provenance:seriousness-dial
+    persisted_state_ref: state:seriousness-dial
+    receipt_ref: receipt:seriousness-dial:just_talk
+  - level: help_me_think
+    label: Help Me Think
+    mode: default
+    clarification_pressure: 1
+    citation_required: false
+    memory_policy: project_if_relevant
+    tool_approval: ask_for_external_or_mutating_tools
+    artifact_creation: notes_when_useful
+    evidence_visibility: concise_summary
+    reversible_to: [just_talk, make_something]
+    authority_ref: authority:seriousness-dial
+    provenance_ref: provenance:seriousness-dial
+    persisted_state_ref: state:seriousness-dial
+    receipt_ref: receipt:seriousness-dial:help_me_think
+  - level: make_something
+    label: Make Something
+    mode: default
+    clarification_pressure: 2
+    citation_required: false
+    memory_policy: project_scoped
+    tool_approval: allow_non_destructive_tools
+    artifact_creation: create_requested_artifacts
+    evidence_visibility: changed_artifacts_and_checks
+    reversible_to: [help_me_think, check_it_carefully]
+    authority_ref: authority:seriousness-dial
+    provenance_ref: provenance:seriousness-dial
+    persisted_state_ref: state:seriousness-dial
+    receipt_ref: receipt:seriousness-dial:make_something
+  - level: check_it_carefully
+    label: Check It Carefully
+    mode: default
+    clarification_pressure: 3
+    citation_required: true
+    memory_policy: project_scoped_with_provenance
+    tool_approval: allow_checks_require_approval_for_mutation
+    artifact_creation: evidence_backed_outputs
+    evidence_visibility: show_key_evidence
+    reversible_to: [make_something, make_it_reusable]
+    authority_ref: authority:seriousness-dial
+    provenance_ref: provenance:seriousness-dial
+    persisted_state_ref: state:seriousness-dial
+    receipt_ref: receipt:seriousness-dial:check_it_carefully
+  - level: make_it_reusable
+    label: Make It Reusable
+    mode: default
+    clarification_pressure: 4
+    citation_required: true
+    memory_policy: project_scoped_with_reuse_notes
+    tool_approval: allow_validated_workflow_tools
+    artifact_creation: durable_artifacts_and_docs
+    evidence_visibility: full_verification_summary
+    reversible_to: [check_it_carefully]
+    authority_ref: authority:seriousness-dial
+    provenance_ref: provenance:seriousness-dial
+    persisted_state_ref: state:seriousness-dial
+    receipt_ref: receipt:seriousness-dial:make_it_reusable

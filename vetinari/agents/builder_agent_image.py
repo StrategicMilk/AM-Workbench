@@ -22,10 +22,12 @@ from typing import TYPE_CHECKING, Any
 
 from vetinari.security.sandbox import enforce_blocked_paths
 
+logger = logging.getLogger(__name__)
+
+
 if TYPE_CHECKING:
     from vetinari.agents.builder_agent import BuilderAgent
 
-logger = logging.getLogger(__name__)
 
 # Pre-compiled regex for extracting SVG content from LLM responses.
 _SVG_EXTRACT_RE = re.compile(r"<svg[\s\S]*?</svg>", re.IGNORECASE)
@@ -142,21 +144,31 @@ def execute_image_generation(agent: BuilderAgent, task: Any) -> Any:
                 },
             ]
 
+    backend = "diffusers" if (agent._image_enabled and not gen_error) else "svg_fallback"
+    real_image_generated = (
+        bool(generated_images)
+        and backend == "diffusers"
+        and any(image.get("type") != "svg" for image in generated_images)
+    )
+
     result = {
         "images": generated_images,
         "spec": image_spec,
         "diffusers_available": agent._image_enabled and not gen_error,
         "gen_error": gen_error,
         "count": len(generated_images),
+        "backend": backend,
+        "is_diffusion_fallback": backend == "svg_fallback",
     }
 
     return AgentResult(
-        success=bool(generated_images),
+        success=real_image_generated,
         output=result,
         metadata={
             "mode": "image_generation",
             "image_count": len(generated_images),
-            "backend": "diffusers" if (agent._image_enabled and not gen_error) else "svg_fallback",
+            "backend": backend,
+            "is_diffusion_fallback": backend == "svg_fallback",
             "description": description,
         },
     )

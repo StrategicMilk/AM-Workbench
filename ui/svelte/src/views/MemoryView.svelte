@@ -8,6 +8,8 @@
   import * as api from '$lib/api.js';
   import * as fmt from '$lib/utils/format.js';
   import { showToast } from '$lib/stores/toast.svelte.js';
+  import HelpPopover from '$lib/components/help/HelpPopover.svelte';
+  import HelpTooltip from '$lib/components/help/HelpTooltip.svelte';
 
   // -- State -------------------------------------------------------------------
 
@@ -144,6 +146,11 @@
       <i class="fas fa-brain"></i>
       Memory
     </h2>
+    <HelpPopover
+      title="Memory"
+      body="Persistent memory entries for this project. Memories are injected into agent context at the start of each run, giving Foreman and Worker access to standing facts, preferences, and learned constraints. Entry types: fact (always injected), preference (injected when relevant), constraint (hard rule enforced by Inspector), and episodic (recent event used for continuity). Entries are deduplicated by key — adding a new entry with the same key replaces the previous value."
+      severity="info"
+    />
     <div class="header-actions">
       <button
         class="btn btn-primary btn-sm"
@@ -470,9 +477,14 @@
   }
 
   .input:focus {
-    outline: none;
+    outline: 2px solid transparent;
+    outline-offset: 2px;
     border-color: var(--primary);
     box-shadow: 0 0 0 2px var(--primary-muted);
+  }
+
+  .input:focus-visible {
+    outline-color: var(--primary);
   }
 
   .textarea { resize: vertical; }

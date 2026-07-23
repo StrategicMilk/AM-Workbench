@@ -18,7 +18,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from vetinari.boundary_guards import route_enum_error
+from vetinari.security.fail_closed import UntrustedInputError, sanitize_untrusted_text
+
 logger = logging.getLogger(__name__)
+
 
 # Generic fallback brief used when the LLM is unavailable — answers the minimum
 # question a retrying agent needs: what to do differently.
@@ -37,7 +41,13 @@ class EscalationLevel(int, Enum):
     FATAL = 3  # Unsolvable by any agent — escalate to human
 
 
-@dataclass
+class ErrorKind(str, Enum):
+    """Explicit error-kind routing for failures that must bypass retry branches."""
+
+    POLICY_VIOLATION = "policy_violation"
+
+
+@dataclass(frozen=True, slots=True)
 class ErrorClassification:
     """Result of classifying an agent task failure.
 
@@ -159,6 +169,9 @@ _FATAL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
+_POLICY_ERROR_PATTERN = re.compile(r"security violation|policy violation|forbidden action", re.IGNORECASE)
+
+
 class ErrorClassifier:
     """Classify agent task errors into the four escalation levels.
 
@@ -169,6 +182,61 @@ class ErrorClassifier:
 
     Instance is stateless — safe to share across threads.
     """
+
+    def _classify_explicit_level(self, explicit_level: Any) -> ErrorClassification | None:
+        if explicit_level is None:
+            return None
+        try:
+            level = EscalationLevel(int(explicit_level))
+        except (ValueError, TypeError):
+            logger.warning(
+                "Context escalation_level %r is not a valid EscalationLevel integer"
+                " - falling through to pattern-based classification",
+                explicit_level,
+            )
+            return None
+        return ErrorClassification(
+            level=level,
+            reason=f"Explicit escalation_level={explicit_level} in context",
+            suggested_action=self._default_action(level),
+            is_retryable=level < EscalationLevel.FATAL,
+        )
+
+    @staticmethod
+    def _classification_for_patterns(
+        text: str,
+        patterns: list[tuple[re.Pattern[str], str]],
+        level: EscalationLevel,
+        action: str,
+        *,
+        retryable: bool,
+    ) -> ErrorClassification | None:
+        for pattern, reason in patterns:
+            if pattern.search(text):
+                return ErrorClassification(
+                    level=level,
+                    reason=reason,
+                    suggested_action=action,
+                    matched_pattern=pattern.pattern,
+                    is_retryable=retryable,
+                )
+        return None
+
+    @staticmethod
+    def _fallback_classification(retry_count: Any) -> ErrorClassification:
+        if retry_count > 2:
+            return ErrorClassification(
+                level=EscalationLevel.SEMANTIC,
+                reason=f"Repeated failure (retry_count={retry_count}) with unrecognized error",
+                suggested_action="Rephrase agent prompt - repeated failure suggests misunderstanding",
+                is_retryable=True,
+            )
+        return ErrorClassification(
+            level=EscalationLevel.TRANSIENT,
+            reason="Unrecognized error pattern - treating as transient on first occurrence",
+            suggested_action="Retry same agent with unchanged prompt",
+            is_retryable=True,
+        )
 
     def classify(self, error_message: str, context: dict[str, Any] | None = None) -> ErrorClassification:
         """Classify an error message into an escalation level.
@@ -181,91 +249,68 @@ class ErrorClassifier:
         Returns:
             ErrorClassification with the assigned level and recovery action.
         """
-        context = context or {}  # noqa: VET112 — Optional per func param
-        text = error_message or ""  # noqa: VET112 — Optional per func param
-
-        # Check for explicit escalation level hint from context
-        explicit_level = context.get("escalation_level")
-        if explicit_level is not None:
-            try:
-                level = EscalationLevel(int(explicit_level))
-                return ErrorClassification(
-                    level=level,
-                    reason=f"Explicit escalation_level={explicit_level} in context",
-                    suggested_action=self._default_action(level),
-                    is_retryable=level < EscalationLevel.FATAL,
-                )
-            except (ValueError, TypeError):
-                logger.warning(
-                    "Context escalation_level %r is not a valid EscalationLevel integer"
-                    " — falling through to pattern-based classification",
-                    explicit_level,
-                )
-
-        # Pattern-based classification: check each level in order
-        for pattern, reason in _TRANSIENT_PATTERNS:
-            m = pattern.search(text)
-            if m:
-                return ErrorClassification(
-                    level=EscalationLevel.TRANSIENT,
-                    reason=reason,
-                    suggested_action="Retry same agent with unchanged prompt after brief delay",
-                    matched_pattern=pattern.pattern,
-                    is_retryable=True,
-                )
-
-        for pattern, reason in _SEMANTIC_PATTERNS:
-            m = pattern.search(text)
-            if m:
-                return ErrorClassification(
-                    level=EscalationLevel.SEMANTIC,
-                    reason=reason,
-                    suggested_action="Rephrase or clarify the agent prompt and retry",
-                    matched_pattern=pattern.pattern,
-                    is_retryable=True,
-                )
-
-        for pattern, reason in _CAPABILITY_PATTERNS:
-            m = pattern.search(text)
-            if m:
-                return ErrorClassification(
-                    level=EscalationLevel.CAPABILITY,
-                    reason=reason,
-                    suggested_action="Reassign task to a more capable or specialist agent",
-                    matched_pattern=pattern.pattern,
-                    is_retryable=True,
-                )
-
-        for pattern, reason in _FATAL_PATTERNS:
-            m = pattern.search(text)
-            if m:
-                return ErrorClassification(
-                    level=EscalationLevel.FATAL,
-                    reason=reason,
-                    suggested_action="Escalate to human operator — agent cannot resolve this",
-                    matched_pattern=pattern.pattern,
-                    is_retryable=False,
-                )
-
-        # Fallback: treat unknown errors as transient on first occurrence,
-        # bump to SEMANTIC if retry_count > 2
-        retry_count = context.get("retry_count", 0)
-        if retry_count > 2:
+        context = context or {}
+        if not isinstance(error_message, str) or not error_message.strip():
             return ErrorClassification(
-                level=EscalationLevel.SEMANTIC,
-                reason=f"Repeated failure (retry_count={retry_count}) with unrecognized error",
-                suggested_action="Rephrase agent prompt — repeated failure suggests misunderstanding",
+                level=EscalationLevel.TRANSIENT,
+                reason="Empty error message - treating as transient",
+                suggested_action="Retry same agent with unchanged prompt",
                 is_retryable=True,
             )
+        try:
+            text = sanitize_untrusted_text(error_message, max_length=5000)
+        except UntrustedInputError as exc:
+            logger.warning("Rejected unsafe error message during escalation classification: %s", exc)
+            return ErrorClassification(
+                level=EscalationLevel.FATAL,
+                reason=f"Unsafe error message rejected: {exc}",
+                suggested_action="Escalate to human operator - unsafe retry context",
+                is_retryable=False,
+            )
 
-        return ErrorClassification(
-            level=EscalationLevel.TRANSIENT,
-            reason="Unrecognized error pattern — treating as transient on first occurrence",
-            suggested_action="Retry same agent with unchanged prompt",
-            is_retryable=True,
+        explicit = self._classify_explicit_level(context.get("escalation_level"))
+        if explicit is not None:
+            return explicit
+        if _POLICY_ERROR_PATTERN.search(text):
+            route_enum_error(
+                ErrorKind,
+                ErrorKind.POLICY_VIOLATION.value,
+                correct_blocker=ErrorKind.POLICY_VIOLATION,
+                label="policy_error",
+            )
+            return ErrorClassification(
+                level=EscalationLevel.FATAL,
+                reason="Policy violation - escalate",
+                suggested_action="Escalate to human operator - agent cannot resolve this",
+                matched_pattern=_POLICY_ERROR_PATTERN.pattern,
+                is_retryable=False,
+            )
+
+        checks = (
+            (
+                _TRANSIENT_PATTERNS,
+                EscalationLevel.TRANSIENT,
+                "Retry same agent with unchanged prompt after brief delay",
+                True,
+            ),
+            (_SEMANTIC_PATTERNS, EscalationLevel.SEMANTIC, "Rephrase or clarify the agent prompt and retry", True),
+            (
+                _CAPABILITY_PATTERNS,
+                EscalationLevel.CAPABILITY,
+                "Reassign task to a more capable or specialist agent",
+                True,
+            ),
+            (_FATAL_PATTERNS, EscalationLevel.FATAL, "Escalate to human operator - agent cannot resolve this", False),
         )
+        for patterns, level, action, retryable in checks:
+            classification = self._classification_for_patterns(text, patterns, level, action, retryable=retryable)
+            if classification is not None:
+                return classification
 
-    def _default_action(self, level: EscalationLevel) -> str:
+        return self._fallback_classification(context.get("retry_count", 0))
+
+    @staticmethod
+    def _default_action(level: EscalationLevel) -> str:
         """Return the standard recovery action for a given level.
 
         Args:
@@ -334,9 +379,11 @@ def generate_retry_brief(failure_context: str, agent_type: str) -> str:
     try:
         from vetinari.llm_helpers import generate_retry_brief as _llm_brief
 
-        context_prompt = failure_context
-        if agent_type:
-            context_prompt = f"Agent type: {agent_type}\nFailure: {failure_context}"
+        safe_failure_context = sanitize_untrusted_text(failure_context, max_length=5000)
+        safe_agent_type = sanitize_untrusted_text(agent_type, max_length=120) if agent_type else ""
+        context_prompt = safe_failure_context
+        if safe_agent_type:
+            context_prompt = f"Agent type: {safe_agent_type}\nFailure: {safe_failure_context}"
 
         result = _llm_brief(error_description=context_prompt)
         if result and result.strip():

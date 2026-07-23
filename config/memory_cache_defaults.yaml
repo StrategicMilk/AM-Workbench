@@ -1,0 +1,27 @@
+schema_version: "1"
+# Default memory and KV-cache sizing configuration.
+# Loaded by vetinari/config/loader.py through the LayeredResolver.
+# Override with VETINARI_MEMORY_* environment variables or user/project YAML.
+
+kv_cache:
+  max_entries: 1024              # Maximum KV-cache entries to keep in memory
+  ttl_seconds: 3600              # Time-to-live for cached entries (1 hour)
+  eviction_policy: "lru"         # Cache eviction policy: lru | lfu | fifo
+  prewarm: false                 # Pre-populate cache on startup
+
+context_memory:
+  max_tokens_per_agent: 8192     # Maximum context tokens an agent may hold
+  summarize_threshold: 6144      # Token count triggering auto-summarization
+  summary_model_id: ""           # Model to use for summarization (empty = same model)
+  persist_across_sessions: false # Whether context memory survives restarts
+
+vector_store:
+  enabled: false                 # Enable persistent vector memory store
+  backend: "in_memory"           # Storage backend: in_memory | sqlite | chroma
+  embedding_dim: 384             # Vector dimension for embeddings
+  max_documents: 10000           # Maximum stored documents
+
+working_memory:
+  max_plan_depth: 5              # Maximum nesting depth for decomposed plans
+  max_subtasks_per_node: 20      # Maximum subtasks at any single plan node
+  gc_interval_s: 300             # Seconds between garbage-collection passes

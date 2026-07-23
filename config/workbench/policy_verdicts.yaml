@@ -1,0 +1,28 @@
+schema_version: "1.0"
+policy_version: "2026-05-02-node9-action-governance"
+default_mode: strict
+domain_rules:
+  shell:
+    blocked_patterns: ["rm -rf", "encodedcommand", "invoke-webrequest"]
+  file_system:
+    blocked_patterns: ["../", "..\\", "system32"]
+  network:
+    blocked_patterns: ["downloadstring", "curl | sh"]
+  tool_invocation:
+    blocked_patterns: ["unknown tool", "untrusted mcp"]
+  memory_scope:
+    blocked_patterns: ["secret memory", "cross-tenant"]
+  token_budget:
+    blocked_patterns: ["unbounded loop", "no token cap"]
+  cost_budget:
+    blocked_patterns: ["unbounded spend", "no cost cap"]
+  loop_amplification:
+    blocked_patterns: ["self spawn", "recursive fanout"]
+  side_effect:
+    blocked_patterns: ["destructive", "delete production"]
+  permission:
+    blocked_patterns: ["without approval", "no authority"]
+  remote_control:
+    blocked_patterns: ["unverified remote", "takeover"]
+  approval:
+    blocked_patterns: ["auto approve", "bypass approval"]

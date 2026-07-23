@@ -13,6 +13,7 @@
    */
   import { Chart, registerables } from 'chart.js';
   import { getChartDefaults } from '$lib/tokens.js';
+  import ProvenanceGate from '$lib/security/ProvenanceGate.svelte';
 
   // Register all Chart.js components once
   Chart.register(...registerables);
@@ -21,6 +22,16 @@
 
   let canvasEl;
   let chartInstance = null;
+  let chartTableId = $derived(`chart-data-${String(title ?? 'metrics').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`);
+  let chartSummary = $derived(
+    `${title || 'Metrics chart'}: ${(data?.datasets ?? [])
+      .map((dataset) => `${dataset.label || 'dataset'} ${dataset.data?.join(', ') || 'no values'}`)
+      .join('; ') || 'no data'}`
+  );
+  const chartProvenanceRefs = [
+    'npm:chart.js@4.5.1',
+    'ui/svelte/package-lock.json#node_modules/chart.js',
+  ];
 
   /**
    * Build merged Chart.js options from token defaults and user overrides.
@@ -101,9 +112,21 @@
   {#if title}
     <h3 class="chart-title">{title}</h3>
   {/if}
-  <div class="chart-container">
-    <canvas bind:this={canvasEl}></canvas>
+  <ProvenanceGate refs={chartProvenanceRefs} status="verified" context="dashboard-chartjs-bundle" compact />
+  <div class="chart-container" role="img" aria-label={chartSummary} aria-describedby={chartTableId}>
+    <canvas bind:this={canvasEl} aria-hidden="true"></canvas>
   </div>
+  <table id={chartTableId} class="sr-only">
+    <caption>{title || 'Metrics chart'} data</caption>
+    <tbody>
+      {#each data?.datasets ?? [] as dataset}
+        <tr>
+          <th scope="row">{dataset.label || 'dataset'}</th>
+          <td>{dataset.data?.join(', ') || 'no values'}</td>
+        </tr>
+      {/each}
+    </tbody>
+  </table>
 </div>
 
 <style>
@@ -124,5 +147,17 @@
   .chart-container {
     position: relative;
     height: 200px;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 </style>

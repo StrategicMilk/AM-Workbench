@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_trace_eval_case.schema.json",
+  "title": "Workbench Trace Eval Core Loop Case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "case_id",
+    "schema_version",
+    "provenance",
+    "replay_command",
+    "kind",
+    "eval_result_ref",
+    "redteam_fixture_ref",
+    "benchmark_import_ref",
+    "approval_gate_ref",
+    "failure_intelligence_autopsy_ref",
+    "route_decision_ref",
+    "consumer_feed_targets"
+  ],
+  "properties": {
+    "case_id": {
+      "type": "string",
+      "pattern": "^eval-case-[0-9a-f]{32}$"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_event_kind",
+        "source_event_id",
+        "source_run_id",
+        "source_asset_id",
+        "source_asset_revision",
+        "captured_at_utc"
+      ],
+      "properties": {
+        "source_event_kind": {
+          "enum": [
+            "failed_trace",
+            "user_correction",
+            "watcher_halt",
+            "route_decision",
+            "memory_recall",
+            "tool_error",
+            "inspector_finding"
+          ]
+        },
+        "source_event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_run_id": {
+          "type": ["string", "null"]
+        },
+        "source_asset_id": {
+          "type": ["string", "null"]
+        },
+        "source_asset_revision": {
+          "type": ["string", "null"]
+        },
+        "captured_at_utc": {
+          "type": "string"
+        }
+      }
+    },
+    "replay_command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command_kind", "argv", "working_directory", "env_overrides"],
+      "properties": {
+        "command_kind": {
+          "enum": ["pytest", "cli", "playground_run", "route_simulation", "failure_replay"]
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "working_directory": {
+          "type": "string",
+          "minLength": 1
+        },
+        "env_overrides": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {"type": "string", "minLength": 1},
+              {"type": "string"}
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      }
+    },
+    "kind": {
+      "enum": ["offline_suite", "red_team", "live_trace_derived", "human_annotation", "judge_only"]
+    },
+    "eval_result_ref": {
+      "type": ["string", "null"]
+    },
+    "redteam_fixture_ref": {
+      "type": ["string", "null"]
+    },
+    "benchmark_import_ref": {
+      "type": ["string", "null"]
+    },
+    "approval_gate_ref": {
+      "type": ["string", "null"]
+    },
+    "failure_intelligence_autopsy_ref": {
+      "type": ["string", "null"]
+    },
+    "route_decision_ref": {
+      "type": ["string", "null"]
+    },
+    "consumer_feed_targets": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "model_routing",
+          "prompt_promotion",
+          "redteam_fixtures",
+          "benchmark_import",
+          "failure_intelligence",
+          "automation_approval_gates"
+        ]
+      },
+      "minItems": 1
+    }
+  }
+}

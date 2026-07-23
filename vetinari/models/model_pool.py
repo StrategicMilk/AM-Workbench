@@ -11,14 +11,30 @@ from typing import Any
 
 from vetinari.config_paths import resolve_config_path
 from vetinari.constants import THREAD_JOIN_TIMEOUT
+from vetinari.models.model_pool_discovery import ModelPoolDiscoveryMixin
 
 logger = logging.getLogger(__name__)
 
+
 _CLOUD_PROVIDERS_CACHE: dict | None = None
 _CLOUD_PROVIDERS_LOCK = threading.Lock()
-_CLOUD_PROVIDERS_CONFIG_PATH = resolve_config_path("cloud_providers.yaml")
-_MODEL_POOLS: weakref.WeakSet[ModelPool] = weakref.WeakSet()
+_CLOUD_PROVIDERS_CONFIG_PATH: str | None = None
+_MODEL_POOLS: weakref.WeakSet[Any] | None = None
 _MODEL_POOLS_LOCK = threading.Lock()
+
+
+def _cloud_providers_config_path() -> str:
+    global _CLOUD_PROVIDERS_CONFIG_PATH
+    if _CLOUD_PROVIDERS_CONFIG_PATH is None:
+        _CLOUD_PROVIDERS_CONFIG_PATH = resolve_config_path("cloud_providers.yaml")
+    return _CLOUD_PROVIDERS_CONFIG_PATH
+
+
+def _model_pools() -> weakref.WeakSet[Any]:
+    global _MODEL_POOLS
+    if _MODEL_POOLS is None:
+        _MODEL_POOLS = weakref.WeakSet()
+    return _MODEL_POOLS
 
 
 def _thread_is_alive(thread: Any) -> bool:
@@ -51,19 +67,20 @@ def _load_cloud_providers() -> dict:
         try:
             import yaml
 
-            with open(_CLOUD_PROVIDERS_CONFIG_PATH, encoding="utf-8") as fh:
+            config_path = _cloud_providers_config_path()
+            with open(config_path, encoding="utf-8") as fh:
                 data = yaml.safe_load(fh)
             _CLOUD_PROVIDERS_CACHE = data.get("providers", {}) if data else {}
         except FileNotFoundError:
             logger.warning(
                 "Cloud providers config not found at %s — no cloud providers available",
-                _CLOUD_PROVIDERS_CONFIG_PATH,
+                _cloud_providers_config_path(),
             )
             _CLOUD_PROVIDERS_CACHE = {}
         except Exception:
             logger.warning(
                 "Failed to load cloud providers from %s — no cloud providers available",
-                _CLOUD_PROVIDERS_CONFIG_PATH,
+                _cloud_providers_config_path(),
                 exc_info=True,
             )
             _CLOUD_PROVIDERS_CACHE = {}
@@ -138,14 +155,15 @@ def _seed_discovered_models(models: list[dict[str, Any]]) -> None:
         )
 
 
-class ModelPool:
+class ModelPool(ModelPoolDiscoveryMixin):
     """Model pool for discovering, cataloging, and assigning local and cloud models."""
 
     def __init__(
         self,
-        config: dict,
+        config: dict | None = None,
         memory_budget_gb: int | None = None,
     ):
+        config = config or {}
         self.config = config
         # Use config memory_budget if not explicitly provided
         if memory_budget_gb is None:
@@ -177,191 +195,7 @@ class ModelPool:
         self._router_url = _routing.get("router_url", "")
         self._llama_swap_enabled = self._model_router == "llama-swap" and bool(self._router_url)
         with _MODEL_POOLS_LOCK:
-            _MODEL_POOLS.add(self)
-
-    def _discover_via_llama_swap(self) -> list[dict]:
-        """Query llama-swap HTTP API for available models.
-
-        Returns:
-            List of model dicts discovered from llama-swap, or empty list on failure.
-        """
-        try:
-            import requests
-
-            resp = requests.get(f"{self._router_url}/api/v1/models", timeout=5)
-            resp.raise_for_status()
-            data = resp.json()
-            models = []
-            for entry in data.get("data", data.get("models", [])):
-                model_id = entry.get("id") or entry.get("name", "unknown")
-                models.append({
-                    "id": model_id,
-                    "name": model_id,
-                    "endpoint": self._router_url,
-                    "capabilities": ["coding", "reasoning", "general"],
-                    "context_len": entry.get("context_length", 8192),
-                    "memory_gb": entry.get("memory_gb", 0),
-                    "latency_hint": _estimate_latency_hint(model_id, entry.get("memory_gb", 0)),
-                    "version": "",
-                })
-            logger.info("llama-swap discovered %d models from %s", len(models), self._router_url)
-            return models
-        except Exception as exc:
-            logger.warning("llama-swap discovery failed at %s: %s", self._router_url, exc)
-            return []
-
-    def discover_models(self) -> None:
-        """Discover local GGUF models via filesystem scan with retry logic.
-
-        When llama-swap is configured as the model router, delegates discovery
-        to the llama-swap HTTP API instead of scanning the filesystem.
-
-        Falls back to last-known-good results (then static config) if discovery fails.
-        Serialized by ``_discovery_lock`` so concurrent callers do not race on
-        shared state (``self.models``, ``self._discovery_failed``, etc.).
-        """
-        with self._discovery_lock:
-            # llama-swap delegation: skip filesystem scan entirely
-            if self._llama_swap_enabled:
-                swap_models = self._discover_via_llama_swap()
-                if swap_models:
-                    self.models = swap_models
-                    self._last_known_good = list(swap_models)
-                    self._discovery_failed = False
-                    self._fallback_active = False
-                    return
-                logger.warning("llama-swap returned no models — falling back to local discovery")
-
-            # Preserve last known good before resetting
-            _previous_models = list(self.models) if self.models else list(self._last_known_good)
-
-            # Reset state on each discovery attempt
-            self._discovery_failed = False
-            self._fallback_active = False
-            self._discovery_retry_count = 0
-            # Note: do NOT set self.models = [] here — concurrent readers would see
-            # an empty list during discovery.  Build in _new_models, then swap atomically.
-            _new_models: list[dict] = []
-
-            # Load static models first (always available)
-            static_models = self.config.get("models", [])
-
-            # Attempt local filesystem discovery with retry logic (wall-clock capped)
-            _discovery_start = time.monotonic()
-            for attempt in range(self._max_discovery_retries):
-                self._discovery_retry_count = attempt + 1
-                try:
-                    from vetinari.adapters.base import ProviderConfig, ProviderType
-                    from vetinari.adapters.llama_cpp_adapter import LlamaCppProviderAdapter
-
-                    adapter = LlamaCppProviderAdapter(
-                        ProviderConfig(provider_type=ProviderType.LOCAL, name="local", endpoint="")
-                    )
-                    discovered = adapter.discover_models()
-                    logger.debug(
-                        "[Model Discovery] Attempt %s/%s: found %s local GGUF files",
-                        self._discovery_retry_count,
-                        self._max_discovery_retries,
-                        len(discovered),
-                    )
-
-                    # Process discovered models
-                    discovered_count = 0
-                    for m in discovered:
-                        mem = float(m.memory_gb) if m.memory_gb else 0.0
-
-                        # Skip models that exceed memory budget
-                        if mem > self.memory_budget_gb:
-                            logger.info(
-                                "[Model Discovery] Skipping %s - exceeds memory budget (%sGB > %sGB)",
-                                m.id,
-                                mem,
-                                self.memory_budget_gb,
-                            )
-                            continue
-
-                        model = {
-                            "id": m.id,
-                            "name": m.name,
-                            "endpoint": m.endpoint,
-                            "capabilities": m.capabilities,
-                            "context_len": m.context_len,
-                            "memory_gb": mem
-                            if mem > 0
-                            else max(2.0, self.memory_budget_gb * 0.25),  # Default: 25% of budget, min 2GB
-                            "latency_hint": _estimate_latency_hint(m.id, mem),
-                            "version": "",
-                        }
-                        _new_models.append(model)
-                        discovered_count += 1
-
-                    logger.info("[Model Discovery] SUCCESS: Discovered %s local models", discovered_count)
-                    self._discovery_failed = False
-                    self._fallback_active = False
-                    self._last_known_good = list(_new_models)  # Save for next failure
-
-                    # Seed the Thompson sampler with informed priors for each newly
-                    # discovered model so the selector has a head start rather than
-                    # beginning with an uninformative Beta(1,1) prior.
-                    _seed_discovered_models(_new_models)
-
-                    break  # Success, exit retry loop
-
-                except Exception as e:
-                    error_msg = f"Model discovery failed (attempt {self._discovery_retry_count}/{self._max_discovery_retries}): {e!s}"
-                    logger.warning("[Model Discovery] %s", error_msg)
-                    self._last_discovery_error = error_msg
-                    self._discovery_failed = True
-
-                    # Calculate backoff delay (capped by wall-clock budget)
-                    _elapsed = time.monotonic() - _discovery_start
-                    if _elapsed >= self._max_discovery_wall_time:
-                        logger.warning(
-                            "Model discovery wall-clock limit (%.0fs) reached — stopping retries",
-                            self._max_discovery_wall_time,
-                        )
-                        break
-                    if attempt < self._max_discovery_retries - 1:
-                        delay = self._discovery_retry_delay_base * (2**attempt)
-                        delay = min(delay, 5.0)  # Cap individual delay at 5s
-                        # Don't exceed total wall-clock budget
-                        _remaining = self._max_discovery_wall_time - _elapsed
-                        delay = min(delay, max(0, _remaining - 0.5))
-                        if delay > 0:
-                            logger.info("[Model Discovery] Retrying in %.1fs...", delay)
-                            time.sleep(delay)
-
-            # Fallback order: last-known-good -> static config models.
-            # Trigger on failure OR on successful-but-empty discovery — both are
-            # equally undesirable: don't swap in an empty list when we have prior data.
-            if len(_new_models) == 0:
-                if _previous_models:
-                    logger.warning(
-                        "[Model Discovery] FAILED after %s attempts. Using last-known-good (%s models).",
-                        self._discovery_retry_count,
-                        len(_previous_models),
-                    )
-                    _new_models = list(_previous_models)
-                    self._fallback_active = True
-                else:
-                    logger.warning(
-                        "[Model Discovery] FAILED after %s attempts. Falling back to static config models.",
-                        self._discovery_retry_count,
-                    )
-                    self._fallback_active = True
-
-            # Always merge in static config models (deduped by canonical id)
-            _merged = list(_new_models)
-            for m in static_models:
-                if not any(existing.get("id") == m.get("id") for existing in _merged):
-                    _merged.append(m)
-            self.models = _merged  # Final atomic swap with static models merged in
-
-            # Log final state
-            if self._fallback_active:
-                logger.info("[Model Discovery] Using %s models (fallback active)", len(self.models))
-            else:
-                logger.info("[Model Discovery] Available models: %s", len(self.models))
+            _model_pools().add(self)
 
     def get_discovery_health(self) -> dict[str, Any]:
         """Get health information about model discovery."""
@@ -539,7 +373,8 @@ class ModelPool:
             + w_res * (1.0 - resource_load)
         )
 
-    def _get_model_reliability(self, model_id: str, task_type: str = "general") -> float:
+    @staticmethod
+    def _get_model_reliability(model_id: str, task_type: str = "general") -> float:
         """Get per-model reliability scoped to a specific task type.
 
         Looks up per-model performance data from the dynamic router using a
@@ -577,7 +412,8 @@ class ModelPool:
             logger.warning("Failed to get model reliability from SLA tracker for %s", model_id, exc_info=True)
         return 0.8  # conservative prior for unknown models
 
-    def _get_cost_efficiency(self, model_id: str) -> float:
+    @staticmethod
+    def _get_cost_efficiency(model_id: str) -> float:
         """Get cost efficiency score (1.0 = free/cheapest, 0.0 = most expensive)."""
         try:
             from vetinari.analytics.cost import get_cost_tracker
@@ -619,7 +455,7 @@ class ModelPool:
                     "context_len": provider["context_len"],
                     "memory_gb": provider["memory_gb"],
                     "free_tier": provider["free_tier"],
-                    "version": "latest",
+                    "version": "token-gated-2026-06-24",
                 }
                 cloud_models.append(model)
                 logger.info("Cloud model available: %s", provider["name"])
@@ -661,5 +497,5 @@ def stop_all_model_warmups(timeout: float = THREAD_JOIN_TIMEOUT) -> list[dict[st
         One stop summary per live model pool.
     """
     with _MODEL_POOLS_LOCK:
-        pools = list(_MODEL_POOLS)
+        pools = list(_model_pools())
     return [pool.stop_warmups(timeout=timeout) for pool in pools]

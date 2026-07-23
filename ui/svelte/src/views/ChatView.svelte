@@ -13,6 +13,13 @@
   import IntakeFlow from '$components/chat/IntakeFlow.svelte';
   import ProgressSection from '$components/chat/ProgressSection.svelte';
   import TaskTree from '$components/chat/TaskTree.svelte';
+  import HelpPopover from '$lib/components/help/HelpPopover.svelte';
+  import HelpTooltip from '$lib/components/help/HelpTooltip.svelte';
+  import { ChatModeActions } from '$lib/components/workbench/modes/chat';
+  import { ResearchModePanel } from '$lib/components/workbench/modes/research';
+  import { WritingModePanel } from '$lib/components/workbench/modes/writing';
+  import { CreativeWritingModePanel } from '$lib/components/workbench/modes/creative_writing';
+  import ChatWorkspace from '$components/views/chat/ChatWorkspace.svelte';
 
   let messages = $state([]);
   let tasks = $state([]);
@@ -24,6 +31,21 @@
   let dragging = $state(false);
   let fileInputEl = $state(null);
   let loadError = $state(null);
+  let projectLoading = $state(false);
+  // FSA-0050: free-form vs task-routing mode toggle.  Surfaced by
+  // ChatWorkspace's fsa0050-mode-toggle and sent to the backend on every
+  // outgoing message so the server can disable task routing.
+  let chatMode = $state('task');
+  // FSA-0055: grammar / structured-output controls.  GrammarPanel emits a
+  // {grammar, response_format} pair via onGrammarChange and we forward
+  // both fields into the outgoing message options.
+  let grammarConfig = $state({ grammar: null, response_format: null });
+  // FSA-0047: vision image inputs.  modelSupportsVision drives the
+  // VisionInput component's enabled state via ChatWorkspace; the captured
+  // data URLs accumulate in pendingVisionImages and are forwarded into
+  // messageOptions on send.
+  let modelSupportsVision = $state(false);
+  let pendingVisionImages = $state([]);
 
   // Block dangerous executables; accept everything else (matches backend)
   const BLOCKED_EXTENSIONS = new Set([
@@ -35,6 +57,16 @@
   const MAX_FILE_SIZE = 32 * 1024 * 1024; // 32 MiB (matches Claude's per-file limit)
 
   let hasProject = $derived(appState.currentProjectId != null);
+  let activeBranchId = $derived(project?.active_branch_id ?? project?.branch_id ?? 'main');
+  let pinnedContextIds = $derived(
+    messages
+      .slice(-3)
+      .map((msg, idx) => msg.id ?? msg.message_id ?? `${msg.role ?? 'message'}-${msg.timestamp ?? idx}`)
+      .filter(Boolean)
+  );
+  let claimCount = $derived(messages.filter((msg) => /claim|source|citation/i.test(msg.content ?? '')).length);
+  let contradictionCount = $derived(messages.filter((msg) => /contradict|conflict/i.test(msg.content ?? '')).length);
+  let projectWithTasks = $derived(project ? { ...project, tasks } : project);
 
   /** Auto-scroll messages to bottom. */
   function scrollToBottom() {
@@ -133,6 +165,7 @@
 
   async function loadProject(pid) {
     loadError = null;
+    projectLoading = true;
     try {
       const data = await api.getProject(pid);
       if (appState.currentProjectId !== pid) return;
@@ -145,6 +178,10 @@
       messages = [];
       tasks = [];
       loadError = `Failed to load project: ${err.message}`;
+    } finally {
+      if (appState.currentProjectId === pid) {
+        projectLoading = false;
+      }
     }
   }
 
@@ -274,7 +311,16 @@
         });
       }
 
-      await api.sendMessage(projectId, pendingText, uploadedRefs);
+      const messageOptions = {
+        mode: chatMode,
+        grammar: grammarConfig.grammar,
+        response_format: grammarConfig.response_format,
+        images: pendingVisionImages,
+      };
+      await api.sendMessage(projectId, pendingText, uploadedRefs, messageOptions);
+      // Clear vision attachments after a successful send so they don't
+      // re-attach to the next message.
+      pendingVisionImages = [];
     } catch (err) {
       showToast(`Failed to send: ${err.message}`, 'error');
       // Remove the optimistic message — backend never stored it
@@ -324,7 +370,7 @@
       {#if dragging}
         <div class="drop-overlay">
           <div class="drop-overlay-content">
-            <i class="fas fa-cloud-upload-alt"></i>
+            <i class="fas fa-cloud-upload-alt" aria-hidden="true"></i>
             <p>Drop files here</p>
           </div>
         </div>
@@ -332,12 +378,39 @@
 
       <!-- Messages area -->
       <div class="chat-messages" bind:this={messagesEl} aria-live="polite">
-        <ProgressSection {project} />
+        <ProgressSection project={projectWithTasks} />
+        <div class="workbench-mode-strip" aria-label="Workbench mode shortcuts">
+          <ChatModeActions
+            projectId={appState.currentProjectId}
+            {activeBranchId}
+            {pinnedContextIds}
+          />
+          <ResearchModePanel
+            {claimCount}
+            {contradictionCount}
+            freshnessStatus={claimCount > 0 ? 'tracked' : 'pending'}
+          />
+          <WritingModePanel
+            audience={project?.audience ?? 'general'}
+            draftBranch={activeBranchId}
+            verifiedFacts={claimCount}
+          />
+          <CreativeWritingModePanel
+            characterCount={project?.character_count ?? 0}
+            sceneBeatCount={project?.scene_beat_count ?? 0}
+            voiceScore={project?.voice_conformance_score ?? 0}
+          />
+        </div>
 
         {#if loadError}
           <div class="load-error" role="alert">
-            <i class="fas fa-exclamation-triangle"></i>
+            <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
             {loadError}
+          </div>
+        {:else if projectLoading}
+          <div class="chat-empty" aria-busy="true">
+            <i class="fas fa-spinner fa-spin" aria-hidden="true"></i>
+            <p>Loading project...</p>
           </div>
         {:else}
           {#each messages as msg ((msg.id ?? (msg.timestamp + ':' + msg.role)))}
@@ -346,8 +419,8 @@
 
           {#if messages.length === 0}
             <div class="chat-empty">
-              <i class="fas fa-comments"></i>
-              <p>Waiting for project to start...</p>
+              <i class="fas fa-comments" aria-hidden="true"></i>
+              <p>No messages yet.</p>
             </div>
           {/if}
         {/if}
@@ -357,7 +430,7 @@
       {#if tasks.length > 0}
         <div class="chat-sidebar">
           <h3 class="sidebar-title">
-            <i class="fas fa-tasks"></i>
+            <i class="fas fa-tasks" aria-hidden="true"></i>
             Tasks
           </h3>
           <TaskTree {tasks} />
@@ -375,7 +448,7 @@
                   <img src={att.preview} alt={att.name} class="attachment-thumb" />
                 {:else}
                   <div class="attachment-file-icon">
-                    <i class="fas fa-file-code"></i>
+                    <i class="fas fa-file-code" aria-hidden="true"></i>
                   </div>
                 {/if}
                 <span class="attachment-name" title={att.name}>{att.name}</span>
@@ -384,7 +457,7 @@
                   onclick={() => removeAttachment(att.id)}
                   aria-label="Remove {att.name}"
                 >
-                  <i class="fas fa-times"></i>
+                  <i class="fas fa-times" aria-hidden="true"></i>
                 </button>
               </div>
             {/each}
@@ -407,7 +480,7 @@
             title="Attach files"
             aria-label="Attach files"
           >
-            <i class="fas fa-paperclip"></i>
+            <i class="fas fa-paperclip" aria-hidden="true"></i>
           </button>
           <textarea
             class="textarea chat-textarea"
@@ -426,11 +499,11 @@
               disabled={(!inputText.trim() && attachments.length === 0) || sending}
               aria-label="Send message"
             >
-              <i class="fas" class:fa-paper-plane={!sending} class:fa-spinner={sending} class:fa-spin={sending}></i>
+              <i class="fas" class:fa-paper-plane={!sending} class:fa-spinner={sending} class:fa-spin={sending} aria-hidden="true"></i>
             </button>
             {#if project?.status === 'in_progress'}
               <button class="btn btn-ghost btn-danger-text" onclick={cancelProject} title="Cancel project">
-                <i class="fas fa-stop"></i>
+                <i class="fas fa-stop" aria-hidden="true"></i>
               </button>
             {/if}
           </div>
@@ -532,6 +605,13 @@
     margin-bottom: 12px;
     display: block;
     opacity: 0.5;
+  }
+
+  .workbench-mode-strip {
+    display: grid;
+    grid-template-columns: minmax(240px, 1.4fr) repeat(3, minmax(160px, 1fr));
+    gap: 8px;
+    margin-bottom: 12px;
   }
 
   .btn-danger-text {
@@ -652,5 +732,6 @@
   @media (max-width: 900px) {
     .chat-sidebar { display: none; }
     .chat-layout { grid-template-columns: 1fr; }
+    .workbench-mode-strip { grid-template-columns: 1fr; }
   }
 </style>

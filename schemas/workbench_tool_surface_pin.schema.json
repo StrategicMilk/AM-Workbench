@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_tool_surface_pin.schema.json",
+  "title": "Workbench Tool Surface Pin",
+  "description": "Pinned executable tool-surface trust record for MCP servers, shell commands, browser automation, connectors, skills, automations, and local helpers.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "surface_id",
+    "surface_kind",
+    "command",
+    "host",
+    "transport",
+    "permissions",
+    "owner",
+    "policy_mode",
+    "version",
+    "authority_refs",
+    "provenance_refs",
+    "captured_at_utc",
+    "trust_boundary"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "surface_id": {"type": "string", "minLength": 1},
+    "surface_kind": {
+      "enum": [
+        "mcp_server",
+        "shell_command",
+        "browser_automation",
+        "connector",
+        "skill",
+        "automation",
+        "local_helper"
+      ]
+    },
+    "command": {"type": "string", "minLength": 1},
+    "host": {"type": "string", "minLength": 1},
+    "transport": {
+      "enum": ["stdio", "http", "websocket", "browser", "connector_api", "local_process", "python", "none"]
+    },
+    "permissions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "owner": {"type": "string", "minLength": 1},
+    "policy_mode": {"enum": ["observe", "warn", "strict"]},
+    "version": {"type": "string", "minLength": 1},
+    "authority_refs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "provenance_refs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "captured_at_utc": {"type": "string", "minLength": 1},
+    "trust_boundary": {"type": "string", "minLength": 1},
+    "max_staleness_hours": {"type": "integer", "minimum": 1, "default": 24},
+    "policy_verdict_refs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1},
+      "default": []
+    },
+    "capability_pack_refs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1},
+      "default": []
+    },
+    "adapter_authority_refs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1},
+      "default": []
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": {"type": "string"},
+      "default": {}
+    }
+  }
+}

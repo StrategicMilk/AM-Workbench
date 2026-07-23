@@ -1,0 +1,452 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_agent_route_decision.schema.json",
+  "title": "Workbench Agent Route Decision Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "decision_id",
+    "created_at_utc",
+    "candidate_agents",
+    "candidate_models",
+    "candidate_tools",
+    "rejected_alternatives",
+    "policy_gates",
+    "memory_context",
+    "harness_admission",
+    "cost_estimate",
+    "latency_estimate",
+    "selected_candidate_id",
+    "fallback_reason",
+    "outcome",
+    "blockers"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "decision_id": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "created_at_utc": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 1
+    },
+    "candidate_agents": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/candidate"
+      }
+    },
+    "candidate_models": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/candidate"
+      }
+    },
+    "candidate_tools": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/candidate"
+      }
+    },
+    "rejected_alternatives": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/rejection"
+      }
+    },
+    "policy_gates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/policyGate"
+      },
+      "minItems": 1
+    },
+    "memory_context": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "profile_id",
+        "status",
+        "eligible_count",
+        "total_count",
+        "min_confidence",
+        "max_confidence",
+        "blocked_signals"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "profile_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "status": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "eligible_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "min_confidence": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "max_confidence": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "blocked_signals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        }
+      }
+    },
+    "harness_admission": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "admitted",
+        "blockers",
+        "admitted_tools",
+        "replay_boundary_ref",
+        "cancellation_behavior"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "admitted": {
+          "type": "boolean"
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "admitted_tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "replay_boundary_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "cancellation_behavior": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "cost_estimate": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "amount",
+        "unit",
+        "budget_ref"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "type": "number",
+          "minimum": 0
+        },
+        "unit": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "budget_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "latency_estimate": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "amount",
+        "unit",
+        "percentile"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "type": "number",
+          "minimum": 0
+        },
+        "unit": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "percentile": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "selected_candidate_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "fallback_reason": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "outcome": {
+      "enum": [
+        "selected",
+        "fallback_selected",
+        "denied",
+        "degraded"
+      ]
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "kind",
+        "label",
+        "capability_refs",
+        "capability_evidence",
+        "metadata"
+      ],
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "kind": {
+          "enum": [
+            "agent",
+            "model",
+            "tool"
+          ]
+        },
+        "label": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "capability_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "capability_evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/capabilityEvidence"
+          },
+          "minItems": 1
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "capabilityEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_id",
+        "capability",
+        "source",
+        "confidence",
+        "provenance_ref"
+      ],
+      "properties": {
+        "evidence_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "capability": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "source": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "provenance_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "rejection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "source_gate",
+        "reason",
+        "explanation"
+      ],
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "source_gate": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "explanation": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "policyGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gate_id",
+        "passed",
+        "source",
+        "explanation",
+        "evidence_ref"
+      ],
+      "properties": {
+        "gate_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "source": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "explanation": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "evidence_ref": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "selected",
+              "fallback_selected"
+            ]
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "properties": {
+          "selected_candidate_id": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "blockers": {
+            "maxItems": 0
+          },
+          "memory_context": {
+            "type": "object"
+          },
+          "harness_admission": {
+            "type": "object"
+          },
+          "cost_estimate": {
+            "type": "object"
+          },
+          "latency_estimate": {
+            "type": "object"
+          }
+        },
+        "anyOf": [
+          {
+            "properties": {
+              "candidate_agents": {
+                "minItems": 1
+              }
+            }
+          },
+          {
+            "properties": {
+              "candidate_models": {
+                "minItems": 1
+              }
+            }
+          },
+          {
+            "properties": {
+              "candidate_tools": {
+                "minItems": 1
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "denied"
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "properties": {
+          "selected_candidate_id": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "blockers"
+        ]
+      }
+    }
+  ]
+}

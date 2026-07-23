@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_loop_cost_watcher.schema.json",
+  "title": "Workbench Loop Cost State Watcher Decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "decision_id",
+    "run_id",
+    "actor_id",
+    "recommended_action",
+    "reason_codes",
+    "detected_patterns",
+    "evidence_summary",
+    "decided_at_utc",
+    "summary",
+    "degraded"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "decision_id": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "run_id": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "actor_id": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "recommended_action": {
+      "enum": ["observe", "pause", "downgrade", "ask_user", "strict_block"]
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "allowed",
+          "missing_evidence",
+          "repeated_tool_loop",
+          "failed_tool_call_loop",
+          "cost_warning_drift",
+          "cost_approval_required",
+          "cost_strict_block",
+          "unreadable_cost_counter",
+          "stale_approval_state",
+          "stale_state_predicate",
+          "missing_predicate_timestamp",
+          "policy_state_mismatch",
+          "low_value_self_retry_collapse",
+          "policy_strict_block",
+          "unknown_policy_state"
+        ]
+      },
+      "minItems": 1
+    },
+    "detected_patterns": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "repeated_tool_loop",
+          "failed_tool_call_loop",
+          "cost_warning_drift",
+          "stale_approval_state",
+          "stale_state_predicate",
+          "policy_state_mismatch",
+          "low_value_self_retry_collapse",
+          "unreadable_cost_counter",
+          "unknown_policy_state",
+          "missing_evidence"
+        ]
+      }
+    },
+    "evidence_summary": {
+      "$ref": "#/$defs/evidenceSummary"
+    },
+    "decided_at_utc": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 1
+    },
+    "summary": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "degraded": {
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "refArray": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "nonEmptyRefArray": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      },
+      "minItems": 1
+    },
+    "evidenceSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trace_event_refs",
+        "policy_verdict_refs",
+        "resource_counter_refs",
+        "retry_signature_refs",
+        "predicate_refs",
+        "evidence_refs"
+      ],
+      "properties": {
+        "trace_event_refs": {
+          "$ref": "#/$defs/refArray"
+        },
+        "policy_verdict_refs": {
+          "$ref": "#/$defs/refArray"
+        },
+        "resource_counter_refs": {
+          "$ref": "#/$defs/refArray"
+        },
+        "retry_signature_refs": {
+          "$ref": "#/$defs/refArray"
+        },
+        "predicate_refs": {
+          "$ref": "#/$defs/refArray"
+        },
+        "evidence_refs": {
+          "$ref": "#/$defs/nonEmptyRefArray"
+        }
+      }
+    }
+  }
+}

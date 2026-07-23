@@ -1,7 +1,7 @@
 """Model recommendation engine for native and GGUF model selection.
 
-This is step 2 of the setup pipeline: Hardware Detection →
-**Model Recommendation** → Init Wizard → Configuration.
+This is step 2 of the setup pipeline: Hardware Detection ->
+**Model Recommendation** -> Init Wizard -> Configuration.
 
 Maps detected hardware capabilities to backend-aware model choices,
 considering VRAM tiers, quantization levels, and use-case fitness.
@@ -16,15 +16,25 @@ from typing import Any
 from vetinari.knowledge import get_quant_recommendation
 from vetinari.setup.model_recommender_catalog import (
     _CPU_OFFLOAD_MODELS,
-    _VLLM_MODEL_TIERS,
+    _MODALITY_TIERS,
     _VRAM_TIERS,
+    catalog_is_stale,
+    catalog_refresh_due_on,
 )
-from vetinari.setup.model_recommender_types import SetupModelRecommendation
+from vetinari.setup.model_recommender_portfolio import (
+    _PORTFOLIO_MODEL_DEFAULTS as _PORTFOLIO_MODEL_DEFAULTS,
+)
+from vetinari.setup.model_recommender_types import Modality, SetupModelRecommendation
 from vetinari.system.hardware_detect import GpuVendor, HardwareProfile
 
 logger = logging.getLogger(__name__)
 
-_NATIVE_BACKENDS = ("nim", "vllm")
+
+# Native serving backends that can use GPU-oriented model formats in the
+# setup recommender. vLLM remains a runtime/server adapter elsewhere, but it is
+# not a default model recommendation backend because arbitrary native snapshot
+# rows do not prove deployable vLLM compatibility.
+_NATIVE_BACKENDS = ("amw_engine", "nim")
 _LLAMA_CPP_ALIASES = {"llama_cpp", "llama-cpp", "llama", "local"}
 
 
@@ -48,8 +58,8 @@ def _default_backend_order(hardware: HardwareProfile) -> list[str]:
     if not hardware.has_gpu:
         return ["llama_cpp"]
     if hardware.gpu_vendor == GpuVendor.NVIDIA and hardware.cuda_available:
-        return ["nim", "vllm", "llama_cpp"]
-    return ["vllm", "llama_cpp"]
+        return ["amw_engine", "nim", "llama_cpp"]
+    return ["llama_cpp"]
 
 
 def _resolve_recommendation_backends(
@@ -60,7 +70,7 @@ def _resolve_recommendation_backends(
     resolved: list[str] = []
     for backend in raw_backends:
         normalized = _normalize_recommendation_backend(backend)
-        if normalized in {"nim", "vllm", "llama_cpp"} and normalized not in resolved:
+        if normalized in {"nim", "amw_engine", "llama_cpp"} and normalized not in resolved:
             resolved.append(normalized)
     return resolved or ["llama_cpp"]
 
@@ -70,6 +80,8 @@ def _backend_label(backend: str) -> str:
         return "NIM"
     if backend == "vllm":
         return "vLLM"
+    if backend == "amw_engine":
+        return "AM Engine"
     return "llama.cpp"
 
 
@@ -80,13 +92,31 @@ def _native_model_for_backend(
     primary_backend: str | None = None,
 ) -> SetupModelRecommendation:
     label = _backend_label(backend)
-    reason = model.reason.replace("vLLM", label).replace("vllm", backend)
+    reason = f"{model.reason} Native serving via {label}."
+    native_format = model.model_format if model.model_format != "gguf" else "safetensors"
+    native_filename = model.filename if model.model_format != "gguf" else ""
     return replace(
         model,
+        filename=native_filename,
         backend=backend,
+        model_format=native_format,
         reason=reason,
         is_primary=model.is_primary and (primary_backend is None or backend == primary_backend),
     )
+
+
+def _default_promotion_allowed(model: SetupModelRecommendation) -> bool:
+    notes = model.co_residency_notes.lower()
+    blocked_tokens = (
+        "license=blocked:",
+        "license=non-commercial",
+        "license=noncommercial",
+        "license=custom",
+        "license=gated",
+        "license=other",
+        "license=review-required",
+    )
+    return not any(token in notes for token in blocked_tokens)
 
 
 class ModelRecommender:
@@ -95,7 +125,7 @@ class ModelRecommender:
     Uses a VRAM-to-model matrix to select models that will fit in available
     GPU memory with headroom for the OS and inference overhead.
 
-    The factory pipeline runs multiple agents in parallel — so users benefit
+    The factory pipeline runs multiple agents in parallel - so users benefit
     from a *portfolio* of models: small efficient ones for grunt work
     (classification, routing, extraction) and larger ones for complex reasoning.
     """
@@ -116,6 +146,11 @@ class ModelRecommender:
         Returns:
             List of ModelRecommendation objects, primary first.
         """
+        if catalog_is_stale():
+            logger.warning(
+                "Static model recommendation catalog is past its refresh date (%s); refresh sources before release",
+                catalog_refresh_due_on().isoformat(),
+            )
         vram = hardware.effective_vram_gb
 
         # Apple Silicon with no discrete GPU uses unified memory estimate
@@ -178,6 +213,19 @@ class ModelRecommender:
             List of ModelRecommendation objects, primary first, with
             task-aware reason annotations where applicable.
         """
+        implied = {
+            "vision": Modality.VISION,
+            "image_generation": Modality.IMAGE_GENERATION,
+            "video_generation": Modality.VIDEO_GENERATION,
+            "embedding": Modality.EMBEDDING,
+            "reranker": Modality.RERANKER,
+            "audio_asr": Modality.AUDIO_ASR,
+            "audio_tts": Modality.AUDIO_TTS,
+            "audio_understanding": Modality.AUDIO_UNDERSTANDING,
+        }.get(task_type)
+        if implied is not None:
+            return self.recommend_for_modality(implied, hardware)
+
         base = self.recommend_models(hardware)
         rec = get_quant_recommendation(task_type, hardware.effective_vram_gb or None)
 
@@ -211,10 +259,11 @@ class ModelRecommender:
         )
         return enriched
 
+    @staticmethod
     def recommend_portfolio(
-        self,
         hardware: HardwareProfile,
         available_backends: list[str] | None = None,
+        modalities: set[Modality] | None = None,
     ) -> dict[str, list[SetupModelRecommendation]]:
         """Recommend a complete model portfolio organized by use case.
 
@@ -222,19 +271,21 @@ class ModelRecommender:
         benefit from having models at different size tiers:
 
         - **grunt**: Small, fast models (1-3B) for classification, routing,
-          extraction — the bulk of pipeline operations.
-        - **worker**: Medium models (7-14B) for coding, review, documentation —
+          extraction - the bulk of pipeline operations.
+        - **worker**: Medium models (7-14B) for coding, review, documentation -
           the main workhorse models.
         - **thinker**: Large models (32-72B+) for deep reasoning, planning,
-          architecture — complex tasks that benefit from scale.
+          architecture - complex tasks that benefit from scale.
 
-        When NIM/vLLM is available, native SafeTensors/AWQ/GPTQ formats are
-        preferred for models that fit in VRAM. GGUF remains available for
+        When AM Engine or NIM is available, native formats are preferred for
+        models that fit in VRAM. GGUF remains available for
         llama.cpp sidecars, fallback, and CPU-offloaded large models.
 
         Args:
             hardware: Detected hardware profile.
             available_backends: List of available backends.
+            modalities: Optional set of modalities to filter recommendations by;
+                ``None`` means no modality filter (all modalities considered).
 
         Returns:
             Dict mapping use-case role to recommended models.
@@ -242,7 +293,7 @@ class ModelRecommender:
         backends = _resolve_recommendation_backends(hardware, available_backends)
         vram = _estimate_model_budget_gb(hardware)
         native_backend = next((backend for backend in backends if backend in _NATIVE_BACKENDS), None)
-        has_native_backend = native_backend is not None
+        has_native_backend = False
 
         portfolio: dict[str, list[SetupModelRecommendation]] = {
             "grunt": [],
@@ -251,123 +302,19 @@ class ModelRecommender:
         }
 
         # Grunt models: small, low-overhead llama.cpp sidecars are still useful.
-        portfolio["grunt"] = [
-            SetupModelRecommendation(
-                name="Qwen 2.5 1.5B Q4_K_M",
-                repo_id="Qwen/Qwen2.5-1.5B-Instruct-GGUF",
-                filename="qwen2.5-1.5b-instruct-q4_k_m.gguf",
-                size_gb=1.1,
-                quantization="Q4_K_M",
-                parameter_count="1.5B",
-                reason="Fast classification, routing, and extraction on a low-overhead llama.cpp sidecar",
-                is_primary=True,
-                best_for=("classification", "extraction", "general"),
-            ),
-        ]
+        portfolio["grunt"] = [_PORTFOLIO_MODEL_DEFAULTS["grunt_qwen_1_5b_gguf"]]
 
         # Worker models: main coding/review workhorses
         worker_recs: list[SetupModelRecommendation] = []
-        if native_backend and vram >= 8:
-            worker_recs.append(
-                SetupModelRecommendation(
-                    name="Qwen 2.5 Coder 7B AWQ",
-                    repo_id="Qwen/Qwen2.5-Coder-7B-Instruct-AWQ",
-                    filename="",
-                    size_gb=4.5,
-                    quantization="AWQ",
-                    parameter_count="7B",
-                    reason=f"Coding workhorse - AWQ on {_backend_label(native_backend)} for fast parallel throughput",
-                    is_primary=True,
-                    model_format="awq",
-                    backend=native_backend,
-                    gpu_only=True,
-                    best_for=("coding", "review", "documentation"),
-                ),
-            )
         if "llama_cpp" in backends and vram >= 4:
             worker_recs.append(
-                SetupModelRecommendation(
-                    name="Qwen 2.5 Coder 7B Q4_K_M",
-                    repo_id="Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
-                    filename="qwen2.5-coder-7b-instruct-q4_k_m.gguf",
-                    size_gb=4.4,
-                    quantization="Q4_K_M",
-                    parameter_count="7B",
-                    reason="Coding workhorse fallback - GGUF for llama.cpp",
-                    is_primary=not has_native_backend,
-                    best_for=("coding", "review", "documentation"),
-                ),
+                replace(_PORTFOLIO_MODEL_DEFAULTS["worker_qwen_coder_7b_gguf"], is_primary=not has_native_backend),
             )
         portfolio["worker"] = worker_recs
 
-        # Thinker models: reasoning and planning
-        thinker_recs: list[SetupModelRecommendation] = []
-        if native_backend and vram >= 24:
-            thinker_recs.append(
-                SetupModelRecommendation(
-                    name="Qwen 2.5 32B AWQ",
-                    repo_id="Qwen/Qwen2.5-32B-Instruct-AWQ",
-                    filename="",
-                    size_gb=18.0,
-                    quantization="AWQ",
-                    parameter_count="32B",
-                    reason=f"Deep reasoning - AWQ on {_backend_label(native_backend)} for high-throughput planning",
-                    is_primary=True,
-                    model_format="awq",
-                    backend=native_backend,
-                    gpu_only=True,
-                    best_for=("reasoning", "planning", "research", "creative"),
-                ),
-            )
-        if native_backend and 16 <= vram < 24:
-            thinker_recs.append(
-                SetupModelRecommendation(
-                    name="Qwen 2.5 14B AWQ",
-                    repo_id="Qwen/Qwen2.5-14B-Instruct-AWQ",
-                    filename="",
-                    size_gb=9.0,
-                    quantization="AWQ",
-                    parameter_count="14B",
-                    reason=f"Reasoning and planning - AWQ on {_backend_label(native_backend)} for parallel throughput",
-                    is_primary=True,
-                    model_format="awq",
-                    backend=native_backend,
-                    gpu_only=True,
-                    best_for=("reasoning", "planning", "research"),
-                ),
-            )
-        if "llama_cpp" in backends and vram >= 8:
-            thinker_recs.append(
-                SetupModelRecommendation(
-                    name="Qwen 2.5 14B Q4_K_M",
-                    repo_id="Qwen/Qwen2.5-14B-Instruct-GGUF",
-                    filename="qwen2.5-14b-instruct-q4_k_m.gguf",
-                    size_gb=8.7,
-                    quantization="Q4_K_M",
-                    parameter_count="14B",
-                    reason="Reasoning and planning fallback - GGUF for llama.cpp",
-                    is_primary=not has_native_backend,
-                    best_for=("reasoning", "planning", "research"),
-                ),
-            )
-        # CPU offload options for very capable reasoning
-        if "llama_cpp" in backends and hardware.ram_gb >= 32 and vram >= 8:
-            thinker_recs.append(
-                SetupModelRecommendation(
-                    name="Qwen 2.5 72B Q4_K_M (CPU offload)",
-                    repo_id="bartowski/Qwen2.5-72B-Instruct-GGUF",
-                    filename="Qwen2.5-72B-Instruct-Q4_K_M.gguf",
-                    size_gb=42.0,
-                    quantization="Q4_K_M",
-                    parameter_count="72B",
-                    reason="Top-tier reasoning — uses VRAM+RAM via CPU offload, slower but best quality",
-                    model_format="gguf",
-                    backend="llama_cpp",
-                    gpu_only=False,
-                    best_for=("reasoning", "planning", "research", "security", "creative"),
-                ),
-            )
-        portfolio["thinker"] = thinker_recs
+        portfolio["thinker"] = _portfolio_thinker_recommendations(
+            hardware, backends, native_backend, has_native_backend, vram
+        )
 
         logger.info(
             "Portfolio recommendation: grunt=%d, worker=%d, thinker=%d (vram=%.1fGB, backends=%s)",
@@ -379,6 +326,35 @@ class ModelRecommender:
         )
         return portfolio
 
+    @staticmethod
+    def recommend_for_modality(
+        modality: Modality | str,
+        hardware: HardwareProfile,
+        max_results: int = 5,
+    ) -> list[SetupModelRecommendation]:
+        """Return ordered modality recommendations that fit the hardware budget.
+
+        Args:
+            modality: Modality enum or string key.
+            hardware: Detected hardware profile.
+            max_results: Maximum recommendations to return.
+
+        Returns:
+            Ordered recommendations that fit the detected hardware budget.
+        """
+        modality_key = modality if isinstance(modality, Modality) else Modality(str(modality))
+        vram = _estimate_model_budget_gb(hardware)
+        results: list[SetupModelRecommendation] = []
+        for entry in _MODALITY_TIERS.get(modality_key, []):
+            if not _default_promotion_allowed(entry):
+                continue
+            loaded = entry.vram_gb_loaded if entry.vram_gb_loaded is not None else entry.size_gb
+            if entry.cloud_only or entry.swap_in_for or loaded <= vram:
+                results.append(entry)
+            if len(results) >= max_results:
+                break
+        return results
+
     def recommend_models_multi_format(
         self,
         hardware: HardwareProfile,
@@ -386,20 +362,18 @@ class ModelRecommender:
     ) -> list[SetupModelRecommendation]:
         """Recommend models across all formats based on available backends.
 
-        When vLLM/NIM is available, AWQ/GPTQ models that fit in VRAM are
-        promoted as the primary recommendation — they provide significantly
-        better throughput than GGUF on dedicated GPU inference.  GGUF models
-        remain available as alternatives and for CPU-offloaded large models.
+        When AM Engine or NIM is available, native model entries that fit in
+        VRAM are promoted ahead of GGUF alternatives.
 
         Ordering priority:
-        1. vLLM AWQ/GPTQ models that fit in VRAM (best throughput)
+        1. Native models that fit in VRAM
         2. GGUF models for the VRAM tier (versatile, support CPU offload)
         3. CPU-offload GGUF models (larger than VRAM, slower but more capable)
 
         Args:
             hardware: Detected hardware profile.
             available_backends: List of available backends (e.g. ``["llama_cpp",
-                "vllm"]``). Defaults to hardware-capable native backends first
+                "amw_engine"]``). Defaults to hardware-capable native backends first
                 when not specified.
 
         Returns:
@@ -411,7 +385,7 @@ class ModelRecommender:
         has_gpu_backend = any(backend in backends for backend in _NATIVE_BACKENDS)
 
         if not has_gpu_backend:
-            # No vLLM/NIM — just add CPU-offload options if enough RAM
+            # No native GPU backend - just add CPU-offload options if enough RAM.
             result = list(gguf_recs)
             if "llama_cpp" in backends and hardware.ram_gb >= 32:
                 vram = _estimate_model_budget_gb(hardware)
@@ -424,12 +398,13 @@ class ModelRecommender:
         gpu_recs: list[SetupModelRecommendation] = []
         first_native_backend = next((backend for backend in backends if backend in _NATIVE_BACKENDS), None)
         for backend in (backend for backend in backends if backend in _NATIVE_BACKENDS):
-            for entry in _VLLM_MODEL_TIERS:
+            # Legacy native tier catalog was deleted; reuse the maintained VRAM tiers.
+            for entry in _VRAM_TIERS:
                 if entry["min_vram_gb"] <= vram < entry["max_vram_gb"]:
                     gpu_recs.extend(
                         _native_model_for_backend(m, backend, primary_backend=first_native_backend)
                         for m in entry["models"]
-                        if m.size_gb <= vram
+                        if m.size_gb <= vram and _default_promotion_allowed(m)
                     )
                     break
 
@@ -448,7 +423,7 @@ class ModelRecommender:
                     result.append(model)
 
         logger.info(
-            "Multi-format recommendations: %d total (%d vLLM/NIM, %d GGUF, backends=%s)",
+            "Multi-format recommendations: %d total (%d native, %d GGUF, backends=%s)",
             len(result),
             len(gpu_recs),
             len(gguf_recs),
@@ -456,8 +431,8 @@ class ModelRecommender:
         )
         return result
 
+    @staticmethod
     def suggest_kv_cache_quant(
-        self,
         hardware: HardwareProfile,
         context_length: int = 8192,
     ) -> str:
@@ -465,7 +440,7 @@ class ModelRecommender:
 
         Uses a simple heuristic: estimate how much VRAM the KV cache would consume
         at f16 precision, then downgrade to q8_0 or q4_0 when the budget is tight.
-        This is a lightweight recommendation for the setup wizard — production inference
+        This is a lightweight recommendation for the setup wizard - production inference
         uses ``VRAMManager.recommend_kv_quant_for_context`` which reads live VRAM state.
 
         Args:
@@ -493,6 +468,42 @@ class ModelRecommender:
         if kv_f16_gb > available_for_kv * 0.50:
             return "q8_0"
         return "f16"
+
+
+def _portfolio_thinker_recommendations(
+    hardware: HardwareProfile,
+    backends: list[str],
+    native_backend: str | None,
+    has_native_backend: bool,
+    vram: float,
+) -> list[SetupModelRecommendation]:
+    """Return reasoning/planning portfolio recommendations."""
+    thinker_recs: list[SetupModelRecommendation] = []
+    if "llama_cpp" in backends and vram >= 8:
+        thinker_recs.append(
+            replace(_PORTFOLIO_MODEL_DEFAULTS["thinker_qwen_14b_gguf"], is_primary=not has_native_backend)
+        )
+    if "llama_cpp" in backends and hardware.ram_gb >= 32 and vram >= 8:
+        thinker_recs.append(_portfolio_cpu_offload_thinker())
+    return thinker_recs
+
+
+def _portfolio_cpu_offload_thinker() -> SetupModelRecommendation:
+    """Return the CPU-offloaded large reasoning recommendation."""
+    base = _PORTFOLIO_MODEL_DEFAULTS["thinker_qwen_72b_gguf"]
+    return SetupModelRecommendation(
+        name=base.name,
+        repo_id=base.repo_id,
+        filename=base.filename,
+        size_gb=42.0,
+        quantization="Q4_K_M",
+        parameter_count="72B",
+        reason="Top-tier reasoning - uses VRAM+RAM via CPU offload, slower but best quality",
+        model_format="gguf",
+        backend="llama_cpp",
+        gpu_only=False,
+        best_for=("reasoning", "planning", "research", "security", "creative"),
+    )
 
 
 ModelRecommendation = SetupModelRecommendation

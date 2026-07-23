@@ -8,22 +8,26 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
 
 from vetinari.constants import CACHE_MAX_ENTRIES_PROMPT, CACHE_TTL_ONE_HOUR
+from vetinari.security.fail_closed import UntrustedInputError, sanitize_untrusted_text
 
 logger = logging.getLogger(__name__)
+
 
 _DEFAULT_TTL_SECONDS: int = CACHE_TTL_ONE_HOUR
 
 _instance: PromptCache | None = None
 _instance_lock: threading.Lock = threading.Lock()
+_CACHE_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class CacheResult:
     """Result returned from a prompt cache lookup.
 
@@ -57,8 +61,9 @@ class PromptCache:
         self._ttl = ttl
         self._max_entries = max_entries
         self._lock = threading.Lock()
-        # OrderedDict used as the LRU store: key -> (prompt, expiry_ts)
-        self._store: OrderedDict[str, tuple[str, float]] = OrderedDict()
+        # OrderedDict used as the LRU store: key -> (prompt_digest, token_estimate, expiry_ts).
+        # Raw prompt text is intentionally not retained.
+        self._store: OrderedDict[str, tuple[str, int, float]] = OrderedDict()
         self._hits: int = 0
         self._misses: int = 0
 
@@ -80,25 +85,31 @@ class PromptCache:
         Returns:
             A :class:`CacheResult` describing whether the lookup was a hit and
             the estimated token savings.
+
+        Raises:
+            UntrustedInputError: If the prompt hash or prompt is unsafe.
         """
+        prompt_hash = _validate_cache_key(prompt_hash)
+        if not isinstance(prompt, str):
+            raise UntrustedInputError("prompt must be a string")
+
         with self._lock:
             self._evict_expired()
             now = time.monotonic()
 
             if prompt_hash in self._store:
-                cached_prompt, expiry = self._store[prompt_hash]
+                _prompt_digest, token_estimate, expiry = self._store[prompt_hash]
                 if now < expiry:
                     # Move to end (most recently used)
                     self._store.move_to_end(prompt_hash)
                     self._hits += 1
-                    tokens_saved = _estimate_tokens(cached_prompt)
-                    return CacheResult(hit=True, prompt=cached_prompt, savings_tokens=tokens_saved)
+                    return CacheResult(hit=True, prompt=prompt, savings_tokens=token_estimate)
                 # Expired — fall through to miss handling
                 del self._store[prompt_hash]
 
             # Miss: store the prompt
             self._misses += 1
-            self._store[prompt_hash] = (prompt, now + self._ttl)
+            self._store[prompt_hash] = (hash_prompt(prompt), _estimate_tokens(prompt), now + self._ttl)
             self._store.move_to_end(prompt_hash)
             self._evict_lru()
             return CacheResult(hit=False, prompt=prompt, savings_tokens=0)
@@ -143,7 +154,7 @@ class PromptCache:
     def _evict_expired(self) -> None:
         """Remove all expired entries (must be called under lock)."""
         now = time.monotonic()
-        expired_keys = [k for k, (_, exp) in self._store.items() if now >= exp]
+        expired_keys = [k for k, (_, _, exp) in self._store.items() if now >= exp]
         for k in expired_keys:
             del self._store[k]
 
@@ -166,7 +177,12 @@ def hash_prompt(prompt: str) -> str:
 
     Returns:
         A 64-character hex string suitable as a cache key.
+
+    Raises:
+        UntrustedInputError: If ``prompt`` is not a string.
     """
+    if not isinstance(prompt, str):
+        raise UntrustedInputError("prompt must be a string")
     return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 
 
@@ -180,6 +196,13 @@ def _estimate_tokens(text: str) -> int:
         Estimated token count.
     """
     return max(1, len(text) // 4)
+
+
+def _validate_cache_key(value: object) -> str:
+    key = sanitize_untrusted_text(value, max_length=128)
+    if not _CACHE_KEY_RE.fullmatch(key):
+        raise UntrustedInputError("prompt cache key contains unsupported characters")
+    return key
 
 
 # ---------------------------------------------------------------------------

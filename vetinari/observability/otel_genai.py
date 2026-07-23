@@ -1,7 +1,7 @@
 """OpenTelemetry GenAI Semantic Conventions tracer (P10.1).
 
 Implements the OpenTelemetry GenAI semantic conventions for agent spans,
-tool calls, and token accounting.  Works without the OTEL SDK installed —
+tool calls, and token accounting.  Works without the OTEL SDK installed -
 falls back to in-process recording with JSON export.
 
 Standard attribute names follow the GenAI semantic conventions draft spec:
@@ -10,48 +10,98 @@ Standard attribute names follow the GenAI semantic conventions draft spec:
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import threading
 import time
 import uuid
 from collections import deque
-from contextvars import ContextVar
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
-from vetinari.constants import TRUNCATE_OTEL_OUTPUT
+from vetinari.logging_context import (
+    clear_span_id,
+    clear_trace_id,
+    get_correlation_ids,
+    get_trace_id,
+    set_span_id,
+    set_trace_id,
+)
+from vetinari.safety.guardrails import redact_pii
+
+from .otel_genai_backend import (
+    _get_backend,
+    _init_backend_from_env,
+    configure_backend,
+    flush_file_backend,
+    get_active_backend,
+)
+from .otel_genai_correlation import (
+    _clear_recent_span_correlation,
+    _pop_recent_span_correlation,
+    _remember_recent_span_correlation,
+    _span_correlation_attributes,
+)
+from .otel_genai_io import _GenAITraceIOMixin
 
 logger = logging.getLogger(__name__)
+__all__ = [
+    "GenAITracer",
+    "SpanContext",
+    "_clear_recent_span_correlation",
+    "_pop_recent_span_correlation",
+    "_record_span_cost",
+    "configure_backend",
+    "flush_file_backend",
+    "get_active_backend",
+    "get_genai_tracer",
+    "reset_genai_tracer",
+]
 
-# ── Optional OpenTelemetry import ────────────────────────────────────────────
 
-_OTEL_AVAILABLE = False
-_otel_trace = None  # type: ignore[assignment]
-try:
-    from opentelemetry import trace as _otel_trace  # type: ignore[import-untyped]
+# -- Optional OpenTelemetry import --------------------------------------------
 
-    _OTEL_AVAILABLE = True
-    logger.debug("opentelemetry available — GenAI tracer will emit real spans")
-except ImportError:
-    logger.debug("opentelemetry not installed — using in-process GenAI tracer")
+_OTEL_AVAILABLE: bool | None = None
+_otel_trace: Any = None
+
+_backend_initialized = False
+_backend_init_lock = threading.Lock()
+
+
+def _get_otel_trace() -> Any | None:
+    global _OTEL_AVAILABLE, _otel_trace
+    if _OTEL_AVAILABLE is not None:
+        return _otel_trace if _OTEL_AVAILABLE else None
+    try:
+        from importlib import import_module
+
+        _otel_trace = import_module("opentelemetry.trace")
+        _OTEL_AVAILABLE = True
+        logger.debug("opentelemetry available - GenAI tracer will emit real spans")
+    except ImportError:
+        _otel_trace = None
+        _OTEL_AVAILABLE = False
+        logger.debug("opentelemetry not installed - using in-process GenAI tracer")
+    return _otel_trace
+
+
+def _ensure_backend_initialized() -> None:
+    global _backend_initialized
+    if _backend_initialized:
+        return
+    with _backend_init_lock:
+        if _get_backend() != "noop":
+            _backend_initialized = True
+            return
+        if not _backend_initialized:
+            _init_backend_from_env()
+            _backend_initialized = True
+
 
 # OTel tracer name following GenAI semantic conventions
 _OTEL_TRACER_NAME = "vetinari.genai"
 
-# Per-async-task / per-thread current trace ID.  Each ContextVar lookup is
-# isolated to the current asyncio Task or OS thread, preventing trace ID
-# cross-contamination when multiple concurrent callers share the singleton.
-# Writers: start_agent_span (via _set_trace_id), reset (via _set_trace_id).
-# Readers: start_agent_span (trace_id for new root spans).
-# Lifecycle: task-local; auto-expires when the task completes.
-# Lock: ContextVar is inherently thread/task-safe — no extra lock needed.
-_current_trace_id_var: ContextVar[str | None] = ContextVar("genai_trace_id", default=None)
-
-
-# ── GenAI attribute name constants ───────────────────────────────────────────
+# -- GenAI attribute name constants -------------------------------------------
 
 ATTR_AGENT_NAME = "gen_ai.agent.name"
 ATTR_OPERATION = "gen_ai.operation.name"
@@ -59,14 +109,21 @@ ATTR_REQUEST_MODEL = "gen_ai.request.model"
 ATTR_RESPONSE_MODEL = "gen_ai.response.model"
 ATTR_INPUT_TOKENS = "gen_ai.usage.input_tokens"
 ATTR_OUTPUT_TOKENS = "gen_ai.usage.output_tokens"
+ATTR_COST = "gen_ai.usage.cost"
 ATTR_TOOL_NAME = "gen_ai.tool.name"
 ATTR_TOOL_INPUT = "gen_ai.tool.input"
 ATTR_TOOL_OUTPUT = "gen_ai.tool.output"
 ATTR_SPAN_STATUS = "gen_ai.span.status"
 ATTR_SYSTEM = "gen_ai.system"  # Fixed system identifier for this service
 
+# Export redaction hook for GenAI tool payloads.
+# Written by: module import and internal tests/configuration that need a custom export sanitizer.
+# Read by: GenAITracer.export_traces before JSON serialization.
+# Lifecycle: process-wide; callers should assign during setup, before export begins.
+# Lock: export reads this once per call; callable reference assignment is atomic in CPython.
+_export_redact_fn: Callable[[str], str] | None = redact_pii
 
-# ── SpanContext dataclass ────────────────────────────────────────────────────
+# -- SpanContext dataclass ----------------------------------------------------
 
 
 @dataclass
@@ -95,6 +152,9 @@ class SpanContext:
     events: list[dict[str, Any]] = field(default_factory=list)
     parent_span_id: str | None = field(default=None)
     _end_time: float | None = field(default=None, repr=False)
+    _otel_span: Any | None = field(default=None, repr=False)
+    _trace_token: Any | None = field(default=None, repr=False)
+    _span_token: Any | None = field(default=None, repr=False)
 
     def __repr__(self) -> str:
         """Show key identifying fields for debugging."""
@@ -151,13 +211,13 @@ class SpanContext:
         }
 
 
-# ── GenAITracer ──────────────────────────────────────────────────────────────
+# -- GenAITracer --------------------------------------------------------------
 
 
-class GenAITracer:
+class GenAITracer(_GenAITraceIOMixin):
     """Singleton tracer that records GenAI semantic-convention spans.
 
-    Instantiate via :func:`get_genai_tracer` — do not construct directly.
+    Instantiate via :func:`get_genai_tracer` - do not construct directly.
 
     Example::
 
@@ -173,9 +233,9 @@ class GenAITracer:
         self._spans: deque[SpanContext] = deque(maxlen=5000)
         self._active: dict[str, SpanContext] = {}  # span_id -> SpanContext
         self._total_tokens: int = 0
-        # Note: trace ID is now stored per-async-task/thread in
-        # _current_trace_id_var (ContextVar) rather than on the singleton.
-        # This prevents trace ID leakage across concurrent callers.
+        # Note: trace ID is stored per-async-task/thread in logging_context
+        # ContextVars rather than on the singleton. This prevents trace ID
+        # leakage across concurrent callers.
 
     # ------------------------------------------------------------------
     # Public API
@@ -209,14 +269,16 @@ class GenAITracer:
         if model:
             attrs[ATTR_REQUEST_MODEL] = model
 
-        # Allocate a new trace ID for this async task / thread if none exists
-        # yet. Subsequent calls in the same task reuse the same trace ID so
-        # sibling spans are grouped together. Child spans inherit via
-        # start_child_span, which reads parent.trace_id directly.
-        trace_id = _current_trace_id_var.get()
+        # Allocate a new trace ID for this async task / thread if none exists.
+        # logging_context is the single source of truth for trace correlation.
+        trace_id = get_trace_id()
+        trace_token = None
         if trace_id is None:
             trace_id = uuid.uuid4().hex
-            _current_trace_id_var.set(trace_id)
+            trace_token = set_trace_id(trace_id)
+        span_token = set_span_id(span_id)
+
+        attrs.update(_span_correlation_attributes(get_correlation_ids()))
 
         ctx = SpanContext(
             trace_id=trace_id,
@@ -225,14 +287,18 @@ class GenAITracer:
             operation=operation,
             start_time=time.monotonic(),
             attributes=attrs,
+            _trace_token=trace_token,
+            _span_token=span_token,
         )
 
         # Bridge to real OTel spans when SDK is available and backend is not noop.
-        # Guard on _backend != "noop" so we don't create OTel spans when tracing
-        # is disabled — avoids spurious exports to a noop provider.
-        if _OTEL_AVAILABLE and _otel_trace is not None and _backend != "noop":
-            tracer = _otel_trace.get_tracer(_OTEL_TRACER_NAME)
-            # Root agent spans are always root OTel spans — parent propagation
+        # Guard on _get_backend() != "noop" so we don't create OTel spans when tracing
+        # is disabled - avoids spurious exports to a noop provider.
+        _ensure_backend_initialized()
+        otel_trace = _get_otel_trace()
+        if otel_trace is not None and _get_backend() != "noop":
+            tracer = otel_trace.get_tracer(_OTEL_TRACER_NAME)
+            # Root agent spans are always root OTel spans - parent propagation
             # is handled by start_child_span, which sets parent_span_id and
             # calls set_span_in_context explicitly.  The dead block that
             # checked ctx.parent_span_id here was removed: SpanContext is
@@ -243,7 +309,7 @@ class GenAITracer:
                 context=None,
                 attributes={k: str(v) for k, v in attrs.items()},
             )
-            ctx._otel_span = otel_span  # type: ignore[attr-defined]
+            ctx._otel_span = otel_span
 
         with self._lock:
             self._active[span_id] = ctx
@@ -253,7 +319,7 @@ class GenAITracer:
             agent_name,
             operation,
             span_id,
-            _OTEL_AVAILABLE,
+            bool(_OTEL_AVAILABLE),
         )
         return ctx
 
@@ -269,7 +335,7 @@ class GenAITracer:
 
         Args:
             span: The :class:`SpanContext` returned by :meth:`start_agent_span`.
-            status: Completion status — ``"ok"`` or ``"error"``.
+            status: Completion status - ``"ok"`` or ``"error"``.
             tokens_used: Total tokens consumed (added to output token count).
         """
         if not span.is_active:
@@ -286,6 +352,15 @@ class GenAITracer:
             otel_span.set_attribute(ATTR_SPAN_STATUS, status)
             otel_span.end()
 
+        _remember_recent_span_correlation(span)
+
+        if span._span_token is not None:
+            clear_span_id(span._span_token)
+            span._span_token = None
+        if span._trace_token is not None:
+            clear_trace_id(span._trace_token)
+            span._trace_token = None
+
         with self._lock:
             self._active.pop(span.span_id, None)
             self._spans.append(span)
@@ -298,6 +373,27 @@ class GenAITracer:
             tokens_used,
             span.duration_ms,
         )
+
+    def _record_span_cost(self, trace_id: str | None, span_id: str | None, cost_usd: float) -> bool:
+        """Attach cost metadata to an active or completed in-process span."""
+        if not trace_id or not span_id or cost_usd < 0.0:
+            return False
+        with self._lock:
+            span = self._active.get(span_id)
+            if span is None:
+                span = next((candidate for candidate in reversed(self._spans) if candidate.span_id == span_id), None)
+            if span is None or span.trace_id != trace_id:
+                return False
+            existing = span.attributes.get(ATTR_COST, 0.0)
+            try:
+                total_cost = float(existing) + cost_usd
+            except (TypeError, ValueError):
+                total_cost = cost_usd
+            span.attributes[ATTR_COST] = round(total_cost, 12)
+            otel_span = getattr(span, "_otel_span", None)
+            if otel_span is not None:
+                otel_span.set_attribute(ATTR_COST, round(total_cost, 12))
+            return True
 
     def start_child_span(
         self,
@@ -330,6 +426,10 @@ class GenAITracer:
         if model:
             attrs[ATTR_REQUEST_MODEL] = model
 
+        trace_token = set_trace_id(parent.trace_id)
+        span_token = set_span_id(span_id)
+        attrs.update(_span_correlation_attributes(get_correlation_ids()))
+
         ctx = SpanContext(
             trace_id=parent.trace_id,
             span_id=span_id,
@@ -338,21 +438,25 @@ class GenAITracer:
             start_time=time.monotonic(),
             attributes=attrs,
             parent_span_id=parent.span_id,
+            _trace_token=trace_token,
+            _span_token=span_token,
         )
 
         # Bridge to real OTel spans when SDK is available and backend is not noop.
         # Always propagate the parent OTel span as context so the SDK links
         # child spans under their parent trace rather than starting a new root.
-        if _OTEL_AVAILABLE and _otel_trace is not None and _backend != "noop":
-            tracer = _otel_trace.get_tracer(_OTEL_TRACER_NAME)
+        _ensure_backend_initialized()
+        otel_trace = _get_otel_trace()
+        if otel_trace is not None and _get_backend() != "noop":
+            tracer = otel_trace.get_tracer(_OTEL_TRACER_NAME)
             parent_otel = getattr(parent, "_otel_span", None)
-            otel_ctx = _otel_trace.set_span_in_context(parent_otel) if parent_otel is not None else None
+            otel_ctx = otel_trace.set_span_in_context(parent_otel) if parent_otel is not None else None
             otel_span = tracer.start_span(
                 f"gen_ai.{operation}",
                 context=otel_ctx,
                 attributes={k: str(v) for k, v in attrs.items()},
             )
-            ctx._otel_span = otel_span  # type: ignore[attr-defined]
+            ctx._otel_span = otel_span
 
         with self._lock:
             self._active[span_id] = ctx
@@ -366,92 +470,11 @@ class GenAITracer:
         )
         return ctx
 
-    def record_tool_call(
-        self,
-        span: SpanContext,
-        tool_name: str,
-        input_data: str,
-        output_data: str,
-    ) -> None:
-        """Append a tool-call event to an open span.
 
-        Args:
-            span: The parent :class:`SpanContext`.
-            tool_name: Name of the tool (e.g. ``"code_search"``).
-            input_data: Serialised input passed to the tool.
-            output_data: Serialised output returned from the tool.
-        """
-        event: dict[str, Any] = {
-            "name": "gen_ai.tool.call",
-            "timestamp": time.monotonic(),
-            "attributes": {
-                ATTR_TOOL_NAME: tool_name,
-                ATTR_TOOL_INPUT: input_data[:TRUNCATE_OTEL_OUTPUT],
-                ATTR_TOOL_OUTPUT: output_data[:TRUNCATE_OTEL_OUTPUT],
-            },
-        }
-        span.events.append(event)
-        logger.debug("Tool call recorded: tool=%s span=%s", tool_name, span.span_id)
+def _record_span_cost(trace_id: str | None, span_id: str | None, cost_usd: float) -> bool:
+    """Attach cost metadata to a recorded GenAI span when correlation matches."""
+    return get_genai_tracer()._record_span_cost(trace_id, span_id, cost_usd)
 
-    def export_traces(self, filepath: str) -> int:
-        """Write all completed spans to a JSON file for external ingestion.
-
-        Args:
-            filepath: Destination path (created if it does not exist).
-
-        Returns:
-            Number of spans exported.
-
-        Raises:
-            OSError: If the file cannot be written.
-        """
-        with self._lock:
-            completed = [s.to_dict() for s in self._spans]
-
-        output = {
-            "schema_version": "1.0",
-            "service": "vetinari",
-            "convention": "opentelemetry-genai-semconv",
-            "exported_at": time.time(),
-            "spans": completed,
-        }
-        Path(filepath).parent.mkdir(parents=True, exist_ok=True)
-        with Path(filepath).open("w", encoding="utf-8") as fh:
-            json.dump(output, fh, indent=2)
-
-        logger.info("Exported %d GenAI spans to %s", len(completed), filepath)
-        return len(completed)
-
-    def get_stats(self) -> dict[str, Any]:
-        """Return aggregate tracer statistics.
-
-        Returns:
-            Dictionary with ``total_spans``, ``active_spans``, and
-            ``total_tokens`` keys.
-        """
-        with self._lock:
-            return {
-                "total_spans": len(self._spans),
-                "active_spans": len(self._active),
-                "total_tokens": self._total_tokens,
-            }
-
-    def reset(self) -> None:
-        """Clear all recorded spans (intended for testing).
-
-        Resets the per-task trace ID so the next call to start_agent_span
-        allocates a fresh trace ID for this async task / thread.
-        """
-        with self._lock:
-            self._spans.clear()
-            self._active.clear()
-            self._total_tokens = 0
-        # Reset the ContextVar for the calling task/thread only — other
-        # concurrent tasks are unaffected.
-        _current_trace_id_var.set(None)
-
-
-# ── Singleton accessor ───────────────────────────────────────────────────────
 
 _tracer_instance: GenAITracer | None = None
 _tracer_lock = threading.Lock()
@@ -464,6 +487,7 @@ def get_genai_tracer() -> GenAITracer:
         The singleton :class:`GenAITracer`.
     """
     global _tracer_instance
+    _ensure_backend_initialized()
     if _tracer_instance is None:
         with _tracer_lock:
             if _tracer_instance is None:
@@ -476,136 +500,3 @@ def reset_genai_tracer() -> None:
     global _tracer_instance
     with _tracer_lock:
         _tracer_instance = None
-
-
-# ── Backend configuration ────────────────────────────────────────────────────
-
-# Valid backend identifiers.
-_VALID_BACKENDS = frozenset({"noop", "jaeger", "file"})
-
-# Active backend name — "noop" until explicitly configured or env var sets it.
-# Written by configure_backend(); read by get_active_backend() and flush_file_backend().
-_backend: str = "noop"
-
-
-def configure_backend(backend_type: str, endpoint: str = "") -> None:
-    """Configure the tracing backend for this process.
-
-    Supported values for ``backend_type``:
-
-    - ``"noop"`` — disables export; spans are still recorded in-process.
-    - ``"file"`` — flushes spans to ``outputs/traces/`` (relative to cwd)
-      when :func:`flush_file_backend` is called.
-    - ``"jaeger"`` — wires the OTel SDK to a Jaeger-compatible OTLP endpoint.
-      Logs a warning and falls back to noop behaviour when the OTel SDK is not
-      installed; does not raise.
-
-    Args:
-        backend_type: One of ``"noop"``, ``"file"``, or ``"jaeger"``.
-        endpoint: OTLP endpoint URL, used only when ``backend_type="jaeger"``.
-
-    Raises:
-        ValueError: If ``backend_type`` is not one of the recognised values.
-    """
-    global _backend
-
-    if backend_type not in _VALID_BACKENDS:
-        raise ValueError(f"Invalid OTel backend {backend_type!r} — must be one of {sorted(_VALID_BACKENDS)}")
-
-    if backend_type == "jaeger":
-        if not _OTEL_AVAILABLE:
-            logger.warning(
-                "configure_backend('jaeger') requested but opentelemetry SDK is not "
-                "installed — falling back to noop export (spans recorded in-process only)"
-            )
-            # Report the actual export mode — noop, not jaeger — so callers can
-            # trust get_active_backend() as ground truth rather than a wish.
-            _backend = "noop"
-            logger.debug("OTel backend configured: noop (jaeger requested but SDK unavailable)")
-            # Reset the singleton so the next get_genai_tracer() call creates a
-            # fresh instance that observes the updated _backend value.
-            reset_genai_tracer()
-            return
-        else:
-            _ep = endpoint or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
-            logger.info("OTel backend set to jaeger — endpoint=%s", _ep)
-
-    _backend = backend_type
-    logger.debug("OTel backend configured: %s", backend_type)
-    # Reset the singleton after every backend change so subsequent callers pick
-    # up the new configuration instead of reusing a stale instance.
-    reset_genai_tracer()
-
-
-def get_active_backend() -> str:
-    """Return the name of the currently active tracing backend.
-
-    Returns:
-        One of ``"noop"``, ``"file"``, or ``"jaeger"``.
-    """
-    return _backend
-
-
-def flush_file_backend() -> int:
-    """Write completed spans to disk when the file backend is active.
-
-    Spans are written to ``outputs/traces/traces_<timestamp>.json`` relative to
-    the current working directory.  If the active backend is not ``"file"``, this
-    is a no-op that returns ``0``.
-
-    Returns:
-        Number of spans exported, or ``0`` when backend is not ``"file"``.
-    """
-    if _backend != "file":
-        return 0
-
-    import time as _time  # already imported at module level, but alias for clarity
-
-    traces_dir = Path("outputs") / "traces"
-    traces_dir.mkdir(parents=True, exist_ok=True)
-
-    timestamp = int(_time.time())
-    filepath = traces_dir / f"traces_{timestamp}.json"
-
-    tracer = get_genai_tracer()
-    return tracer.export_traces(str(filepath))
-
-
-def _init_backend_from_env() -> None:
-    """Read env vars and configure the tracing backend.
-
-    Reads ``VETINARI_OTEL_BACKEND`` and ``VETINARI_OTEL_ENDPOINT`` from the
-    environment and calls :func:`configure_backend` accordingly.
-
-    Called automatically at module import time and may be called again to
-    re-read the environment (useful in tests that adjust env vars via
-    ``monkeypatch``).
-
-    Environment variables:
-
-    - ``VETINARI_OTEL_BACKEND`` — backend name; defaults to ``"noop"``.
-    - ``VETINARI_OTEL_ENDPOINT`` — OTLP endpoint for the jaeger backend;
-      ignored for other backends.
-
-    If ``VETINARI_OTEL_BACKEND`` holds an unrecognised value a warning is
-    logged and the backend is set to ``"noop"``.
-    """
-    import os
-
-    raw = os.environ.get("VETINARI_OTEL_BACKEND", "noop").strip().lower()
-    endpoint = os.environ.get("VETINARI_OTEL_ENDPOINT", "")
-
-    if raw not in _VALID_BACKENDS:
-        logger.warning(
-            "Unrecognised VETINARI_OTEL_BACKEND value %r — defaulting to 'noop'. Valid values are: %s",
-            raw,
-            sorted(_VALID_BACKENDS),
-        )
-        configure_backend("noop")
-        return
-
-    configure_backend(raw, endpoint)
-
-
-# Run once at import time so the backend reflects the current environment.
-_init_backend_from_env()

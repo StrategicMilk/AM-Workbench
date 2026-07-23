@@ -1,3 +1,5 @@
+import { announce } from './liveAnnouncement.svelte.js';
+
 /**
  * Toast notification store.
  *
@@ -37,8 +39,10 @@ export function getToasts() {
  */
 export function showToast(message, type = 'info') {
   const id = _nextId++;
-  const toast = { id, message, type };
+  const safeMessage = typeof message === 'string' && message.trim() ? message.trim() : 'Notification unavailable.';
+  const toast = { id, message: safeMessage, type };
   _toasts = [..._toasts, toast];
+  announce(safeMessage, type === 'error' ? 'assertive' : 'polite');
 
   const delay = DISMISS_MS[type] ?? 4000;
   setTimeout(() => dismissToast(id), delay);

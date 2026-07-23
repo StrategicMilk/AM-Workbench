@@ -1,3 +1,9 @@
+/*
+ * DESIGN TOKEN AUTHORITY: This file (tokens.css) is the single source of truth
+ * for all design tokens in the AM Workbench UI. Do NOT define CSS custom
+ * properties (--variable) in component .svelte files or other .css files;
+ * add them here and reference them by name everywhere else.
+ */
 @layer reset, tokens, base, layout, components, views, utilities;
 
 @layer tokens {
@@ -139,7 +145,7 @@
     --z-toast: 500;
     --z-tooltip: 600;
 
-    /* ── Semantic tokens ── */
+    /* Semantic tokens */
     --color-interactive: var(--primary);
     --color-interactive-hover: var(--primary-hover);
     --color-interactive-active: var(--primary-active);
@@ -158,7 +164,7 @@
     --color-text-secondary: var(--text-secondary);
     --color-text-muted: var(--text-muted);
 
-    /* ── Component tokens ── */
+    /* Component tokens */
     --btn-bg: var(--color-interactive);
     --btn-bg-hover: var(--color-interactive-hover);
     --btn-text: var(--text-on-primary, #ffffff);
@@ -173,6 +179,10 @@
     --input-bg: var(--color-surface-1);
     --input-border: var(--border-default);
     --input-focus-ring: var(--color-interactive);
+    --focus-ring-color: var(--color-interactive);
+    --focus-ring-shadow: 0 0 0 3px var(--color-interactive-muted);
+    --target-min-inline-size: 44px;
+    --target-min-block-size: 44px;
 
     --tab-bg: transparent;
     --tab-active-bg: var(--color-surface-2);
@@ -208,6 +218,34 @@
     --border-default: rgba(0, 0, 0, 0.12);
     --border-strong: rgba(0, 0, 0, 0.18);
 
+    --primary: #2563eb;
+    --primary-hover: #1d4ed8;
+    --primary-active: #1e40af;
+    --primary-lighter: rgba(37, 99, 235, 0.08);
+    --text-on-primary: #ffffff;
+
+    --accent: var(--primary);
+    --accent-color: var(--primary);
+
+    --secondary: #0f766e;
+    --secondary-hover: #0d9488;
+
+    --success: #15803d;
+    --warning: #b45309;
+    --danger: #b91c1c;
+    --error: var(--danger);
+    --info: #0369a1;
+
+    --header-height: 64px;
+
+    --bg-primary: var(--surface-bg);
+    --bg-secondary: var(--surface-elevated);
+    --bg-tertiary: var(--surface-hover);
+    --bg-hover: var(--surface-hover);
+    --border-primary: var(--border-default);
+    --surface-active: var(--surface-pressed);
+    --text-tertiary: var(--text-muted);
+
     /* Agent accent base colors — override dark-theme values for light mode contrast */
     --agent-operations: #7c3aed;
     --agent-design: #c2185b;
@@ -224,6 +262,7 @@
 
     --glass-bg: rgba(255, 255, 255, 0.92);
     --glass-border: rgba(0, 0, 0, 0.06);
+    --glass-blur: blur(12px);
 
     --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.06);
     --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
@@ -231,6 +270,101 @@
     --shadow-lg: 0 10px 20px rgba(0, 0, 0, 0.12), 0 4px 8px rgba(0, 0, 0, 0.08);
     --shadow-xl: 0 20px 40px rgba(0, 0, 0, 0.15), 0 10px 16px rgba(0, 0, 0, 0.1);
     --shadow-glow: 0 0 16px rgba(78, 154, 249, 0.12);
+
+    --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Monaco', monospace;
+
+    --text-xs: 0.75rem;
+    --text-sm: 0.875rem;
+    --text-base: 1rem;
+    --text-lg: 1.125rem;
+    --text-xl: 1.25rem;
+    --text-2xl: 1.5rem;
+    --text-3xl: 1.875rem;
+    --text-4xl: 2.25rem;
+
+    --font-normal: 400;
+    --font-medium: 500;
+    --font-semibold: 600;
+    --font-bold: 700;
+
+    --leading-tight: 1.2;
+    --leading-normal: 1.5;
+    --leading-relaxed: 1.6;
+
+    --space-1: 0.25rem;
+    --space-2: 0.5rem;
+    --space-3: 0.75rem;
+    --space-4: 1rem;
+    --space-5: 1.25rem;
+    --space-6: 1.5rem;
+    --space-8: 2rem;
+    --space-10: 2.5rem;
+    --space-12: 3rem;
+    --space-16: 4rem;
+    --space-20: 5rem;
+
+    --radius-sm: 0.375rem;
+    --radius-md: 0.5rem;
+    --radius-lg: 0.75rem;
+    --radius-xl: 1rem;
+    --radius-2xl: 1.5rem;
+    --radius-full: 9999px;
+
+    --transition-fast: 100ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-base: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-slow: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-slowest: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+
+    --z-dropdown: 100;
+    --z-sticky: 200;
+    --z-modal-backdrop: 300;
+    --z-modal: 400;
+    --z-toast: 500;
+    --z-tooltip: 600;
+
+    --color-interactive: var(--primary);
+    --color-interactive-hover: var(--primary-hover);
+    --color-interactive-active: var(--primary-active);
+    --color-interactive-muted: var(--primary-muted);
+
+    --color-surface-1: var(--surface-bg);
+    --color-surface-2: var(--surface-elevated);
+    --color-surface-3: var(--surface-hover);
+
+    --color-feedback-success: var(--success);
+    --color-feedback-warning: var(--warning);
+    --color-feedback-danger: var(--danger);
+    --color-feedback-info: var(--info);
+
+    --color-text-primary: var(--text-primary);
+    --color-text-secondary: var(--text-secondary);
+    --color-text-muted: var(--text-muted);
+
+    --btn-bg: var(--color-interactive);
+    --btn-bg-hover: var(--color-interactive-hover);
+    --btn-text: var(--text-on-primary);
+
+    --card-bg: var(--color-surface-1);
+    --card-border: var(--border-default);
+    --card-shadow: var(--shadow-sm);
+
+    --toast-bg: var(--color-surface-2);
+    --toast-border: var(--border-default);
+
+    --input-bg: var(--color-surface-1);
+    --input-border: var(--border-default);
+    --input-focus-ring: var(--color-interactive);
+    --focus-ring-color: var(--color-interactive);
+    --focus-ring-shadow: 0 0 0 3px var(--color-interactive-muted);
+    --target-min-inline-size: 44px;
+    --target-min-block-size: 44px;
+
+    --tab-bg: transparent;
+    --tab-active-bg: var(--color-surface-2);
+    --tab-active-border: var(--color-interactive);
+    --tab-text: var(--color-text-secondary);
+    --tab-active-text: var(--color-text-primary);
 }
 
 }

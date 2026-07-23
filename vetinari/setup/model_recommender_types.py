@@ -3,7 +3,43 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
+from enum import Enum
 from typing import Any
+
+
+class Modality(str, Enum):
+    """Catalog modality dimension used by model recommendations."""
+
+    TEXT = "text"
+    VISION = "vision"
+    AUDIO_ASR = "audio_asr"
+    AUDIO_TTS = "audio_tts"
+    AUDIO_UNDERSTANDING = "audio_understanding"
+    IMAGE_GENERATION = "image_generation"
+    VIDEO_GENERATION = "video_generation"
+    EMBEDDING = "embedding"
+    RERANKER = "reranker"
+    DRAFT_SPECULATIVE = "draft_speculative"
+    THREE_D = "three_d"
+    CLOUD_OVERFLOW = "cloud_overflow"
+
+
+@dataclass(frozen=True, slots=True)
+class SourceCitation:
+    """Fetched source backing a recommendation row."""
+
+    url: str
+    retrieved_on: date
+    fetched_in_session: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a plain dictionary."""
+        return {
+            "url": self.url,
+            "retrieved_on": self.retrieved_on.isoformat(),
+            "fetched_in_session": self.fetched_in_session,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,9 +76,26 @@ class SetupModelRecommendation:
     backend: str = "llama_cpp"  # llama_cpp, vllm, nim
     gpu_only: bool = False  # True = must fit entirely in VRAM (no CPU offload)
     best_for: tuple[str, ...] = ()  # Task types this model excels at (coding, reasoning, etc.)
+    modality: Modality = Modality.TEXT
+    recommended_backend: str = ""
+    recommended_quant: str = ""
+    vram_gb_loaded: float | None = None
+    host_ram_gb_min: float = 0.0
+    verified_on: date | None = None
+    sources: tuple[SourceCitation, ...] = ()
+    requires_upstream_image: bool = False
+    tradeoffs: tuple[str, ...] = ()
+    co_residency_notes: str = ""
+    swap_in_for: str | None = None
+    cloud_only: bool = False
 
     def __repr__(self) -> str:
         return "ModelRecommendation(...)"
+
+    @property
+    def model_id(self) -> str:
+        """Return the canonical model identifier used by newer catalog callers."""
+        return self.repo_id
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to plain dictionary.
@@ -63,6 +116,19 @@ class SetupModelRecommendation:
             "backend": self.backend,
             "gpu_only": self.gpu_only,
             "best_for": list(self.best_for),
+            "model_id": self.model_id,
+            "modality": self.modality.value,
+            "recommended_backend": self.recommended_backend or self.backend,
+            "recommended_quant": self.recommended_quant or self.quantization,
+            "vram_gb_loaded": self.vram_gb_loaded if self.vram_gb_loaded is not None else self.size_gb,
+            "host_ram_gb_min": self.host_ram_gb_min,
+            "verified_on": self.verified_on.isoformat() if self.sources and self.verified_on else None,
+            "sources": [source.to_dict() for source in self.sources],
+            "requires_upstream_image": self.requires_upstream_image,
+            "tradeoffs": list(self.tradeoffs),
+            "co_residency_notes": self.co_residency_notes,
+            "swap_in_for": self.swap_in_for,
+            "cloud_only": self.cloud_only,
         }
 
 

@@ -12,12 +12,15 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from vetinari.utils.bounded_collections import BoundedList
 from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
 
+_MAX_DEVIATION_HISTORY = 500
 
-@dataclass
+
+@dataclass(frozen=True, slots=True)
 class AdherenceResult:
     """Result of a goal adherence check."""
 
@@ -35,7 +38,7 @@ class AdherenceResult:
         return dataclass_to_dict(self)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ScopeCreepItem:
     """A task flagged as potentially out of scope."""
 
@@ -131,7 +134,7 @@ class GoalTracker:
     def __init__(self, original_goal: str):
         self.original_goal = original_goal
         self._goal_keywords = self._extract_keywords(original_goal)
-        self._deviation_history: list[AdherenceResult] = []
+        self._deviation_history: BoundedList[AdherenceResult] = BoundedList(_MAX_DEVIATION_HISTORY)
         logger.debug("[GoalTracker] Tracking goal: %s... (%d keywords)", original_goal[:80], len(self._goal_keywords))
 
     def check_adherence(
@@ -151,8 +154,7 @@ class GoalTracker:
         Returns:
             AdherenceResult with score, deviation info, and suggestions.
         """
-        combined_text = f"{task_description} {task_output}"
-        output_keywords = self._extract_keywords(combined_text)
+        output_keywords = self._extract_keywords(task_output)
 
         if not self._goal_keywords:
             return AdherenceResult(
@@ -171,9 +173,11 @@ class GoalTracker:
         desc_keywords = self._extract_keywords(task_description)
         desc_overlap = len(self._goal_keywords & desc_keywords) / len(self._goal_keywords) if self._goal_keywords else 0
 
-        # Weighted combination: output overlap matters more than description
+        # Weighted combination: output overlap matters more than description.
+        # Do not inflate the score after weighting; downstream drift thresholds
+        # depend on calibrated 0..1 overlap rather than an optimistic boost.
         score = 0.6 * overlap_score + 0.4 * desc_overlap
-        score = min(1.0, score * 1.5)  # Scale up slightly — partial overlap is expected
+        score = min(1.0, score)
 
         deviation = ""
         suggestion = ""
@@ -268,6 +272,10 @@ class GoalTracker:
             "samples": len(scores),
             "latest_score": round(scores[-1], 3),
         }
+
+    def get_deviation_history(self) -> list[AdherenceResult]:
+        """Return a copy of the deviation history recorded by checks."""
+        return list(self._deviation_history)
 
     def _extract_keywords(self, text: str) -> set[str]:
         """Extract meaningful keywords from text."""

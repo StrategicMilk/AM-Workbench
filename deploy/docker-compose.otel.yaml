@@ -6,8 +6,8 @@
 # Then start Vetinari with OTEL enabled:
 #   VETINARI_OTEL_BACKEND=jaeger docker compose -f deploy/docker-compose.otel.yaml up vetinari
 #
-# Or run Vetinari outside Docker:
-#   VETINARI_OTEL_BACKEND=jaeger python -m vetinari serve
+# Or run the native kernel outside Docker:
+#   VETINARI_OTEL_BACKEND=jaeger cargo run -p amw-kernel --bin amw-kernel-server -- --host 127.0.0.1 --port 5000
 #
 # Jaeger UI is available at http://localhost:16686
 
@@ -29,8 +29,10 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     environment:
-      VETINARI_WEB_HOST: "0.0.0.0"
-      VETINARI_WEB_PORT: "8080"
+      AMW_KERNEL_HOST: "0.0.0.0"
+      AMW_KERNEL_PORT: "8080"
+      AMW_KERNEL_ALLOW_INSECURE_REMOTE_BIND: "true"
+      AMW_KERNEL_STATE_DIR: "/app/data"
       VETINARI_OTEL_BACKEND: "jaeger"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
     depends_on:

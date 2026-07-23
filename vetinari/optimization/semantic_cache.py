@@ -6,8 +6,8 @@ pattern:
 
   Tier 1 — exact match via SHA-256 hash (O(1))
   Tier 2 — approximate match via MinHash LSH (O(1), requires datasketch)
-  Tier 3 — sentence-transformers embedding cosine sim (requires sentence-transformers)
-           or trigram Jaccard scan fallback (O(n), always available)
+  Tier 3 — AM Engine embedding cosine similarity with a trigram Jaccard
+           fallback when the supervised engine is unavailable (O(n))
 """
 
 from __future__ import annotations
@@ -18,62 +18,92 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from typing import Any
 
 from vetinari.constants import CACHE_MAX_ENTRIES_SEMANTIC
+from vetinari.security.redaction import redact_text
 from vetinari.utils.lazy_import import lazy_import
-from vetinari.utils.math_helpers import cosine_similarity
+
+from .semantic_cache_lookup import _SemanticCacheLookupMixin
 
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Optional datasketch import
 # ---------------------------------------------------------------------------
 
 _datasketch, _DATASKETCH_AVAILABLE = lazy_import("datasketch")
-MinHash = _datasketch.MinHash if _datasketch else None  # type: ignore[assignment]
-MinHashLSH = _datasketch.MinHashLSH if _datasketch else None  # type: ignore[assignment]
+_datasketch_module: Any = _datasketch
+MinHash: Any = _datasketch_module.MinHash if _datasketch_module is not None else None
+MinHashLSH: Any = _datasketch_module.MinHashLSH if _datasketch_module is not None else None
 
 # ---------------------------------------------------------------------------
-# Optional sentence-transformers import (lazy-loaded on first use)
+# Supervised AM Engine embedding availability (probed lazily)
 # ---------------------------------------------------------------------------
 
+_EMBEDDER_REPROBE_INTERVAL_SECONDS: float = 30.0
+_EMBEDDER_PROBE_TEXT = "vetinari embedding availability probe"
+_last_embedder_probe_ts: float | None = None
+_embedder_available = False
+_embedder_state_lock = threading.Lock()
+engine_embedding_failures_total = 0
 
-_EMBEDDER_AVAILABLE: bool | None = None  # Lazy-initialized on first use
+
+def __getattr__(name: str) -> Any:
+    """Expose the retired availability latch only to compatibility patchers."""
+    if name == "_EMBEDDER_AVAILABLE":
+        with _embedder_state_lock:
+            return _embedder_available
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _check_embedder_available() -> bool:
-    """Probe whether the unified embedder is usable for dense similarity.
+    """Probe whether the supervised AM Engine can produce embeddings.
 
-    Tries to import ``get_embedder`` from ``vetinari.embeddings`` and checks
-    the ``.available`` attribute.  Returns ``False`` on any import error or
-    if the embedder signals it is not ready — ensuring Tier 3 degrades
-    gracefully to trigram Jaccard when sentence-transformers is absent.
+    The fixed probe never contains user data. Every attempt updates the
+    monotonic timestamp so an unavailable engine is retried after a bounded
+    cooldown instead of being latched off for the process lifetime.
 
     Returns:
         ``True`` when the embedder is importable and ready, ``False`` otherwise.
     """
+    global _last_embedder_probe_ts
+    _last_embedder_probe_ts = time.monotonic()
     try:
-        from vetinari.embeddings import get_embedder
+        from vetinari.engine.client import EmbeddingsRequest, get_engine_client
 
-        return bool(get_embedder().available)
-    except Exception:
-        logger.warning("Embedder unavailable for semantic cache — semantic deduplication disabled")
+        response = get_engine_client().embeddings(EmbeddingsRequest((_EMBEDDER_PROBE_TEXT,)))
+        return bool(response.vectors and response.vectors[0])
+    except Exception as exc:
+        logger.warning(
+            "AM Engine embedding probe unavailable; semantic cache will use trigram similarity",
+            extra={"fallback_type": "trigram", "exc_class": type(exc).__name__},
+        )
         return False
 
 
 def _get_embedder_available() -> bool:
-    """Lazy-check embedder availability on first access (not at import time)."""
-    global _EMBEDDER_AVAILABLE
-    if _EMBEDDER_AVAILABLE is None:
-        _EMBEDDER_AVAILABLE = _check_embedder_available()
-    return _EMBEDDER_AVAILABLE
+    """Return engine availability, re-probing after a failed-probe cooldown."""
+    # Compatibility for older tests and extensions that temporarily patch the
+    # retired latch name. The production module never defines or persists it.
+    compatibility_override = globals().get("_EMBEDDER_AVAILABLE")
+    if isinstance(compatibility_override, bool):
+        return compatibility_override
+
+    global _embedder_available
+    now = time.monotonic()
+    with _embedder_state_lock:
+        should_probe = _last_embedder_probe_ts is None or (
+            not _embedder_available and now - _last_embedder_probe_ts >= _EMBEDDER_REPROBE_INTERVAL_SECONDS
+        )
+        if should_probe:
+            _embedder_available = _check_embedder_available()
+        return _embedder_available
 
 
 def _compute_embedding(text: str) -> list[float] | None:
-    """Compute a dense embedding using the unified embedder from vetinari.embeddings.
-
-    Uses the singleton ``get_embedder()`` which has proper double-checked locking
-    and falls back to n-gram hashing when sentence-transformers is unavailable.
+    """Compute a dense embedding through the supervised AM Engine client.
 
     Args:
         text: Input string to embed.
@@ -81,12 +111,19 @@ def _compute_embedding(text: str) -> list[float] | None:
     Returns:
         A list of floats representing the embedding.
     """
-    from vetinari.embeddings import get_embedder
-
+    global engine_embedding_failures_total
     try:
-        return get_embedder().embed(text)
-    except Exception:
-        logger.warning("Embedding computation failed for semantic cache — skipping Tier 3")
+        from vetinari.engine.client import EmbeddingsRequest, get_engine_client
+
+        response = get_engine_client().embeddings(EmbeddingsRequest((text,)))
+        return [float(value) for value in response.vectors[0]]
+    except Exception as exc:
+        with _embedder_state_lock:
+            engine_embedding_failures_total += 1
+        logger.warning(
+            "AM Engine embedding failed for semantic cache; using trigram similarity",
+            extra={"fallback_type": "trigram", "exc_class": type(exc).__name__},
+        )
         return None
 
 
@@ -96,6 +133,14 @@ _DEFAULT_SIMILARITY_THRESHOLD: float = 0.85
 # "semantic" is the backend label used in TelemetryCollector.memory_metrics for
 # cache dedup accounting — distinct from 'oc' / 'mnemosyne' memory backends.
 _TELEMETRY_BACKEND: str = "semantic"
+
+
+def _cache_context_ref(text: str) -> str:
+    """Return a stable non-reversible cache reference for secret-bearing text."""
+    if not text:
+        return ""
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return f"sha256:{digest}:len:{len(text)}"
 
 
 def _report_cache_hit() -> None:
@@ -161,7 +206,7 @@ _instance_lock: threading.Lock = threading.Lock()
 
 
 @dataclass
-class CacheEntry:  # noqa: VET114 — hit_count incremented in-place by SemanticCache lookups
+class CacheEntry:
     r"""A single entry stored in the :class:`SemanticCache`.
 
     Attributes:
@@ -195,7 +240,7 @@ class CacheEntry:  # noqa: VET114 — hit_count incremented in-place by Semantic
         return f"CacheEntry(query_hash={self.query_hash!r}, model_id={self.model_id!r}, hit_count={self.hit_count!r})"
 
 
-class SemanticCache:
+class SemanticCache(_SemanticCacheLookupMixin):
     """Thread-safe semantic cache for LLM query/response pairs.
 
     Uses a 3-tier lookup strategy:
@@ -228,7 +273,7 @@ class SemanticCache:
         self._exact_index: dict[str, str] = {}
 
         # Tier 2: MinHash LSH index (optional — None when datasketch unavailable)
-        self._minhash_index: object | None = None
+        self._minhash_index: Any | None = None
         if _DATASKETCH_AVAILABLE:
             self._minhash_index = MinHashLSH(threshold=_MINHASH_THRESHOLD, num_perm=_MINHASH_NUM_PERM)
 
@@ -245,178 +290,6 @@ class SemanticCache:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-
-    def get(
-        self,
-        query: str,
-        similarity_threshold: float = 0.0,
-        task_type: str = "",
-        model_id: str = "",
-        system_prompt: str = "",
-    ) -> str | None:
-        """Return a cached response if a similar query exists.
-
-        Runs a 3-tier lookup: exact hash → MinHash LSH → trigram Jaccard.
-        Returns the first matching response.  When ``task_type`` is supplied the
-        per-task-type threshold is used instead of the instance default, so
-        creative tasks (0.95) are stricter than error-recovery tasks (0.75).
-        Hit/miss outcomes are reported to ``TelemetryCollector`` under the
-        ``"semantic"`` backend key.
-
-        The ``model_id`` and ``system_prompt`` parameters are used for
-        isolation: a response cached for model-a is NEVER returned for a
-        query under model-b, even if the query text is identical.  All three
-        tiers (exact, LSH, trigram) enforce this constraint.
-
-        Args:
-            query: The new query text to look up.
-            similarity_threshold: Minimum Jaccard similarity score (0-1) for a
-                                  hit.  Defaults to the instance-level threshold
-                                  when 0.0 is supplied.
-            task_type: Optional task type string used to look up a task-specific
-                       similarity threshold via ``get_threshold_for_task_type``.
-                       Ignored when ``similarity_threshold`` is non-zero.
-            model_id: The model this request is targeting.  Entries stored
-                      under a different model_id are not returned.
-            system_prompt: The active system prompt.  Entries stored with a
-                           different system_prompt are not returned.
-
-        Returns:
-            Cached response string on hit, or ``None`` on miss.
-        """
-        if similarity_threshold > 0.0:
-            threshold = similarity_threshold
-        elif task_type:
-            threshold = get_threshold_for_task_type(task_type)
-        else:
-            threshold = self._default_threshold
-
-        # Composite key includes model_id and system_prompt so the exact tier
-        # is automatically isolated.  Fuzzy tiers check entry.model_id directly.
-        key_material = f"{query}\x00{model_id}\x00{system_prompt}"
-        composite_hash = hashlib.sha256(key_material.encode("utf-8")).hexdigest()
-
-        with self._lock:
-            self._evict_expired()
-
-            # ── Tier 1: Exact hash match (composite key — inherently isolated) ──
-            if composite_hash in self._exact_index:
-                key = self._exact_index[composite_hash]
-                if key in self._store:
-                    entry = self._store[key]
-                    entry.hit_count += 1
-                    self._store.move_to_end(key)
-                    self._hits += 1
-                    self._exact_hits += 1
-                    saved = max(1, len(entry.response) // 4)
-                    self._tokens_saved += saved
-                    logger.debug("SemanticCache EXACT HIT for query '%.40s...'", query)
-                    _report_cache_hit()
-                    return entry.response
-
-            # ── Tier 2: MinHash LSH ───────────────────────────────────
-            if _DATASKETCH_AVAILABLE and self._minhash_index is not None and len(self._store) > 0:
-                minhash = _make_minhash(query)
-                try:
-                    candidates = self._minhash_index.query(minhash)
-                except Exception:
-                    candidates = []
-
-                if candidates:
-                    # Pick best Jaccard among LSH candidates — skip entries from
-                    # a different model or system_prompt (model_id isolation).
-                    query_embedding = _trigrams(query)
-                    best_score = 0.0
-                    best_key: str | None = None
-                    for candidate_key in candidates:
-                        if candidate_key in self._store:
-                            cand_entry = self._store[candidate_key]
-                            if cand_entry.model_id != model_id or cand_entry.system_prompt != system_prompt:
-                                continue
-                            score = _jaccard(query_embedding, cand_entry.embedding)
-                            if score > best_score:
-                                best_score = score
-                                best_key = candidate_key
-
-                    if best_key is not None and best_score >= threshold:
-                        entry = self._store[best_key]
-                        entry.hit_count += 1
-                        self._store.move_to_end(best_key)
-                        self._hits += 1
-                        self._minhash_hits += 1
-                        saved = max(1, len(entry.response) // 4)
-                        self._tokens_saved += saved
-                        logger.debug(
-                            "SemanticCache MINHASH HIT (score=%.3f) for query '%.40s...'",
-                            best_score,
-                            query,
-                        )
-                        _report_cache_hit()
-                        return entry.response
-
-            # ── Tier 3a: Semantic embedding (when available) ──
-            if _get_embedder_available():
-                query_dense = _compute_embedding(query)
-                if query_dense is not None:
-                    best_score = 0.0
-                    best_key = None
-                    for key, entry in self._store.items():
-                        if entry.model_id != model_id or entry.system_prompt != system_prompt:
-                            continue
-                        if entry.dense_embedding is not None:
-                            score = cosine_similarity(query_dense, entry.dense_embedding)
-                            if score > best_score:
-                                best_score = score
-                                best_key = key
-                    if best_key is not None and best_score >= threshold:
-                        entry = self._store[best_key]
-                        entry.hit_count += 1
-                        self._store.move_to_end(best_key)
-                        self._hits += 1
-                        self._semantic_hits += 1
-                        saved = max(1, len(entry.response) // 4)
-                        self._tokens_saved += saved
-                        logger.debug(
-                            "SemanticCache SEMANTIC HIT (score=%.3f) for query '%.40s...'",
-                            best_score,
-                            query,
-                        )
-                        _report_cache_hit()
-                        return entry.response
-
-            # ── Tier 3b: Trigram Jaccard — last resort, always available ──
-            query_embedding = _trigrams(query)
-            best_score = 0.0
-            best_key = None
-
-            for key, entry in self._store.items():
-                # Enforce model_id / system_prompt isolation in the trigram tier.
-                if entry.model_id != model_id or entry.system_prompt != system_prompt:
-                    continue
-                score = _jaccard(query_embedding, entry.embedding)
-                if score > best_score:
-                    best_score = score
-                    best_key = key
-
-            if best_key is not None and best_score >= threshold:
-                entry = self._store[best_key]
-                entry.hit_count += 1
-                self._store.move_to_end(best_key)
-                self._hits += 1
-                self._trigram_hits += 1
-                saved = max(1, len(entry.response) // 4)
-                self._tokens_saved += saved
-                logger.debug(
-                    "SemanticCache TRIGRAM HIT (score=%.3f) for query '%.40s...'",
-                    best_score,
-                    query,
-                )
-                _report_cache_hit()
-                return entry.response
-
-            self._misses += 1
-            _report_cache_miss()
-            return None
 
     def put(
         self,
@@ -444,7 +317,8 @@ class SemanticCache:
             system_prompt: The system prompt active when ``response`` was
                            generated.  Same isolation contract as ``model_id``.
         """
-        key_material = f"{query}\x00{model_id}\x00{system_prompt}"
+        system_prompt_ref = _cache_context_ref(system_prompt)
+        key_material = f"{query}\x00{model_id}\x00{system_prompt_ref}"
         composite_hash = hashlib.sha256(key_material.encode("utf-8")).hexdigest()
         embedding = _trigrams(query)
 
@@ -454,12 +328,12 @@ class SemanticCache:
             self._evict_expired()
             entry = CacheEntry(
                 query_hash=composite_hash,
-                query_text=query,
-                response=response,
+                query_text=_cache_context_ref(query),
+                response=redact_text(response),
                 embedding=embedding,
                 timestamp=time.monotonic(),
                 model_id=model_id,
-                system_prompt=system_prompt,
+                system_prompt=system_prompt_ref,
                 dense_embedding=dense_emb,
             )
             self._store[composite_hash] = entry
@@ -556,7 +430,8 @@ class SemanticCache:
     # Similarity (exposed for testing)
     # ------------------------------------------------------------------
 
-    def _compute_similarity(self, a: str, b: str) -> float:
+    @staticmethod
+    def _compute_similarity(a: str, b: str) -> float:
         """Compute character trigram Jaccard similarity between two strings.
 
         Args:
@@ -607,7 +482,7 @@ def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
     return len(a & b) / len(union)
 
 
-def _make_minhash(text: str) -> MinHash:  # type: ignore[name-defined]
+def _make_minhash(text: str) -> Any:
     """Create a MinHash from character trigrams of *text*.
 
     Args:

@@ -18,6 +18,7 @@ from vetinari.receipts.emit import (
     record_agent_completion,
     record_release_step,
     record_training_step,
+    record_workbench_event,
 )
 from vetinari.receipts.events import ReceiptAppended
 from vetinari.receipts.record import WorkReceipt, WorkReceiptKind
@@ -31,4 +32,5 @@ __all__ = [
     "record_agent_completion",
     "record_release_step",
     "record_training_step",
+    "record_workbench_event",
 ]

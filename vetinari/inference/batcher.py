@@ -11,23 +11,36 @@ Config keys: batching.enabled, batching.max_batch_size, batching.max_wait_ms
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import queue
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
+from vetinari.adapters.adapter_cache import get_local_inference_adapter
 from vetinari.constants import INFERENCE_BATCHER_QUEUE_SIZE, THREAD_JOIN_TIMEOUT
 from vetinari.exceptions import InferenceError
+from vetinari.safety.guardrails_manager import GuardrailsManager
+from vetinari.safety.guardrails_types import RailContext
 from vetinari.types import StatusEnum
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
+class BatchDispatchFailure:
+    """Typed failure emitted when a batched request cannot complete."""
+
+    reason: str
+    request_id: str
+    model_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class BatchRequest:
     """A single inference request in the batch queue."""
 
@@ -37,9 +50,11 @@ class BatchRequest:
     system_prompt: str = ""
     max_tokens: int = 2048
     temperature: float = 0.3
+    task_type: str = "general"
     callback: Callable | None = None
     result: str | None = None
     error: str | None = None
+    failure: BatchDispatchFailure | None = None
     event: threading.Event = field(default_factory=threading.Event)
 
     def __repr__(self) -> str:
@@ -48,7 +63,40 @@ class BatchRequest:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(slots=True)
+class _BatchSubmission:
+    """Dispatch outcome container for an immutable batch request."""
+
+    request: BatchRequest
+    result: str | None = None
+    error: str | None = None
+    failure: BatchDispatchFailure | None = None
+    event: threading.Event = field(default_factory=threading.Event)
+
+    def __repr__(self) -> str:
+        return (
+            "_BatchSubmission("
+            f"request_id={self.request.request_id!r}, "
+            f"model_id={self.request.model_id!r}, "
+            f"has_result={self.result is not None!r}, "
+            f"has_error={self.error is not None!r})"
+        )
+
+    def set_result(self, result: str) -> None:
+        """Store a successful dispatch result from the worker thread."""
+        self.result = result
+
+    def set_failure(self, reason: str) -> None:
+        """Store a dispatch failure from the worker thread."""
+        self.failure = BatchDispatchFailure(
+            reason=reason,
+            request_id=self.request.request_id,
+            model_id=self.request.model_id,
+        )
+        self.error = self.failure.reason
+
+
+@dataclass(frozen=True, slots=True)
 class BatchConfig:
     """Configuration for the inference batcher."""
 
@@ -72,16 +120,16 @@ class InferenceBatcher:
     def __init__(self, config: BatchConfig | None = None):
         cfg = config or BatchConfig()
         if not cfg.models_dir:
-            from dataclasses import replace
-
             cfg = replace(cfg, models_dir=os.environ.get("VETINARI_MODELS_DIR", ""))
         self._config = cfg
-        self._queue: queue.Queue[BatchRequest] = queue.Queue(maxsize=INFERENCE_BATCHER_QUEUE_SIZE)
+        self._queue: queue.Queue[_BatchSubmission | None] = queue.Queue(maxsize=INFERENCE_BATCHER_QUEUE_SIZE)
         self._running = False
         self._thread: threading.Thread | None = None
         self._total_batches = 0
         self._total_requests = 0
         self._lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
+        self._stopping = threading.Event()
 
     @property
     def enabled(self) -> bool:
@@ -90,28 +138,64 @@ class InferenceBatcher:
 
     def start(self) -> None:
         """Start the background dispatch thread."""
-        if self._running:
-            return
-        self._running = True
-        self._thread = threading.Thread(target=self._dispatch_loop, daemon=True, name="InferenceBatcher")
-        self._thread.start()
+        with self._lifecycle_lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stopping.clear()
+            self._running = True
+            self._thread = threading.Thread(target=self._dispatch_loop, daemon=True, name="InferenceBatcher")
+            self._thread.start()
         logger.info(
             "InferenceBatcher started (batch_size=%d, wait_ms=%.0f)",
             self._config.max_batch_size,
             self._config.max_wait_ms,
         )
 
-    def stop(self) -> None:
-        """Stop the dispatch thread.
+    def stop(self, timeout: float = THREAD_JOIN_TIMEOUT) -> None:
+        """Drain queued requests and stop the dispatch thread.
 
-        Sets the running flag and places a sentinel value into the queue so the
-        worker unblocks immediately rather than waiting up to ``max_wait_ms``.
+        Accepted requests are processed before the sentinel is enqueued. If a
+        dispatch call blocks past ``timeout``, shutdown is still attempted and a
+        warning records the remaining unfinished queue count.
         """
+        self._stopping.set()
         self._running = False
+        if self._thread is None or not self._thread.is_alive():
+            self._stopping.clear()
+            return
+        remaining = self.drain(timeout=timeout)
+        if remaining:
+            logger.warning("InferenceBatcher shutdown timed out with %d queued request(s)", remaining)
         # Sentinel wakes the worker so it exits without waiting for a real request.
-        self._queue.put(None)  # type: ignore[arg-type]
+        with contextlib.suppress(queue.Full):
+            self._queue.put(None, timeout=timeout)
         if self._thread:
-            self._thread.join(timeout=THREAD_JOIN_TIMEOUT)
+            self._thread.join(timeout=timeout)
+        with self._lifecycle_lock:
+            if self._thread is not None and not self._thread.is_alive():
+                self._thread = None
+        self._stopping.clear()
+
+    def drain(self, timeout: float | None = THREAD_JOIN_TIMEOUT) -> int:
+        """Wait until accepted batch requests have been dispatched.
+
+        Args:
+            timeout: Maximum seconds to wait. ``None`` waits indefinitely.
+
+        Returns:
+            Number of unfinished queue items remaining after the wait.
+        """
+        deadline = None if timeout is None else time.monotonic() + max(timeout, 0.0)
+        with self._queue.all_tasks_done:
+            while self._queue.unfinished_tasks:
+                if deadline is None:
+                    self._queue.all_tasks_done.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return self._queue.unfinished_tasks
+                self._queue.all_tasks_done.wait(timeout=min(0.1, remaining))
+            return 0
 
     def submit(self, request: BatchRequest, timeout: float = 30.0) -> str:
         """Submit an inference request and wait for the result.
@@ -130,23 +214,36 @@ class InferenceBatcher:
             InferenceError: If the inference call fails or the batch marks the
                 request as errored.
         """
+        guarded_request = _guarded_batch_request(request)
         if not self._config.enabled:
-            return self._dispatch_single(request)
+            return self._dispatch_single(guarded_request)
+
+        submission = _BatchSubmission(request=guarded_request, event=request.event)
+        if self._stopping.is_set():
+            submission.set_failure("shutting_down")
+            raise InferenceError("Batch inference failed: shutting_down", failure=submission.failure)
 
         if not self._running:
             self.start()
 
-        self._queue.put(request)
-        request.event.wait(timeout=timeout)
+        try:
+            self._queue.put(submission, timeout=timeout)
+        except queue.Full as exc:
+            submission.set_failure("queue_full")
+            raise InferenceError("Batch inference failed: queue_full", failure=submission.failure) from exc
+        completed = submission.event.wait(timeout=timeout)
 
-        if request.error:
-            raise InferenceError(f"Batch inference failed: {request.error}")
-        return request.result or ""
+        if not completed:
+            submission.set_failure("timeout")
+            raise InferenceError("Batch inference failed: timeout", failure=submission.failure)
+        if submission.error:
+            raise InferenceError(f"Batch inference failed: {submission.error}", failure=submission.failure)
+        return submission.result or ""
 
     def _dispatch_loop(self) -> None:
         """Background thread: collect and dispatch batches."""
-        while self._running:
-            batch: list[BatchRequest] = []
+        while True:
+            batch: list[_BatchSubmission] = []
             deadline = time.monotonic() + self._config.max_wait_ms / 1000.0
 
             # Collect up to max_batch_size or until deadline
@@ -156,59 +253,71 @@ class InferenceBatcher:
                     req = self._queue.get(timeout=remaining)
                     if req is None:
                         # Sentinel placed by stop() — exit immediately.
+                        with contextlib.suppress(ValueError):
+                            self._queue.task_done()
                         return
                     batch.append(req)
                 except queue.Empty:
                     break
 
             if batch:
-                self._dispatch_batch(batch)
+                try:
+                    self._dispatch_batch(batch)
+                finally:
+                    for _req in batch:
+                        with contextlib.suppress(ValueError):
+                            self._queue.task_done()
 
-    def _dispatch_batch(self, batch: list[BatchRequest]) -> None:
+    def _dispatch_batch(self, batch: list[_BatchSubmission]) -> None:
         """Dispatch a batch of requests via local in-process inference."""
         with self._lock:
             self._total_batches += 1
             self._total_requests += len(batch)
 
         # Group by model for efficient batching
-        by_model: dict[str, list[BatchRequest]] = {}
-        for req in batch:
-            by_model.setdefault(req.model_id, []).append(req)
+        by_model: dict[str, list[_BatchSubmission]] = {}
+        for submission in batch:
+            by_model.setdefault(submission.request.model_id, []).append(submission)
 
-        for model_id, requests in by_model.items():
+        for model_id, submissions in by_model.items():
             try:
-                from vetinari.adapters.llama_cpp_local_adapter import LocalInferenceAdapter
-
-                adapter = LocalInferenceAdapter()
-                for req in requests:
+                adapter = get_local_inference_adapter(model_id or None)
+                for submission in submissions:
+                    req = submission.request
                     try:
                         result = adapter.chat(
                             model_id=model_id or "default",
                             system_prompt=req.system_prompt,
                             input_text=req.prompt,
+                            task_type=req.task_type,
+                            max_tokens=req.max_tokens,
+                            temperature=req.temperature,
                         )
-                        req.result = result.get("output", "")
+                        submission.set_result(result.get("output", ""))
                     except Exception as e:
-                        req.error = str(e)
+                        submission.set_failure(str(e))
                     finally:
-                        req.event.set()
+                        submission.event.set()
             except Exception as e:
-                for req in requests:
-                    req.error = str(e)
-                    req.event.set()
+                for submission in submissions:
+                    submission.set_failure(str(e))
+                    submission.event.set()
 
-    def _dispatch_single(self, request: BatchRequest) -> str:
+    @staticmethod
+    def _dispatch_single(request: BatchRequest) -> str:
         """Synchronous single-request dispatch (batching disabled)."""
         try:
-            from vetinari.adapters.llama_cpp_local_adapter import LocalInferenceAdapter
-
-            adapter = LocalInferenceAdapter()
+            request = _guarded_batch_request(request)
+            adapter = get_local_inference_adapter(request.model_id or None)
             result = adapter.chat(
                 model_id=request.model_id or "default",
                 system_prompt=request.system_prompt,
                 input_text=request.prompt,
+                task_type=request.task_type,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
             )
-            return result.get("output", "")
+            return str(result.get("output", ""))
         except Exception as e:
             raise InferenceError(f"Inference failed: {e}") from e
 
@@ -250,3 +359,22 @@ def get_inference_batcher(config: BatchConfig | None = None) -> InferenceBatcher
             if _batcher is None:
                 _batcher = InferenceBatcher(config)
     return _batcher
+
+
+def _guarded_batch_request(request: BatchRequest) -> BatchRequest:
+    """Run input guardrails before local batch dispatch."""
+    guardrails = GuardrailsManager()
+    prompt_result = guardrails.check_input(request.prompt, context=RailContext.USER_FACING)
+    if not prompt_result.allowed:
+        reason = ", ".join(v.rail for v in prompt_result.violations) or "input_guardrail"
+        raise InferenceError(f"Batch inference blocked by input guardrails: {reason}")
+
+    system_prompt = request.system_prompt
+    if system_prompt:
+        system_result = guardrails.check_input(system_prompt, context=RailContext.USER_FACING)
+        if not system_result.allowed:
+            reason = ", ".join(v.rail for v in system_result.violations) or "system_prompt_guardrail"
+            raise InferenceError(f"Batch inference blocked by system prompt guardrails: {reason}")
+        system_prompt = system_result.content
+
+    return replace(request, prompt=prompt_result.content, system_prompt=system_prompt)

@@ -11,11 +11,15 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from vetinari.agents.contracts import (
     Plan,
     Task,
 )
+from vetinari.boundary_guards import account_evidence_drop
 from vetinari.exceptions import CircularDependencyError, PlanningError
 from vetinari.orchestration.graph_types import (
     ExecutionDAG as ExecutionPlan,
@@ -28,7 +32,7 @@ from vetinari.types import AgentType, StatusEnum
 logger = logging.getLogger(__name__)
 
 
-class GraphPlannerMixin:
+class GraphPlanningEngine:
     """DAG construction methods for AgentGraph.
 
     Provides plan creation, topological sorting, layer grouping, and
@@ -44,6 +48,10 @@ class GraphPlannerMixin:
     # Plan creation
     # ------------------------------------------------------------------
 
+    if TYPE_CHECKING:
+        _agents: dict[AgentType, Any]
+        _execution_plans: dict[str, ExecutionPlan]
+
     def create_execution_plan(self, plan: Plan) -> ExecutionPlan:
         """Build an ExecutionPlan with task nodes and topological order.
 
@@ -56,6 +64,13 @@ class GraphPlannerMixin:
 
         Returns:
             An ExecutionPlan ready for execution.
+
+        Raises:
+            PlanningError: If constraint validation is unavailable.
+            CircularDependencyError: If task dependencies contain a cycle.
+
+        Constraint validation fails closed: planning stops when the registry is
+        unavailable, after recording the dropped validation evidence.
         """
         exec_plan = ExecutionPlan(plan_id=plan.plan_id, original_plan=plan)
 
@@ -92,8 +107,11 @@ class GraphPlannerMixin:
                             task.id,
                             reason,
                         )
-        except Exception:  # Broad: optional feature; any failure must not block task execution
-            logger.warning("Constraint system not available, proceeding without validation")
+        except Exception as exc:
+            item = {"plan_id": plan.plan_id, "task_count": len(plan.tasks)}
+            account_evidence_drop(item, "constraint_validation", logger=logger)
+            logger.warning("Constraint system unavailable during graph planning")
+            raise PlanningError("constraint system unavailable during graph planning") from exc
 
         # Build reverse edges (dependents)
         for task_id, node in exec_plan.nodes.items():
@@ -105,7 +123,8 @@ class GraphPlannerMixin:
         self._execution_plans[plan.plan_id] = exec_plan
         return exec_plan
 
-    def _topological_sort(self, nodes: dict[str, TaskNode]) -> list[str]:
+    @staticmethod
+    def _topological_sort(nodes: dict[str, TaskNode]) -> list[str]:
         """Kahn's algorithm topological sort with cycle detection.
 
         Args:
@@ -118,11 +137,11 @@ class GraphPlannerMixin:
             CircularDependencyError: If a cycle is detected in the graph.
         """
         in_degree = {tid: len(n.dependencies) for tid, n in nodes.items()}
-        queue = [tid for tid, d in in_degree.items() if d == 0]
+        queue = deque(tid for tid, d in in_degree.items() if d == 0)
         result: list[str] = []
 
         while queue:
-            current = queue.pop(0)
+            current = queue.popleft()
             result.append(current)
             for dependent_id in nodes[current].dependents:
                 in_degree[dependent_id] -= 1
@@ -151,18 +170,29 @@ class GraphPlannerMixin:
         Returns:
             List of layers, each layer a list of task IDs that can run in parallel.
         """
-        completed: set[str] = set()
-        remaining = set(exec_plan.nodes.keys())
         raw_layers: list[list[str]] = []
+        in_degree = {tid: len(node.dependencies) for tid, node in exec_plan.nodes.items()}
+        ready = deque(tid for tid, degree in in_degree.items() if degree == 0)
+        placed: set[str] = set()
 
-        while remaining:
-            ready = [tid for tid in remaining if exec_plan.nodes[tid].dependencies <= completed]
-            if not ready:
-                # No progress — likely a cycle that slipped through; add remaining
-                ready = list(remaining)
-            raw_layers.append(ready)
-            remaining.difference_update(ready)
-            completed.update(ready)
+        while ready:
+            layer = list(ready)
+            ready.clear()
+            raw_layers.append(layer)
+            for task_id in layer:
+                placed.add(task_id)
+                for dependent_id in exec_plan.nodes[task_id].dependents:
+                    if dependent_id not in in_degree:
+                        continue
+                    in_degree[dependent_id] -= 1
+                    if in_degree[dependent_id] == 0:
+                        ready.append(dependent_id)
+
+        if len(placed) != len(exec_plan.nodes):
+            # Preserve the legacy fail-soft behavior for malformed DAGs that
+            # bypassed topological validation: expose blocked tasks in one
+            # final layer instead of hiding them.
+            raw_layers.append([tid for tid in exec_plan.nodes if tid not in placed])
 
         # Subdivide layers that exceed max_parallel_tasks for any agent type
         layers: list[list[str]] = []
@@ -171,8 +201,8 @@ class GraphPlannerMixin:
 
         return layers
 
+    @staticmethod
     def _subdivide_layer_by_parallelism(
-        self,
         layer: list[str],
         exec_plan: ExecutionPlan,
     ) -> list[list[str]]:
@@ -215,7 +245,7 @@ class GraphPlannerMixin:
     # Pipeline builder — variable-length DAGs per tier
     # ------------------------------------------------------------------
 
-    def build_pipeline(self, agents: list[AgentType]) -> ExecutionPlan:
+    def build_pipeline(self, agents: list[AgentType], *, clock: Callable[[], float] | None = None) -> ExecutionPlan:
         """Build an ExecutionPlan with a linear pipeline of specified agents.
 
         Creates a sequential DAG where each agent depends on the previous one.
@@ -224,6 +254,7 @@ class GraphPlannerMixin:
 
         Args:
             agents: Ordered list of agent types forming the pipeline.
+            clock: Optional timestamp source used for deterministic plan IDs.
 
         Returns:
             An ExecutionPlan with len(agents) nodes in a linear chain.
@@ -234,7 +265,8 @@ class GraphPlannerMixin:
         if not agents:
             raise PlanningError("Pipeline requires at least one agent")
 
-        plan_id = f"pipeline-{int(time.time())}"
+        active_clock = clock or time.time
+        plan_id = f"pipeline-{int(active_clock())}"
         tasks: list[Task] = []
         prev_task_id: str | None = None
 

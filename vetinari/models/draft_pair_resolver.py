@@ -20,14 +20,19 @@ Usage::
 
 from __future__ import annotations
 
+import ctypes
 import logging
+import platform
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
 
 # -- Configuration constants ---------------------------------------------------
 
@@ -35,6 +40,64 @@ MIN_SIZE_RATIO = 4.0  # Draft must be at least 4x smaller than main
 MAX_SIZE_RATIO = 10.0  # Draft must be at most 10x smaller than main
 ACCEPTANCE_RATE_DISABLE_THRESHOLD = 0.3  # Disable pair when acceptance drops below 30%
 ACCEPTANCE_RATE_WINDOW = 50  # Rolling window for acceptance rate tracking
+DEFAULT_VRAM_GB = 24.0
+DEFAULT_RAM_GB = 32.0
+
+
+def _detect_system_ram_gb() -> float:
+    """Return installed system RAM in GiB using psutil or stdlib fallbacks."""
+    try:
+        import psutil
+
+        return float(psutil.virtual_memory().total / (1024**3))
+    except ImportError as exc:
+        logger.info("psutil RAM detection unavailable: %s", exc)
+    except (AttributeError, OSError) as exc:
+        logger.warning("psutil RAM detection failed: %s", exc)
+
+    system = platform.system().lower()
+    if system == "linux":
+        return _detect_linux_ram_gb()
+    if system == "windows":
+        return _detect_windows_ram_gb()
+    if system == "darwin":
+        return _detect_macos_ram_gb()
+    raise OSError(f"unsupported platform for RAM auto-detection: {platform.system()!r}")
+
+
+def _detect_linux_ram_gb() -> float:
+    with Path("/proc/meminfo").open(encoding="utf-8") as handle:
+        for line in handle:
+            if line.startswith("MemTotal:"):
+                parts = line.split()
+                return float(int(parts[1]) * 1024 / (1024**3))
+    raise OSError("MemTotal not found in /proc/meminfo")
+
+
+def _detect_windows_ram_gb() -> float:
+    class _MemoryStatus(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    status = _MemoryStatus()
+    status.dwLength = ctypes.sizeof(_MemoryStatus)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):  # type: ignore[attr-defined]
+        raise OSError("GlobalMemoryStatusEx failed")
+    return float(status.ullTotalPhys / (1024**3))
+
+
+def _detect_macos_ram_gb() -> float:
+    output = subprocess.check_output(["/usr/sbin/sysctl", "-n", "hw.memsize"], text=True, timeout=5)
+    return float(int(output.strip()) / (1024**3))
 
 
 # -- Data classes --------------------------------------------------------------
@@ -74,9 +137,10 @@ class DraftPair:
             does not support speculative decoding.
         """
         try:
-            from llama_cpp import LlamaDraftModel  # type: ignore[import-untyped]
+            llama_cpp: Any = import_module("llama_cpp")
+            llama_draft_model = llama_cpp.LlamaDraftModel
 
-            return LlamaDraftModel(
+            return llama_draft_model(
                 model_path=str(self.draft_model_path),
                 n_gpu_layers=self.draft_gpu_layers,
             )
@@ -149,17 +213,111 @@ class DraftPairResolver:
     The draft model must also fit in available memory alongside the main model.
     """
 
-    def __init__(self, vram_gb: float = 24.0, ram_gb: float = 32.0):
+    def __init__(self, vram_gb: float | None = None, ram_gb: float | None = None):
         """Configure the resolver with system resource limits.
 
         Args:
-            vram_gb: Available GPU VRAM in GB.
-            ram_gb: Available system RAM in GB.
+            vram_gb: Available GPU VRAM in GB, or None to use the default.
+            ram_gb: Available system RAM in GB, or None to auto-detect.
         """
-        self._vram_gb = vram_gb
-        self._ram_gb = ram_gb
+        if vram_gb is None:
+            vram_gb = DEFAULT_VRAM_GB
+            logger.info(
+                "DraftPairResolver: GPU VRAM auto-detection requires a GPU inspection tool; using default vram_gb=%.1f",
+                vram_gb,
+            )
+        if ram_gb is None:
+            try:
+                ram_gb = _detect_system_ram_gb()
+            except Exception as exc:
+                ram_gb = DEFAULT_RAM_GB
+                logger.warning(
+                    "DraftPairResolver: could not auto-detect system resources; using defaults "
+                    "vram_gb=%.1f ram_gb=%.1f: %s",
+                    vram_gb,
+                    ram_gb,
+                    exc,
+                )
+        self._vram_gb = float(vram_gb)
+        self._ram_gb = float(ram_gb)
         self._pair_stats: dict[str, _PairStats] = {}
         self._lock = threading.Lock()
+
+    def _is_pair_disabled(self, main_model_path: Path, draft_model_path: Path) -> bool:
+        """Return whether a speculative pair is disabled by acceptance stats."""
+        pair_key = f"{main_model_path.stem}:{draft_model_path.stem}"
+        with self._lock:
+            stats = self._pair_stats.get(pair_key)
+            return bool(stats and stats.is_disabled)
+
+    @staticmethod
+    def _main_model_profile(main_model_path: Path) -> tuple[str, float] | None:
+        """Return family and size for a valid main model."""
+        try:
+            from vetinari.models.model_profiler import detect_family, read_metadata
+        except ImportError:
+            logger.debug("ModelProfiler not available; cannot resolve draft pairs")
+            return None
+        main_meta = read_metadata(main_model_path)
+        main_family = detect_family(main_meta.architecture)
+        main_size = main_meta.file_size_gb
+        if main_family == "unknown" or main_size <= 0:
+            logger.debug("Cannot resolve draft pair: unknown family or zero-size main model")
+            return None
+        return main_family, main_size
+
+    def _draft_candidate(
+        self,
+        main_model_path: Path,
+        draft_model_path: Path,
+        main_family: str,
+        main_size: float,
+    ) -> tuple[float, Path, float, str] | None:
+        """Return a candidate tuple when a draft model satisfies pairing rules."""
+        if draft_model_path == main_model_path or self._is_pair_disabled(main_model_path, draft_model_path):
+            return None
+        try:
+            from vetinari.models.model_profiler import detect_family, read_metadata
+
+            draft_meta = read_metadata(draft_model_path)
+            draft_family = detect_family(draft_meta.architecture)
+            draft_size = draft_meta.file_size_gb
+        except Exception as exc:
+            logger.warning("Failed to evaluate draft candidate %s: %s", draft_model_path.stem, exc)
+            return None
+        if draft_family != main_family or draft_size <= 0:
+            return None
+        ratio = main_size / draft_size
+        if not (MIN_SIZE_RATIO <= ratio <= MAX_SIZE_RATIO):
+            return None
+        if main_size + draft_size > (self._vram_gb + self._ram_gb):
+            return None
+        return ratio, draft_model_path, draft_size, draft_family
+
+    def _build_pair(
+        self,
+        main_model_path: Path,
+        main_family: str,
+        main_size: float,
+        candidate: tuple[float, Path, float, str],
+    ) -> DraftPair:
+        """Build a DraftPair from the best candidate tuple."""
+        best_ratio, best_path, best_size, best_family = candidate
+        main_on_gpu = main_size <= self._vram_gb
+        remaining_vram = max(0, self._vram_gb - main_size)
+        draft_on_gpu = best_size <= remaining_vram
+        return DraftPair(
+            main_model_path=main_model_path,
+            draft_model_path=best_path,
+            main_family=main_family,
+            draft_family=best_family,
+            main_size_gb=main_size,
+            draft_size_gb=best_size,
+            size_ratio=round(best_ratio, 1),
+            draft_gpu_layers=-1 if draft_on_gpu else 0,
+            main_on_gpu=main_on_gpu,
+            draft_on_gpu=draft_on_gpu,
+        )
 
     def find_pair(
         self,
@@ -181,95 +339,31 @@ class DraftPairResolver:
         Returns:
             The best DraftPair, or None if no suitable draft model exists.
         """
-        try:
-            from vetinari.models.model_profiler import detect_family, read_metadata
-        except ImportError:
-            logger.debug("ModelProfiler not available; cannot resolve draft pairs")
+        main_profile = self._main_model_profile(main_model_path)
+        if main_profile is None:
             return None
-
-        main_meta = read_metadata(main_model_path)
-        main_family = detect_family(main_meta.architecture)
-        main_size = main_meta.file_size_gb
-
-        if main_family == "unknown" or main_size <= 0:
-            logger.debug("Cannot resolve draft pair: unknown family or zero-size main model")
-            return None
+        main_family, main_size = main_profile
 
         candidates: list[tuple[float, Path, float, str]] = []
-
         for model_path in available_models:
-            if model_path == main_model_path:
-                continue
-
-            # Check if this pair is disabled
-            pair_key = f"{main_model_path.stem}:{model_path.stem}"
-            with self._lock:
-                stats = self._pair_stats.get(pair_key)
-                if stats and stats.is_disabled:
-                    continue
-
-            try:
-                draft_meta = read_metadata(model_path)
-                draft_family = detect_family(draft_meta.architecture)
-                draft_size = draft_meta.file_size_gb
-
-                # Rule 1: Same architecture family
-                if draft_family != main_family:
-                    continue
-
-                # Rule 2: Size ratio in 4-10x range
-                if draft_size <= 0:
-                    continue
-                ratio = main_size / draft_size
-                if not (MIN_SIZE_RATIO <= ratio <= MAX_SIZE_RATIO):
-                    continue
-
-                # Rule 3: Both fit in VRAM+RAM
-                total_needed = main_size + draft_size
-                if total_needed > (self._vram_gb + self._ram_gb):
-                    continue
-
-                candidates.append((ratio, model_path, draft_size, draft_family))
-
-            except Exception as exc:
-                logger.warning("Failed to evaluate draft candidate %s: %s", model_path.stem, exc)
+            candidate = self._draft_candidate(main_model_path, model_path, main_family, main_size)
+            if candidate is not None:
+                candidates.append(candidate)
 
         if not candidates:
             return None
 
-        # Pick the candidate closest to 6x ratio (sweet spot for speculative decoding)
         candidates.sort(key=lambda c: abs(c[0] - 6.0))
-        best_ratio, best_path, best_size, best_family = candidates[0]
-
-        # Determine GPU/CPU placement
-        main_on_gpu = main_size <= self._vram_gb
-        remaining_vram = max(0, self._vram_gb - main_size)
-        draft_on_gpu = best_size <= remaining_vram
-        draft_gpu_layers = -1 if draft_on_gpu else 0  # All GPU or all CPU
-
-        pair = DraftPair(
-            main_model_path=main_model_path,
-            draft_model_path=best_path,
-            main_family=main_family,
-            draft_family=best_family,
-            main_size_gb=main_size,
-            draft_size_gb=best_size,
-            size_ratio=round(best_ratio, 1),
-            draft_gpu_layers=draft_gpu_layers,
-            main_on_gpu=main_on_gpu,
-            draft_on_gpu=draft_on_gpu,
-        )
-
+        pair = self._build_pair(main_model_path, main_family, main_size, candidates[0])
         logger.info(
             "Found draft pair: %s (%.1fGB) -> %s (%.1fGB), ratio=%.1fx, draft_gpu=%s",
             main_model_path.stem,
             main_size,
-            best_path.stem,
-            best_size,
-            best_ratio,
-            "GPU" if draft_on_gpu else "CPU",
+            pair.draft_model_path.stem,
+            pair.draft_size_gb,
+            pair.size_ratio,
+            "GPU" if pair.draft_on_gpu else "CPU",
         )
-
         return pair
 
     def record_acceptance(self, main_model_id: str, draft_model_id: str, accepted: bool) -> None:

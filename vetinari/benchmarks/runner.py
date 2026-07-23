@@ -22,10 +22,9 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
 from typing import Any
 
-from vetinari.benchmarks.benchmark_types import (  # noqa: F401 - import intentionally probes or re-exports API surface
+from vetinari.benchmarks.benchmark_types import (
     BenchmarkCase,
     BenchmarkLayer,
     BenchmarkReport,
@@ -34,13 +33,36 @@ from vetinari.benchmarks.benchmark_types import (  # noqa: F401 - import intenti
     BenchmarkTier,
     ComparisonReport,
 )
-from vetinari.benchmarks.ci_benchmarks import (
-    run_ci_benchmarks,  # noqa: F401 - import intentionally probes or re-exports API surface
-)
-from vetinari.database import get_connection
+from vetinari.benchmarks.runner_execution import _build_suite_report, _notify_benchmark_feedback
 from vetinari.exceptions import ExecutionError
 
 logger = logging.getLogger(__name__)
+
+
+__all__ = [
+    "BenchmarkBootstrapError",
+    "BenchmarkCase",
+    "BenchmarkLayer",
+    "BenchmarkReport",
+    "BenchmarkResult",
+    "BenchmarkRunner",
+    "BenchmarkSuiteAdapter",
+    "BenchmarkTier",
+    "ComparisonReport",
+    "MetricStore",
+    "get_default_runner",
+]
+
+
+class BenchmarkBootstrapError(ExecutionError):
+    """Raised when default benchmark adapters cannot be registered safely."""
+
+
+def _get_metric_connection() -> Any:
+    """Return the current unified DB connection for metric-store operations."""
+    from vetinari.database import get_connection
+
+    return get_connection()
 
 
 # ============================================================
@@ -57,7 +79,7 @@ class MetricStore:
         Args:
             report: The BenchmarkReport to save including all individual results.
         """
-        conn = get_connection()
+        conn = _get_metric_connection()
         with conn:
             conn.execute(
                 """INSERT OR REPLACE INTO benchmark_runs
@@ -119,7 +141,7 @@ class MetricStore:
             Row dict from ``benchmark_runs`` with all aggregate metrics, or None if
             the run_id does not exist in the store.
         """
-        conn = get_connection()
+        conn = _get_metric_connection()
         row = conn.execute("SELECT * FROM benchmark_runs WHERE run_id = ?", (run_id,)).fetchone()
         if row is None:
             return None
@@ -135,7 +157,7 @@ class MetricStore:
             List of row dicts from ``benchmark_results``, one per case execution,
             ordered by insertion ID.
         """
-        conn = get_connection()
+        conn = _get_metric_connection()
         rows = conn.execute(
             "SELECT * FROM benchmark_results WHERE run_id = ? ORDER BY id",
             (run_id,),
@@ -152,7 +174,7 @@ class MetricStore:
         Returns:
             List of row dicts from ``benchmark_runs``, most recent first.
         """
-        conn = get_connection()
+        conn = _get_metric_connection()
         if suite_name:
             rows = conn.execute(
                 """SELECT * FROM benchmark_runs
@@ -177,7 +199,7 @@ class MetricStore:
         Returns:
             List of up to two run ID strings, most recent first.
         """
-        conn = get_connection()
+        conn = _get_metric_connection()
         rows = conn.execute(
             """SELECT run_id FROM benchmark_runs
                WHERE suite_name = ?
@@ -248,98 +270,16 @@ class BenchmarkRunner:
             raise ExecutionError(f"Unknown suite '{suite_name}'. Available: {list(self._suites.keys())}")
 
         run_id = f"{suite_name}-{uuid.uuid4().hex[:8]}"
-        started = datetime.now(timezone.utc).isoformat()
         cases = adapter.load_cases(limit=limit)
-
-        all_results: list[BenchmarkResult] = []
-        pass_counts: dict[str, int] = {}
-
-        for case in cases:
-            pass_counts[case.case_id] = 0
-            for _trial in range(trials):
-                try:
-                    result = adapter.run_case(case, run_id)
-                    result.score = adapter.evaluate(result)
-                    result.passed = result.score >= 0.5
-                except Exception as exc:
-                    result = BenchmarkResult(
-                        case_id=case.case_id,
-                        suite_name=suite_name,
-                        run_id=run_id,
-                        passed=False,
-                        score=0.0,
-                        error=str(exc),
-                    )
-                if result.passed:
-                    pass_counts[case.case_id] += 1
-                all_results.append(result)
-
-        finished = datetime.now(timezone.utc).isoformat()
-
-        if trials > 0 and cases:
-            fully_passed = sum(1 for c in cases if pass_counts[c.case_id] == trials)
-            pass_k = fully_passed / len(cases)
-        else:
-            pass_k = 0.0
-
-        report = BenchmarkReport(
-            run_id=run_id,
+        report = _build_suite_report(
+            adapter,
             suite_name=suite_name,
-            layer=adapter.layer,
-            tier=adapter.tier,
-            results=all_results,
-            started_at=started,
-            finished_at=finished,
+            run_id=run_id,
+            cases=cases,
+            trials=trials,
         )
-        report.compute_aggregates()
-        report.pass_k = pass_k
-
         self.track_metrics(report)
-
-        # Notify the workflow learner so benchmark outcomes inform future
-        # decomposition strategy selection.
-        try:
-            from vetinari.learning.workflow_learner import get_workflow_learner
-
-            get_workflow_learner().learn_from_benchmark({
-                "suite_name": suite_name,
-                "task_type": suite_name,
-                "pass_rate": report.pass_at_1,
-                "avg_score": report.avg_score,
-                "total_cases": report.total_cases,
-                "passed_cases": report.passed_cases,
-                "results": [{"passed": r.passed, "score": r.score} for r in all_results],
-                "metadata": report.metadata,
-            })
-        except Exception as exc:
-            logger.warning(
-                "Workflow learner update failed after suite %s — benchmark results will not improve decomposition: %s",
-                suite_name,
-                exc,
-            )
-
-        # Feed pass-rate back into the model performance feedback loop so that
-        # the dynamic router can prefer models that score well on benchmarks.
-        try:
-            from vetinari.learning.feedback_loop import get_feedback_loop
-
-            get_feedback_loop().record_benchmark_outcome(
-                model_id=suite_name,
-                benchmark_result={
-                    "suite_name": suite_name,
-                    "pass_at_1": report.pass_at_1,
-                    "avg_score": report.avg_score,
-                    "total_cases": report.total_cases,
-                    "passed_cases": report.passed_cases,
-                },
-            )
-        except Exception as exc:
-            logger.warning(
-                "Feedback loop update failed after suite %s — benchmark scores will not influence model routing: %s",
-                suite_name,
-                exc,
-            )
-
+        _notify_benchmark_feedback(suite_name, report)
         return report
 
     def run_single(self, benchmark_id: str) -> BenchmarkResult:
@@ -415,6 +355,21 @@ class BenchmarkRunner:
         elif comp.delta_pass_at_1 > threshold:
             comp.improvements.append(f"pass@1 improved by {comp.delta_pass_at_1:.4f}")
 
+        if comp.delta_avg_latency_ms > threshold:
+            comp.regressions.append(f"avg_latency_ms increased by {comp.delta_avg_latency_ms:.4f}")
+        elif comp.delta_avg_latency_ms < -threshold:
+            comp.improvements.append(f"avg_latency_ms decreased by {abs(comp.delta_avg_latency_ms):.4f}")
+
+        if comp.delta_total_tokens > 0:
+            comp.regressions.append(f"total_tokens increased by {comp.delta_total_tokens}")
+        elif comp.delta_total_tokens < 0:
+            comp.improvements.append(f"total_tokens decreased by {abs(comp.delta_total_tokens)}")
+
+        if comp.delta_cost_usd > threshold:
+            comp.regressions.append(f"total_cost_usd increased by {comp.delta_cost_usd:.6f}")
+        elif comp.delta_cost_usd < -threshold:
+            comp.improvements.append(f"total_cost_usd decreased by {abs(comp.delta_cost_usd):.6f}")
+
         return comp
 
     def track_metrics(self, report: BenchmarkReport) -> None:
@@ -458,50 +413,83 @@ class BenchmarkRunner:
 # ============================================================
 
 
-def get_default_runner() -> BenchmarkRunner:
+def get_default_runner(*, allow_degraded: bool = False) -> BenchmarkRunner:
     """Create a BenchmarkRunner with all built-in adapters registered.
 
     Attempts to register SWE-bench, Tau-bench, ToolBench, TaskBench, and API-Bank
-    adapters; silently skips any whose optional dependencies are not installed.
+    adapters. Bootstrap failures fail closed unless ``allow_degraded`` is true.
+
+    Args:
+        allow_degraded: When true, return a runner with the adapters that loaded
+            successfully instead of failing on adapter bootstrap errors.
 
     Returns:
         A BenchmarkRunner with all successfully loaded adapters registered.
+
+    Raises:
+        BenchmarkBootstrapError: If one or more built-in adapters fail to load
+            and degraded startup is not allowed.
     """
     runner = BenchmarkRunner()
+    failures: list[str] = []
+
+    def record_failure(label: str, exc: Exception) -> None:
+        logger.warning("Could not load %s adapter: %s", label, exc)
+        failures.append(f"{label}: {exc}")
 
     try:
         from vetinari.benchmarks.swe_bench import SWEBenchAdapter
 
         runner.register_suite(SWEBenchAdapter())
     except Exception as exc:
-        logger.warning("Could not load SWE-bench adapter: %s", exc)
+        record_failure("SWE-bench", exc)
 
     try:
         from vetinari.benchmarks.tau_bench import TauBenchAdapter
 
         runner.register_suite(TauBenchAdapter())
     except Exception as exc:
-        logger.warning("Could not load Tau-bench adapter: %s", exc)
+        record_failure("Tau-bench", exc)
 
     try:
         from vetinari.benchmarks.toolbench import ToolBenchAdapter
 
         runner.register_suite(ToolBenchAdapter())
     except Exception as exc:
-        logger.warning("Could not load ToolBench adapter: %s", exc)
+        record_failure("ToolBench", exc)
 
     try:
         from vetinari.benchmarks.taskbench import TaskBenchAdapter
 
         runner.register_suite(TaskBenchAdapter())
     except Exception as exc:
-        logger.warning("Could not load TaskBench adapter: %s", exc)
+        record_failure("TaskBench", exc)
 
     try:
         from vetinari.benchmarks.api_bank import APIBankAdapter
 
         runner.register_suite(APIBankAdapter())
     except Exception as exc:
-        logger.warning("Could not load API-Bank adapter: %s", exc)
+        record_failure("API-Bank", exc)
+
+    try:
+        from vetinari.benchmarks.external_probes import (
+            AgentSecurityInvariantAdapter,
+            EmbeddingQualityAdapter,
+            LMEvalHarnessProbeAdapter,
+            MCPAgentBenchmarkAdapter,
+            OWASPLLMTop10Adapter,
+        )
+
+        runner.register_suite(OWASPLLMTop10Adapter())
+        runner.register_suite(LMEvalHarnessProbeAdapter())
+        runner.register_suite(EmbeddingQualityAdapter())
+        runner.register_suite(MCPAgentBenchmarkAdapter())
+        runner.register_suite(AgentSecurityInvariantAdapter())
+    except Exception as exc:
+        record_failure("local external-benchmark probes", exc)
+
+    if failures and not allow_degraded:
+        raise BenchmarkBootstrapError("default benchmark runner degraded: " + "; ".join(failures))
 
     return runner

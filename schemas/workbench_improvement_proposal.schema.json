@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_improvement_proposal.schema.json",
+  "title": "Workbench Improvement Proposal",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "proposal_id",
+    "kind",
+    "target",
+    "baseline_ref",
+    "candidate_ref",
+    "evidence",
+    "risk",
+    "impacted_assets",
+    "rollback",
+    "mode",
+    "boundary",
+    "model_version",
+    "task_shape",
+    "opened_at_utc",
+    "expires_at_utc",
+    "promotion_approved"
+  ],
+  "properties": {
+    "proposal_id": { "$ref": "#/$defs/nonEmptyString" },
+    "kind": {
+      "enum": [
+        "feedback_rule",
+        "failure_recovery",
+        "implicit_prior",
+        "prompt_mutation",
+        "route_change",
+        "model_choice",
+        "method_change",
+        "backend_tuning"
+      ]
+    },
+    "target": { "enum": ["prompt", "route", "model", "method", "backend", "policy"] },
+    "baseline_ref": { "$ref": "#/$defs/nonEmptyString" },
+    "candidate_ref": { "$ref": "#/$defs/nonEmptyString" },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/EvidenceArtifact" }
+    },
+    "risk": { "enum": ["low", "medium", "high", "critical"] },
+    "impacted_assets": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "rollback": { "$ref": "#/$defs/RollbackPlan" },
+    "mode": { "enum": ["shadow", "canary", "live"] },
+    "boundary": { "$ref": "#/$defs/LearningBoundary" },
+    "model_version": { "$ref": "#/$defs/nonEmptyString" },
+    "task_shape": { "$ref": "#/$defs/nonEmptyString" },
+    "opened_at_utc": { "$ref": "#/$defs/dateTimeString" },
+    "expires_at_utc": { "$ref": "#/$defs/dateTimeString" },
+    "promotion_decision_id": { "type": "string" },
+    "promotion_approved": { "type": "boolean" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "mode": { "const": "live" } }, "required": ["mode"] },
+      "then": {
+        "properties": { "promotion_approved": { "const": true } },
+        "required": ["promotion_decision_id"]
+      }
+    }
+  ],
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "dateTimeString": { "type": "string", "format": "date-time", "minLength": 1 },
+    "EvidenceArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "kind",
+        "summary",
+        "captured_at_utc",
+        "supports_candidate",
+        "negative_result",
+        "contamination_checked"
+      ],
+      "properties": {
+        "artifact_id": { "$ref": "#/$defs/nonEmptyString" },
+        "kind": { "$ref": "#/$defs/nonEmptyString" },
+        "summary": { "$ref": "#/$defs/nonEmptyString" },
+        "captured_at_utc": { "$ref": "#/$defs/dateTimeString" },
+        "supports_candidate": { "type": "boolean" },
+        "negative_result": { "type": "boolean" },
+        "contamination_checked": { "type": "boolean" }
+      }
+    },
+    "LearningBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workspace_id",
+        "domain",
+        "user_scope",
+        "data_sensitivity",
+        "allowed_model_versions",
+        "task_shape"
+      ],
+      "properties": {
+        "workspace_id": { "$ref": "#/$defs/nonEmptyString" },
+        "domain": { "$ref": "#/$defs/nonEmptyString" },
+        "user_scope": { "$ref": "#/$defs/nonEmptyString" },
+        "data_sensitivity": {
+          "type": "string",
+          "minLength": 1,
+          "not": { "const": "unknown" }
+        },
+        "allowed_model_versions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "task_shape": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "RollbackPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target_ref", "owner", "steps", "expires_at_utc"],
+      "properties": {
+        "target_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "owner": { "$ref": "#/$defs/nonEmptyString" },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "expires_at_utc": { "$ref": "#/$defs/dateTimeString" }
+      }
+    }
+  }
+}

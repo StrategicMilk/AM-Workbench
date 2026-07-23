@@ -1,0 +1,303 @@
+{
+  "$id": "https://vetinari.local/schemas/workbench_knowledge_backfeed.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AM Workbench governed knowledge backfeed state",
+  "description": "Append-only proposal, decision, and approved trusted-record snapshot for knowledge backfeed governance.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "proposals": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/proposal"
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/decision"
+      }
+    },
+    "trusted_records": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/trusted_record"
+      }
+    }
+  },
+  "required": ["schema_version", "proposals", "decisions", "trusted_records"],
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "agent_discovery",
+            "user_correction",
+            "eval_failure",
+            "project_summary",
+            "mobile_note",
+            "external_fact"
+          ]
+        },
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "observed_at_utc": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["kind", "source_id", "evidence_ref", "confidence", "observed_at_utc"]
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scope_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "boundary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allowed_consumers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": ["trusted_context", "export", "eval"]
+          }
+        }
+      },
+      "required": ["scope_id", "boundary", "allowed_consumers"]
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "change_kind": {
+          "enum": ["entity", "relationship"]
+        },
+        "subject_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "relationship_target_ref": {
+          "type": "string"
+        },
+        "payload": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "deprecates": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "supersedes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": ["change_kind", "subject_ref", "relationship_target_ref", "payload", "deprecates", "supersedes"]
+    },
+    "proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "proposal_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "change": {
+          "$ref": "#/$defs/change"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "affected_workflows": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "proposed_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "created_at_utc": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "schema_version",
+        "proposal_id",
+        "run_id",
+        "source",
+        "change",
+        "scope",
+        "reason",
+        "affected_workflows",
+        "proposed_by",
+        "created_at_utc"
+      ]
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "decision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "proposal_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decision": {
+          "enum": ["approved", "rejected", "superseded"]
+        },
+        "decided_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "trusted_record_id": {
+          "type": "string"
+        },
+        "superseded_by": {
+          "type": "string"
+        },
+        "decided_at_utc": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "schema_version",
+        "decision_id",
+        "proposal_id",
+        "decision",
+        "decided_by",
+        "rationale",
+        "trusted_record_id",
+        "superseded_by",
+        "decided_at_utc"
+      ]
+    },
+    "trusted_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "record_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "proposal_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "const": "approved"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "change": {
+          "$ref": "#/$defs/change"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "affected_workflows": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "approved_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approved_at_utc": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "schema_version",
+        "record_id",
+        "proposal_id",
+        "run_id",
+        "status",
+        "source",
+        "change",
+        "scope",
+        "reason",
+        "affected_workflows",
+        "approved_by",
+        "approved_at_utc"
+      ]
+    }
+  }
+}

@@ -16,7 +16,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from vetinari.boundary_guards import account_evidence_drop
+from vetinari.learning.atomic_writers import write_json_atomic
+
 logger = logging.getLogger(__name__)
+
 
 _VERSIONS_DIR = Path(__file__).resolve().parent / "versions"
 
@@ -169,9 +173,20 @@ class PromptVersionManager:
 
         Returns:
             The saved PromptVersion (or the existing latest if unchanged).
+
+        Raises:
+            ValueError: If the existing prompt version history is corrupt.
         """
         checksum = _compute_checksum(prompt_text)
-        history = self._load_history(agent_type, mode)
+        try:
+            history = self._load_history(agent_type, mode)
+        except ValueError:
+            account_evidence_drop(
+                f"{agent_type}:{mode}",
+                "prompt_version_history_corrupt",
+                logger=logger,
+            )
+            raise
 
         # Skip if identical to latest
         if history and history[-1]["checksum"] == checksum:
@@ -367,7 +382,11 @@ class PromptVersionManager:
         try:
             data = json.loads(filepath.read_text(encoding="utf-8"))
             return data.get("versions", [])
-        except (json.JSONDecodeError, OSError) as exc:
+        except json.JSONDecodeError as exc:
+            logger.warning("Failed to decode version history: %s", exc)
+            account_evidence_drop(str(filepath), "prompt_version_history_corrupt", logger=logger)
+            raise ValueError(f"version history is corrupt: {filepath}") from exc
+        except OSError as exc:
             logger.warning("Failed to load version history: %s", exc)
             return []
 
@@ -390,10 +409,7 @@ class PromptVersionManager:
             "mode": mode,
             "versions": history,
         }
-        filepath.write_text(
-            json.dumps(data, indent=2),
-            encoding="utf-8",
-        )
+        write_json_atomic(filepath, data)
 
 
 # Singleton

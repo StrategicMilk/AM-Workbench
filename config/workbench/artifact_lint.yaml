@@ -1,0 +1,60 @@
+schema_version: 1
+policy:
+  block_on_severity: BLOCKER
+  per_kind_overrides: {}
+rules:
+  - rule_id: broken_links_http_status
+    family: broken_links
+    severity: ERROR
+    applies_to_kinds: [evidence_asset, evidence_notebook, prompt, model_card, dataset_card, system_card]
+    structure_check: links_resolve_to_known_targets
+    risk_tags: [BROKEN_LINK]
+    description: "Outbound link in artifact does not resolve to a known target."
+  - rule_id: missing_provenance_source
+    family: missing_provenance
+    severity: BLOCKER
+    applies_to_kinds: [evidence_asset, prompt, dataset, model_route, model_card, dataset_card, system_card]
+    structure_check: provenance_has_source_pair
+    risk_tags: [MISSING_PROVENANCE]
+    description: "Artifact has no non-empty source provenance pair."
+  - rule_id: off_policy_efficacy_claim
+    family: off_policy_claims
+    severity: BLOCKER
+    applies_to_kinds: [evidence_asset, model_card, system_card, dataset_card]
+    term_list:
+      - "guaranteed to"
+      - "100% accurate"
+      - "cures"
+      - "diagnoses"
+      - "FDA approved"
+      - "outperforms all competitors"
+    risk_tags: [OFF_POLICY_CLAIM]
+    description: "Deterministic pre-filter for off-policy efficacy or compliance claims."
+  - rule_id: weak_accessibility_alt_text
+    family: weak_accessibility_metadata
+    severity: ERROR
+    applies_to_kinds: [ui_mockup, system_card]
+    structure_check: images_have_alt_text
+    risk_tags: [WEAK_ACCESSIBILITY_METADATA]
+    description: "An image element is missing or has empty alt text."
+  - rule_id: stale_revision_reference
+    family: stale_references
+    severity: WARNING
+    applies_to_kinds: [evidence_asset, prompt, model_route, dataset, evidence_notebook]
+    structure_check: dependency_revisions_are_known
+    risk_tags: [STALE_REFERENCE]
+    description: "Artifact references a dependency revision that is not known."
+  - rule_id: brand_style_unapproved_color
+    family: brand_style_violations
+    severity: WARNING
+    applies_to_kinds: [ui_mockup, system_card]
+    pattern: "#(?!(?:0066CC|FFFFFF|111827|374151)\\b)[0-9A-Fa-f]{6}"
+    risk_tags: [BRAND_STYLE_VIOLATION]
+    description: "UI mockup uses a hex color outside the approved Workbench palette."
+  - rule_id: missing_evidence_anchor
+    family: missing_evidence_anchors
+    severity: BLOCKER
+    applies_to_kinds: [evidence_asset, model_card, dataset_card, system_card]
+    structure_check: at_least_one_evidence_ref
+    risk_tags: [MISSING_EVIDENCE_ANCHOR]
+    description: "Artifact has zero evidence_refs and is not exempted by kind."

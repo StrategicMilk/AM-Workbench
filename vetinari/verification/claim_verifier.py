@@ -7,7 +7,7 @@ Enforces six failure modes that MUST produce ``OutcomeSignal(passed=False)``:
 3. Unverified file claim: claimed file does not exist or SHA-256 hash mismatches -> UNSUPPORTED.
 4. Entailment contradiction: static entailment checker flags a false claim -> UNSUPPORTED.
 5. Bare HUMAN_ATTESTED on high-accuracy factual claim (no attested_artifacts) -> UNSUPPORTED.
-6. LLM-only on high-accuracy claim: basis <= LLM_JUDGMENT -> LLM_JUDGMENT with advisory.
+6. LLM-only on high-accuracy claim: basis <= LLM_JUDGMENT -> failed LLM_JUDGMENT with advisory.
 
 HUMAN_ATTESTED-with-artifact narrowing (used by cases 5b-d):
 - A matching COMMIT_SHA whose diff contains the claimed change -> passes.
@@ -26,6 +26,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from vetinari.agents.contracts import AttestedArtifact, OutcomeSignal, Provenanc
 from vetinari.types import ArtifactKind, EvidenceBasis
 
 logger = logging.getLogger(__name__)
+
 
 # -- Module-level constants ---------------------------------------------------
 
@@ -159,12 +161,18 @@ def verify_evidence_freshness(
     signal: OutcomeSignal,
     *,
     freshness_window_seconds: int = DEFAULT_FRESHNESS_WINDOW_SECONDS,
+    clock: Callable[[], datetime] = _now_utc,
 ) -> OutcomeSignal:
     """Verify that a signal's evidence was produced within the freshness window.
 
     Failure mode 2: evidence older than ``freshness_window_seconds`` is
     treated as stale.  When the Provenance timestamp cannot be parsed, the
     evidence is also treated as stale (fail-closed).
+
+    Args:
+        signal: Outcome signal whose provenance timestamp should be checked.
+        freshness_window_seconds: Maximum accepted evidence age.
+        clock: Time source used for deterministic freshness checks.
 
     Args:
         signal: The OutcomeSignal to check.
@@ -188,7 +196,10 @@ def verify_evidence_freshness(
             "freshness",
         )
 
-    cutoff = _now_utc() - timedelta(seconds=freshness_window_seconds)
+    now = clock()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    cutoff = now - timedelta(seconds=freshness_window_seconds)
     if ts < cutoff:
         fresh_by = signal.provenance.timestamp_utc
         return _unsupported(
@@ -406,12 +417,12 @@ def verify_not_llm_only(
     *,
     high_accuracy: bool = True,
 ) -> OutcomeSignal:
-    """Flag LLM-only signals on high-accuracy claim paths with an advisory.
+    """Fail high-accuracy LLM-only signals while preserving the advisory.
 
     Failure mode 6: an LLM-only signal (basis == LLM_JUDGMENT, no tool
-    evidence) on a high-accuracy factual claim path does NOT auto-fail — the
-    spec requires the advisory to be visible, not that the signal must produce
-    passed=False.  The function adds a "no tool evidence" issue when missing.
+    evidence) on a high-accuracy factual claim path must not pass.  The
+    function adds a "no tool evidence" issue when missing and returns the
+    signal with ``passed=False``.
 
     When ``high_accuracy`` is False the signal is returned unchanged.
 
@@ -421,8 +432,8 @@ def verify_not_llm_only(
             When False, no advisory is added.
 
     Returns:
-        The original signal with "no tool evidence" advisory added to issues
-        when basis is LLM_JUDGMENT and no tool evidence is present.
+        The original signal when tool evidence is present; otherwise a failed
+        signal with "no tool evidence" advisory added to issues.
     """
     if not high_accuracy:
         return signal
@@ -435,13 +446,8 @@ def verify_not_llm_only(
         return signal
 
     advisory = "no tool evidence — verdict is LLM judgment only"
-    if advisory not in signal.issues:
-        return dataclasses.replace(
-            signal,
-            issues=(*signal.issues, advisory),
-        )
-
-    return signal
+    issues = signal.issues if advisory in signal.issues else (*signal.issues, advisory)
+    return dataclasses.replace(signal, passed=False, score=0.0, issues=issues)
 
 
 # -- Composite gate: run all six checks in sequence ---------------------------
@@ -471,7 +477,7 @@ def verify_claim_fail_closed(
     3. File claim verified (only when claimed_path is given).
     4. No entailment contradiction.
     5. HUMAN_ATTESTED has a matching artifact (on non-intent-confirmation paths).
-    6. LLM-only advisory (adds issue but does not force passed=False).
+    6. LLM-only high-accuracy path fails closed with advisory.
 
     Args:
         signal: The OutcomeSignal to validate.

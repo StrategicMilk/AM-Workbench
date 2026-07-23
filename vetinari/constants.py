@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2024-2026 Vetinari Contributors
+# SPDX-License-Identifier: Apache-2.0
 """Vetinari Constants.
 
 ==================
@@ -10,25 +12,45 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
 
+
 # ── Project Root ──────────────────────────────────────────────────────────────
-_PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
+_PROJECT_ROOT: Path = Path(__file__).parent.parent
+PROJECT_ROOT: Path = _PROJECT_ROOT
 
 # ── Local Inference ──────────────────────────────────────────────────────────
 _DEFAULT_PROJECT_GGUF_MODELS_DIR: Path = _PROJECT_ROOT / "models"
 _DEFAULT_PROJECT_NATIVE_MODELS_DIR: Path = _PROJECT_ROOT / "models" / "native"
-DEFAULT_GGUF_MODELS_DIR: str = os.environ.get(
-    "VETINARI_MODELS_DIR",
-    str(
-        _DEFAULT_PROJECT_GGUF_MODELS_DIR
-        if _DEFAULT_PROJECT_GGUF_MODELS_DIR.exists()
-        else Path.home() / ".vetinari" / "models"
-    ),
-)
-DEFAULT_MODELS_DIR: str = DEFAULT_GGUF_MODELS_DIR  # noqa: VET306 — constant definition, prefers user dir via env/home fallback
+
+
+def _home_or_temp() -> Path:
+    """Return the user's home directory, falling back when the OS cannot resolve it."""
+    try:
+        return Path.home()
+    except RuntimeError as exc:
+        logger.warning("Could not determine home directory; using temp directory for Vetinari paths: %s", exc)
+        return Path(tempfile.gettempdir())
+
+
+def _default_gguf_models_dir() -> Path:
+    if _DEFAULT_PROJECT_GGUF_MODELS_DIR.exists():
+        return _DEFAULT_PROJECT_GGUF_MODELS_DIR
+    return _home_or_temp() / ".vetinari" / "models"
+
+
+def _default_native_models_dir() -> Path:
+    if _DEFAULT_PROJECT_NATIVE_MODELS_DIR.exists():
+        return _DEFAULT_PROJECT_NATIVE_MODELS_DIR
+    return _home_or_temp() / ".vetinari" / "models" / "native"
+
+
+DEFAULT_GGUF_MODELS_DIR: str = f"{_DEFAULT_PROJECT_GGUF_MODELS_DIR}"
+DEFAULT_MODELS_DIR: str = DEFAULT_GGUF_MODELS_DIR
 
 
 # ── Operator-owned cache root (no project tree fallback) ────────────────────────
@@ -45,10 +67,34 @@ def _get_models_cache_dir() -> str:
         appdata = os.environ.get("LOCALAPPDATA")
         if appdata:
             return str(Path(appdata) / "Vetinari" / "models")
-    return str(Path.home() / ".cache" / "vetinari" / "models")
+    return str(_home_or_temp() / ".cache" / "vetinari" / "models")
 
 
-OPERATOR_MODELS_CACHE_DIR: str = _get_models_cache_dir()
+def get_operator_models_cache_dir() -> str:
+    """Return the operator-owned model cache directory on explicit request."""
+    return _get_models_cache_dir()
+
+
+if TYPE_CHECKING:
+    OPERATOR_MODELS_CACHE_DIR: str
+    DEFAULT_EMBEDDING_API_URL: str
+    DEFAULT_A2A_BASE_URL: str
+    DEFAULT_SEARXNG_URL: str
+
+
+def __getattr__(name: str) -> str:
+    if name == "OPERATOR_MODELS_CACHE_DIR":
+        return get_operator_models_cache_dir()
+    if name == "DEFAULT_EMBEDDING_API_URL":
+        # AM Engine endpoint discovery is supervisor-owned. The environment
+        # override remains only for compatibility callers that explicitly
+        # manage an OpenAI-compatible endpoint.
+        return os.environ.get("VETINARI_EMBEDDING_API_URL", "")
+    if name == "DEFAULT_A2A_BASE_URL":
+        return os.environ.get("VETINARI_A2A_BASE_URL", "http://localhost:8000")
+    if name == "DEFAULT_SEARXNG_URL":
+        return os.environ.get("VETINARI_SEARXNG_URL", "http://localhost:8888")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _env_int(name: str, default: int) -> int:
@@ -62,26 +108,15 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-DEFAULT_NATIVE_MODELS_DIR: str = os.environ.get(
-    "VETINARI_NATIVE_MODELS_DIR",
-    str(
-        _DEFAULT_PROJECT_NATIVE_MODELS_DIR
-        if _DEFAULT_PROJECT_NATIVE_MODELS_DIR.exists()
-        else Path.home() / ".vetinari" / "models" / "native"
-    ),
-)
-DEFAULT_GPU_LAYERS: int = _env_int("VETINARI_GPU_LAYERS", -1)  # -1 = all layers on GPU
-DEFAULT_CONTEXT_LENGTH: int = _env_int("VETINARI_CONTEXT_LENGTH", 8192)
+DEFAULT_NATIVE_MODELS_DIR: str = f"{_DEFAULT_PROJECT_NATIVE_MODELS_DIR}"
+DEFAULT_GPU_LAYERS: int = -1  # -1 = all layers on GPU
+DEFAULT_CONTEXT_LENGTH: int = 8192
 
 # ── Web UI ────────────────────────────────────────────────────────────────────
-DEFAULT_WEB_PORT: int = int(os.environ.get("VETINARI_WEB_PORT", 5000))
-DEFAULT_WEB_CLIENT_PORT: int = _env_int("VETINARI_WEB_CLIENT_PORT", 3000)
-DEFAULT_WEB_HOST: str = os.environ.get("VETINARI_WEB_HOST", "127.0.0.1")
-VETINARI_DEBUG: bool = os.environ.get("VETINARI_DEBUG", "false").lower() in (
-    "1",
-    "true",
-    "yes",
-)  # Enable debug mode via VETINARI_DEBUG=1 env var
+DEFAULT_WEB_PORT: int = 5000
+DEFAULT_WEB_CLIENT_PORT: int = 3000
+DEFAULT_WEB_HOST: str = "127.0.0.1"
+VETINARI_DEBUG: bool = False  # Enable debug mode via VETINARI_DEBUG=1 env var
 
 # ── Generic Timeouts (seconds) ────────────────────────────────────────────────
 TIMEOUT_SHORT: int = 5  # Quick health checks, model discovery pings
@@ -138,7 +173,7 @@ CIRCUIT_BREAKER_RECOVERY_TIMEOUT_LONG: int = 60  # Longer recovery for worker ag
 
 # ── Execution ─────────────────────────────────────────────────────────────────
 DEFAULT_MAX_CONCURRENT: int = 4
-DEFAULT_PLAN_DEPTH_CAP: int = int(os.environ.get("PLAN_DEPTH_CAP", 16))
+DEFAULT_PLAN_DEPTH_CAP: int = 16
 MIN_PLAN_DEPTH: int = 12
 MAX_PLAN_DEPTH: int = 16
 MIN_TASKS_PER_PLAN: int = 3  # Minimum valid tasks (was 5, now 3 to allow simple goals)
@@ -147,7 +182,6 @@ MAX_TASKS_PER_PLAN: int = 20
 # ── Context / Tokens ─────────────────────────────────────────────────────────
 DEFAULT_CONTEXT_BUDGET: int = 80000  # Characters (~20K tokens) — modern local models handle 32K-64K context windows
 DEFAULT_MAX_TOKENS: int = 8192  # Default output budget — 4K was 2023-era; 8K is minimum viable for agentic work
-TOKEN_ESTIMATION_RATIO: int = 4  # ~4 chars per token (rough estimate)
 
 # ── Inference Temperature Presets ─────────────────────────────────────────────
 DEFAULT_TEMPERATURE: float = 0.7  # General generation — balanced creativity/coherence
@@ -212,7 +246,7 @@ LOG_BACKEND_BUFFER_SIZE: int = 1000  # SSE log backend in-memory buffer
 
 # ── Polling / Startup Delays (seconds) ──────────────────────────────────────
 MAIN_LOOP_POLL_INTERVAL: float = 1.0  # Dashboard/watch main loop sleep interval
-VETINARI_STARTUP_DELAY: float = 1.0  # Delay after starting Litestar/uvicorn thread
+VETINARI_STARTUP_DELAY: float = 1.0  # Delay after starting the native kernel/dashboard supervisor
 TRAINING_SCHEDULER_DELAY: float = 2.0  # Delay for manual training scheduler cycle
 
 # ── Quality thresholds ───────────────────────────────────────────────────────
@@ -239,6 +273,14 @@ MODEL_SCORE_WEIGHT_CONTEXT: float = 0.15  # Context length fit — matters less 
 MODEL_SCORE_WEIGHT_LATENCY: float = 0.10  # Latency score — quality > speed for most tasks
 MODEL_SCORE_WEIGHT_COST: float = 0.15  # Cost per 1K tokens
 MODEL_SCORE_WEIGHT_FREE_TIER: float = 0.20  # Free tier bonus — boost local model preference
+
+# Meta-learning strategy value spaces used by Thompson strategy selection.
+STRATEGY_VALUE_SPACES: dict[str, list[str | int | float]] = {
+    "prompt_template_variant": ["standard", "concise", "detailed", "structured"],
+    "context_window_size": [2048, 4096, 8192, 16384],
+    "temperature": [0.0, 0.3, 0.5, 0.7, 1.0],
+    "decomposition_granularity": ["coarse", "medium", "fine"],
+}
 
 # ── Agent Affinity Scoring Bonuses ───────────────────────────────────────────
 AFFINITY_LATENCY_BONUS: float = 0.5  # Bonus when model matches latency preference
@@ -281,16 +323,30 @@ TRAINING_ROTATION_LIMIT: int = 100_000  # Rotate JSONL after this many records
 ANTHROPIC_API_BASE_URL: str = "https://api.anthropic.com/v1"
 OPENAI_API_BASE_URL: str = "https://api.openai.com/v1"
 DATADOG_LOGS_URL: str = "https://http-intake.logs.datadoghq.com/api/v2/logs"
-DEFAULT_EMBEDDING_API_URL: str = os.environ.get("VETINARI_EMBEDDING_API_URL", "http://127.0.0.1:1234")
-DEFAULT_A2A_BASE_URL: str = os.environ.get("VETINARI_A2A_URL", "http://localhost:8000")
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-CHECKPOINT_DIR: Path = _PROJECT_ROOT / "vetinari_checkpoints"
-OUTPUTS_DIR: Path = _PROJECT_ROOT / "outputs"
-PROJECTS_DIR: Path = _PROJECT_ROOT / "projects"
-LOGS_DIR: Path = _PROJECT_ROOT / "logs"
-MODEL_CACHE_DIR: Path = _PROJECT_ROOT / "model_cache"
-VETINARI_STATE_DIR: Path = _PROJECT_ROOT / ".vetinari"
+# VETINARI_DATA_ROOT is the canonical writable state root. Missing directories
+# are created lazily by callers. Corrupt SQLite/preferences files fail closed in
+# their owning modules rather than being silently overwritten; stale state after
+# restart remains under this single root so operators can back up or repair one
+# tree.
+
+
+def _default_data_root() -> Path:
+    if override := os.environ.get("VETINARI_DATA_ROOT"):
+        return Path(override)
+    if user_root := os.environ.get("VETINARI_USER_DIR"):
+        return Path(user_root)
+    return _home_or_temp() / ".vetinari"
+
+
+VETINARI_DATA_ROOT: Path = Path(".vetinari")
+CHECKPOINT_DIR: Path = VETINARI_DATA_ROOT / "vetinari_checkpoints"
+OUTPUTS_DIR: Path = VETINARI_DATA_ROOT / "outputs"
+PROJECTS_DIR: Path = VETINARI_DATA_ROOT / "projects"
+LOGS_DIR: Path = VETINARI_DATA_ROOT / "logs"
+MODEL_CACHE_DIR: Path = VETINARI_DATA_ROOT / "model_cache"
+VETINARI_STATE_DIR: Path = VETINARI_DATA_ROOT / ".vetinari"
 
 # ── Kaizen / continuous-improvement paths ─────────────────────────────────────
 KAIZEN_DATA_DIR: Path = _PROJECT_ROOT / "data"  # Kaizen SQLite and JSON stores
@@ -301,12 +357,11 @@ KAIZEN_OVERRIDES_PATH: Path = KAIZEN_DATA_DIR / "kaizen_overrides.json"  # PDCA 
 AUDIT_LOG_DIR: Path = LOGS_DIR / "audit"  # Directory for JSONL audit logs
 
 # ── Search ───────────────────────────────────────────────────────────────────
-DEFAULT_SEARXNG_URL: str = os.environ.get("SEARXNG_URL", "http://localhost:8888")
-DEFAULT_SEARCH_BACKEND: str = os.environ.get("VETINARI_SEARCH_BACKEND", "searxng")
+DEFAULT_SEARCH_BACKEND: str = "searxng"
 
 # ── Image generation (diffusers, in-process) ─────────────────────────────────
-IMAGE_MODELS_DIR: str = os.environ.get("VETINARI_IMAGE_MODELS_DIR", str(_PROJECT_ROOT / "image_models"))
-IMAGE_ENABLED: bool = os.environ.get("VETINARI_IMAGE_ENABLED", "true").lower() in ("1", "true", "yes")
+IMAGE_MODELS_DIR: str = f"{_PROJECT_ROOT / 'image_models'}"
+IMAGE_ENABLED: bool = True
 IMAGE_DEFAULT_WIDTH: int = 1024  # SDXL native resolution
 IMAGE_DEFAULT_HEIGHT: int = 1024
 IMAGE_DEFAULT_STEPS: int = 20
@@ -362,4 +417,7 @@ def get_user_dir() -> Path:
     Returns:
         Path to the user-level Vetinari data directory.
     """
-    return Path(os.environ.get("VETINARI_USER_DIR", str(Path.home() / ".vetinari")))
+    user_dir = os.environ.get("VETINARI_USER_DIR")
+    if user_dir:
+        return Path(user_dir)
+    return _home_or_temp() / ".vetinari"

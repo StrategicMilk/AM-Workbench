@@ -1,0 +1,112 @@
+# Benchmark importer provider catalog.
+# Read by vetinari.workbench.benchmark_importer.BenchmarkImporter at construction
+# time. The enum lists below are closed sets; adding values requires matching
+# importer enum and test updates.
+schema_version: 1
+license_classifications:
+  - permissive_open_source
+  - restricted_research_use
+  - proprietary_redistribution_blocked
+  - unknown_blocked
+privacy_classifications:
+  - public
+  - internal_only
+  - pii_blocked
+eval_methods:
+  - offline_suite
+  - red_team
+  - live_trace_derived
+  - human_annotation
+  - judge_only
+allowed_output_schemas:
+  - text
+  - schemas/local_trace_case.schema.json
+providers:
+  humaneval_external:
+    kind: external_benchmark
+    class_path: vetinari.workbench.benchmark_importer.ExternalHttpProvider
+    status: pending_pin
+    source_url: pending_pin
+    version_pin: pending_pin
+    integrity_sha256: pending_pin
+    allowed_license_classifications:
+      - permissive_open_source
+    allowed_privacy_classifications:
+      - public
+    default_eval_method: offline_suite
+    description: OpenAI HumanEval code-completion benchmark with JSONL or CSV ingestion.
+  local_failed_trace:
+    kind: local_failed_trace
+    class_path: vetinari.workbench.benchmark_importer.LocalTraceProvider
+    status: pending_pin
+    source_url: pending_pin
+    version_pin: pending_pin
+    integrity_sha256: pending_pin
+    allowed_license_classifications:
+      - permissive_open_source
+      - restricted_research_use
+      - proprietary_redistribution_blocked
+    allowed_privacy_classifications:
+      - public
+      - internal_only
+    default_eval_method: live_trace_derived
+    description: Local trace replay converted through the Workbench trace-to-eval factory.
+  github_issue:
+    kind: github_issue
+    class_path: vetinari.workbench.benchmark_importer.GitHubIssueProvider
+    status: pending_pin
+    source_url: pending_pin
+    version_pin: pending_pin
+    integrity_sha256: pending_pin
+    allowed_license_classifications:
+      - permissive_open_source
+      - restricted_research_use
+    allowed_privacy_classifications:
+      - public
+    default_eval_method: human_annotation
+    description: GitHub issue text imported as an annotated evaluation case.
+  support_ticket:
+    kind: support_ticket
+    class_path: vetinari.workbench.benchmark_importer.SupportTicketProvider
+    status: pending_pin
+    source_url: pending_pin
+    version_pin: pending_pin
+    integrity_sha256: pending_pin
+    allowed_license_classifications:
+      - restricted_research_use
+      - proprietary_redistribution_blocked
+    allowed_privacy_classifications:
+      - internal_only
+    default_eval_method: human_annotation
+    description: Internal support ticket converted to a classified annotation case.
+  manual_example:
+    kind: manual_example
+    class_path: vetinari.workbench.benchmark_importer.ManualExampleProvider
+    status: pending_pin
+    source_url: pending_pin
+    version_pin: pending_pin
+    integrity_sha256: pending_pin
+    allowed_license_classifications:
+      - permissive_open_source
+      - restricted_research_use
+      - proprietary_redistribution_blocked
+    allowed_privacy_classifications:
+      - public
+      - internal_only
+    default_eval_method: human_annotation
+    description: Operator-curated example with explicit source and classification fields.
+  release_evidence:
+    kind: release_evidence
+    class_path: vetinari.workbench.benchmark_importer.ReleaseEvidenceProvider
+    status: pending_pin
+    source_url: pending_pin
+    version_pin: pending_pin
+    integrity_sha256: pending_pin
+    allowed_license_classifications:
+      - restricted_research_use
+      - proprietary_redistribution_blocked
+    allowed_privacy_classifications:
+      - public
+      - internal_only
+    default_eval_method: judge_only
+    description: Release-evidence package extracted from a prior verified evaluation run.

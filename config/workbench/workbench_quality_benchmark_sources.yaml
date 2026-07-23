@@ -1,0 +1,178 @@
+schema_version: 1
+catalog_id: workbench-quality-external-benchmark-sources-v1
+retrieved_at_utc: '2026-05-04T00:00:00Z'
+usage_policy:
+  primary_use: Calibrate model, agent, scaffold, and task-family capability against
+    external baselines.
+  not_sufficient_for: Product readiness, user trust, evidence quality, local privacy,
+    hardware fit, or self-improvement safety.
+  import_rule: Import only revision-pinned, license-reviewed, privacy-reviewed cases
+    through the Workbench benchmark importer.
+sources:
+- source_id: swe_bench
+  name: SWE-bench
+  source_url: https://www.swebench.com/
+  source_type: official_benchmark
+  task_family: software_engineering_repair
+  measures:
+  - real GitHub issue resolution
+  - patch correctness
+  - repository-level test behavior
+  workbench_use:
+  - Compare coding-agent success on real repair tasks.
+  - Seed representative code repair cases after license and contamination review.
+  limitations:
+  - Scaffold and harness differences can dominate raw model differences.
+  - Public task history creates contamination risk.
+  - Does not measure Workbench evidence quality or self-improvement governance.
+  calibration_only: true
+- source_id: vexp_swe_bench_subset
+  name: Vexp SWE-bench Verified subset
+  source_url: https://github.com/Vexp-ai/vexp-swe-bench
+  source_type: reproducible_community_harness
+  task_family: software_engineering_repair
+  measures:
+  - 100-task SWE-bench Verified subset
+  - agent cost comparison
+  - unique wins by agent
+  workbench_use:
+  - Run quick comparative sweeps before paying for larger benchmark runs.
+  - Compare AM Workbench scaffolding against other coding agents with a smaller budget.
+  limitations:
+  - Community subset is not a replacement for the official leaderboard.
+  - Subset selection may not represent all Workbench target workflows.
+  calibration_only: true
+- source_id: swe_rebench
+  name: SWE-rebench
+  source_url: https://swe-rebench.com/
+  source_type: rolling_benchmark
+  task_family: fresh_software_engineering_repair
+  measures:
+  - fresh GitHub PR tasks
+  - current-month coding capability
+  - reduced stale benchmark exposure
+  workbench_use:
+  - Check whether Workbench gains survive on newer tasks.
+  - Reduce reliance on older public benchmark instances.
+  limitations:
+  - Smaller rolling samples can be noisy.
+  - Public leaderboard setup still may not match AM Workbench task mix.
+  calibration_only: true
+- source_id: ccbench
+  name: CCBench
+  source_url: https://ccbench.org/
+  source_type: official_benchmark
+  task_family: small_codebase_coding_agent
+  measures:
+  - coding-agent success on small codebases
+  - codebase understanding under 10k lines
+  workbench_use:
+  - Exercise onboarding and small-project workflows where many early users start.
+  - Compare Workbench overhead against simpler agent usage.
+  limitations:
+  - Small repositories underrepresent long-running roadmap, audit, and evidence workflows.
+  calibration_only: true
+- source_id: swe_bench_mobile
+  name: SWE-Bench Mobile
+  source_url: https://swebenchmobile.com/
+  source_type: official_benchmark
+  task_family: mobile_software_engineering
+  measures:
+  - mobile application engineering tasks
+  - agent design effects
+  - industry-style mobile implementation
+  workbench_use:
+  - Calibrate mobile/application-development workflows if Workbench supports that
+    lane.
+  limitations:
+  - Domain-specific mobile tasks do not cover Workbench governance or local hardware
+    optimization.
+  calibration_only: true
+- source_id: terminal_bench
+  name: Terminal-Bench
+  source_url: https://www.tbench.ai/
+  source_type: official_benchmark
+  task_family: terminal_tool_use
+  measures:
+  - command-line task completion
+  - filesystem and process interaction
+  - end-to-end terminal workflows
+  workbench_use:
+  - Evaluate shell/tool orchestration and command safety wrappers.
+  - Compare agent performance on realistic terminal work.
+  limitations:
+  - Benchmark success does not prove private project safety or evidence completeness.
+  calibration_only: true
+- source_id: tau_bench
+  name: tau-bench
+  source_url: https://sierra.ai/resources/research/tau-bench
+  source_type: official_benchmark
+  task_family: multi_turn_tool_agent_user
+  measures:
+  - multi-turn tool use
+  - policy adherence
+  - database state correctness
+  workbench_use:
+  - Calibrate policy-sensitive tool-use behavior and approval-gate design.
+  limitations:
+  - Retail and airline domains are not the same as local developer workflows.
+  - Simulated user behavior can hide real-user friction.
+  calibration_only: true
+- source_id: osworld
+  name: OSWorld
+  source_url: https://arxiv.org/abs/2404.07972
+  source_type: research_benchmark
+  task_family: computer_use
+  measures:
+  - desktop application operation
+  - multimodal computer-use tasks
+  - file and GUI workflows
+  workbench_use:
+  - Calibrate future GUI/computer-use lanes and local desktop automation.
+  limitations:
+  - Scores can be unstable across environment versions.
+  - GUI capability does not prove Workbench self-improvement safety.
+  calibration_only: true
+- source_id: android_world
+  name: AndroidWorld
+  source_url: https://github.com/google-research/android_world
+  source_type: official_benchmark
+  task_family: mobile_computer_use
+  measures:
+  - Android app operation
+  - autonomous mobile-agent workflows
+  workbench_use:
+  - Calibrate mobile companion or mobile-control ambitions.
+  limitations:
+  - Mobile-use success is adjacent, not central, unless Workbench ships a mobile lane.
+  calibration_only: true
+- source_id: webarena
+  name: WebArena
+  source_url: https://webarena.dev/
+  source_type: official_benchmark
+  task_family: browser_agent
+  measures:
+  - web navigation
+  - multi-step browser workflows
+  - realistic web task completion
+  workbench_use:
+  - Calibrate browser automation and web research workflows.
+  limitations:
+  - Browser benchmark tasks do not measure local repo evidence or self-modification
+    governance.
+  calibration_only: true
+- source_id: gaia
+  name: GAIA
+  source_url: https://huggingface.co/gaia-benchmark
+  source_type: official_leaderboard
+  task_family: general_agent_tool_use
+  measures:
+  - reasoning
+  - web browsing
+  - multimodal and tool-using assistant work
+  workbench_use:
+  - Calibrate general knowledge-work agent capability beyond coding.
+  limitations:
+  - High-level task success does not prove team policy, audit export, or local-first
+    privacy.
+  calibration_only: true

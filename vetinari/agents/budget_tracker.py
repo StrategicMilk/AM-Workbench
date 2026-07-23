@@ -12,10 +12,12 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+logger = logging.getLogger(__name__)
+
+
 if TYPE_CHECKING:
     from vetinari.agents.contracts import AgentSpec
 
-logger = logging.getLogger(__name__)
 
 # Default budget limits applied when no explicit spec overrides are present
 DEFAULT_TOKEN_BUDGET = 32_000  # tokens per agent invocation
@@ -24,7 +26,7 @@ DEFAULT_COST_BUDGET_USD = 1.0  # USD
 DEFAULT_DELEGATION_BUDGET = 5  # maximum recursive delegation depth
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class BudgetSnapshot:
     """Point-in-time view of an agent's budget consumption.
 
@@ -61,6 +63,12 @@ class BudgetSnapshot:
             f"delegations={self.delegations_used}/{self.delegation_budget}, "
             f"exhausted={self.is_exhausted!r})"
         )
+
+
+def _spec_budget_value(spec: AgentSpec, field_name: str, default: int | float) -> int | float:
+    """Read an AgentSpec budget field while preserving explicit zero values."""
+    value = getattr(spec, field_name, default)
+    return default if value is None else value
 
 
 class BudgetTracker:
@@ -130,10 +138,10 @@ class BudgetTracker:
         Returns:
             A BudgetTracker initialised from the spec's budget fields.
         """
-        token_budget = getattr(spec, "token_budget", DEFAULT_TOKEN_BUDGET) or DEFAULT_TOKEN_BUDGET
-        iteration_cap = getattr(spec, "iteration_cap", DEFAULT_ITERATION_CAP) or DEFAULT_ITERATION_CAP
-        cost_budget_usd = getattr(spec, "cost_budget_usd", DEFAULT_COST_BUDGET_USD) or DEFAULT_COST_BUDGET_USD
-        delegation_budget = getattr(spec, "delegation_budget", DEFAULT_DELEGATION_BUDGET) or DEFAULT_DELEGATION_BUDGET
+        token_budget = _spec_budget_value(spec, "token_budget", DEFAULT_TOKEN_BUDGET)
+        iteration_cap = _spec_budget_value(spec, "iteration_cap", DEFAULT_ITERATION_CAP)
+        cost_budget_usd = _spec_budget_value(spec, "cost_budget_usd", DEFAULT_COST_BUDGET_USD)
+        delegation_budget = _spec_budget_value(spec, "delegation_budget", DEFAULT_DELEGATION_BUDGET)
         return cls(
             token_budget=token_budget,
             iteration_cap=iteration_cap,
@@ -163,6 +171,16 @@ class BudgetTracker:
                 self._tokens_used,
                 self._token_budget,
             )
+
+    def record_usage(self, tokens: int, cost_usd: float = 0.0) -> None:
+        """Record token usage and optional USD cost for one model call.
+
+        Args:
+            tokens: Tokens value consumed by record_usage().
+            cost_usd: Cost usd value consumed by record_usage().
+        """
+        self.record_tokens(tokens)
+        self.record_cost(cost_usd)
 
     def record_iteration(self) -> None:
         """Increment the iteration counter by one."""

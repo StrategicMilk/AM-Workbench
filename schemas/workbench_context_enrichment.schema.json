@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_context_enrichment.schema.json",
+  "title": "Workbench Context Enrichment Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "path",
+    "digest",
+    "provenance",
+    "fallback_policy",
+    "context_manifest",
+    "reasons"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["unchanged", "changed", "stale", "blocked", "operator_review", "raw_read_degraded"]
+    },
+    "path": { "type": "string", "minLength": 1 },
+    "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "provenance": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "fallback_policy": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "allow_raw_read_degraded",
+        "high_risk_edit",
+        "block_high_risk_without_diagnostics"
+      ],
+      "properties": {
+        "allow_raw_read_degraded": { "type": "boolean" },
+        "high_risk_edit": { "type": "boolean" },
+        "block_high_risk_without_diagnostics": { "type": "boolean" }
+      }
+    },
+    "context_manifest": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "context_asset_ids",
+        "context_asset_freshness",
+        "feature_context_view_id",
+        "feature_project",
+        "feature_version"
+      ],
+      "properties": {
+        "context_asset_ids": { "type": "array", "items": { "type": "string" } },
+        "context_asset_freshness": { "type": "object" },
+        "feature_context_view_id": { "type": ["string", "null"] },
+        "feature_project": { "type": ["string", "null"] },
+        "feature_version": { "type": ["string", "null"] }
+      }
+    },
+    "reasons": { "type": "array", "items": { "type": "string" } },
+    "body": { "type": ["string", "null"] },
+    "unchanged": {
+      "type": ["object", "null"],
+      "required": ["path", "digest", "provenance", "context_manifest", "saved_body_bytes"],
+      "properties": {
+        "path": { "type": "string" },
+        "digest": { "type": "string" },
+        "provenance": { "type": "object" },
+        "context_manifest": { "type": "object" },
+        "saved_body_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "context_assets": { "type": "array" },
+    "feature_context": { "type": ["object", "null"] },
+    "diagnostics": { "type": "array", "items": { "type": "string" } },
+    "dependency_hints": { "type": "array", "items": { "type": "string" } },
+    "dependent_hints": { "type": "array", "items": { "type": "string" } },
+    "symbols": { "type": "array", "items": { "type": "string" } },
+    "references": { "type": "array", "items": { "type": "string" } }
+  }
+}

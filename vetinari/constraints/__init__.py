@@ -14,19 +14,19 @@ Usage::
 
 from __future__ import annotations
 
-from vetinari.constraints.architecture import (  # noqa: VET123 — get_constraint has no external callers but removing causes VET120
+from vetinari.constraints.architecture import (
     get_constraint,
     validate_delegation,
 )
-from vetinari.constraints.registry import (  # noqa: VET123 — reset_constraint_registry has no external callers but removing causes VET120
+from vetinari.constraints.registry import (
     get_constraint_registry,
     reset_constraint_registry,
 )
-from vetinari.constraints.resources import (  # noqa: VET123 - barrel export preserves public import compatibility
+from vetinari.constraints.resources import (
     ResourceConstraint,
     get_resource_constraint,
 )
-from vetinari.constraints.style import (  # noqa: VET123 — STYLE_CONSTRAINTS imported from vetinari.constraints in tests
+from vetinari.constraints.style import (
     STYLE_CONSTRAINTS,
     StyleConstraint,
     StyleRule,
@@ -34,7 +34,7 @@ from vetinari.constraints.style import (  # noqa: VET123 — STYLE_CONSTRAINTS i
     get_style_rules,
     validate_output_style,
 )
-from vetinari.validation.quality_gates import (  # noqa: VET123 - barrel export preserves public import compatibility
+from vetinari.validation.quality_gates import (
     QualityGate,
     check_quality_gate,
     get_quality_gate,

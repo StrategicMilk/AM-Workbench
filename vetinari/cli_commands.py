@@ -11,11 +11,15 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from typing import Any
 
+from vetinari.cli_health_commands import run_health_check_quiet
+from vetinari.cli_management_commands import cmd_capability_packs, cmd_migrate, cmd_prompt
 from vetinari.constants import (
     MAIN_LOOP_POLL_INTERVAL,
     SHUTDOWN_TIMEOUT,
@@ -27,12 +31,52 @@ from vetinari.constants import (
 
 logger = logging.getLogger(__name__)
 
-# Optional ASGI server — imported at module level so tests can patch
-# ``vetinari.cli_commands.uvicorn`` without relying on sys.modules injection.
-try:
-    import uvicorn  # type: ignore[import-untyped]
-except ImportError:
-    uvicorn = None  # type: ignore[assignment]
+
+@contextmanager
+def _suppress_status_info_logs(enabled: bool):
+    if not enabled:
+        yield
+        return
+    previous = logging.root.manager.disable
+    logging.disable(logging.WARNING)
+    try:
+        yield
+    finally:
+        logging.disable(previous)
+
+
+def _provider_health_label(provider_info: dict[str, Any]) -> str:
+    metrics = provider_info.get("metrics", {}) if isinstance(provider_info, dict) else {}
+    health = provider_info.get("health") if isinstance(provider_info, dict) else None
+    return str(health or metrics.get("health_status") or "unknown")
+
+
+def _health_failure_hint(reason: str = "") -> str:
+    normalized = reason.lower()
+    if "model" in normalized or "gguf" in normalized:
+        return (
+            "Run `vetinari models scan`, then verify VETINARI_MODELS_DIR points to a directory containing model files."
+        )
+    if "connection" in normalized or "unreachable" in normalized or "refused" in normalized:
+        return "Start the configured local runtime or update the provider endpoint, then rerun `vetinari health`."
+    return "Run `vetinari doctor --json` for structured diagnostics and follow the failing check hints."
+
+
+def _native_kernel_server_command(*, web_host: str, port: int) -> list[str]:
+    cargo = os.environ.get("VETINARI_CARGO", "cargo")
+    return [
+        cargo,
+        "run",
+        "-p",
+        "amw-kernel",
+        "--bin",
+        "amw-kernel-server",
+        "--",
+        "--host",
+        web_host,
+        "--port",
+        str(port),
+    ]
 
 
 def _resolve_web_port(value: int | str | None, *, env_var: str = "VETINARI_WEB_PORT") -> int:
@@ -74,8 +118,8 @@ def cmd_run(args: Any) -> int:
         import uuid as _uuid
 
         trace_id = str(_uuid.uuid4())[:12]
-        print(f"[Vetinari] Running goal: {args.goal[:80]}")
-        print(f"[Vetinari] Trace ID: {trace_id}")
+        print(f"[AM Workbench] Running goal: {args.goal[:80]}")
+        print(f"[AM Workbench] Trace ID: {trace_id}")
         # Propagate trace_id to all log records for this goal execution
         _trace_logger = logging.LoggerAdapter(logger, {"trace_id": trace_id})
         _trace_logger.info("Starting goal execution with trace_id=%s", trace_id)
@@ -93,14 +137,14 @@ def cmd_run(args: Any) -> int:
                 goal=args.goal,
                 constraints={"mode": args.mode, "trace_id": trace_id},
             )
-            print(f"\n[Vetinari] Completed: {results.get('completed', 0)} tasks")
-            print(f"[Vetinari] Failed:    {results.get('failed', 0)} tasks")
+            print(f"\n[AM Workbench] Completed: {results.get('completed', 0)} tasks")
+            print(f"[AM Workbench] Failed:    {results.get('failed', 0)} tasks")
             if results.get("final_output"):
                 print("\n--- Final Output ---")
                 print(str(results["final_output"])[:TRUNCATE_OUTPUT_PREVIEW])
             return 0
         except Exception as e:
-            print(f"[Vetinari] Error: {e}")
+            print(f"[AM Workbench] Error: {e}")
             logger.exception("Goal execution failed")
             return 1
 
@@ -108,14 +152,14 @@ def cmd_run(args: Any) -> int:
     try:
         orch = _build_orchestrator(args.config, args.mode)
         if args.task:
-            print(f"[Vetinari] Running task: {args.task}")
+            print(f"[AM Workbench] Running task: {args.task}")
             orch.run_task(args.task)
         else:
-            print("[Vetinari] Running all manifest tasks...")
+            print("[AM Workbench] Running all manifest tasks...")
             orch.run_all()
         return 0
     except Exception as e:
-        print(f"[Vetinari] Error: {e}")
+        print(f"[AM Workbench] Error: {e}")
         logger.exception("Run failed")
         return 1
 
@@ -136,63 +180,153 @@ def cmd_serve(args: Any) -> int:
         port = _resolve_web_port(args.port)
     except ValueError as exc:
         logger.warning("Invalid web port for serve command: %s", exc)
-        print(f"[Vetinari] Invalid web port: {exc}")
+        print(f"[AM Workbench] Invalid web port: {exc}")
         return 1
     web_host = _resolve_web_host(getattr(args, "web_host", None))
 
-    print(f"[Vetinari] Starting web dashboard on {web_host}:{port}")
-    print(f"[Vetinari] Dashboard URL: http://{web_host}:{port}")
+    print(f"[AM Workbench] Starting native Rust kernel API server on {web_host}:{port}")
+    print(f"[AM Workbench] Server URL: http://{web_host}:{port}")
 
     try:
         _wire_subsystems()
     except Exception as exc:
         logger.warning("Non-fatal: subsystem wiring failed: %s", exc)
 
-    if uvicorn is None:
-        print("[Vetinari] Web UI not available: uvicorn is not installed")
-        print("[Vetinari] Install dependencies: pip install 'litestar>=2.12' 'uvicorn>=0.30'")  # noqa: VET301 — user guidance string
-        logger.warning("uvicorn not installed — web dashboard unavailable")
-        return 1
-
     try:
-        from vetinari.web.litestar_app import create_app as create_litestar_app
-
-        litestar_app = create_litestar_app(debug=args.debug)
-        uvicorn.run(litestar_app, host=web_host, port=port, log_level="info")
+        subprocess.run(  # noqa: S603 - command is built from the bundled Rust kernel binary and validated host/port.
+            _native_kernel_server_command(web_host=web_host, port=port),
+            check=True,
+        )
         return 0
-    except ImportError as e:
-        print(f"[Vetinari] Web UI not available: {e}")
-        print("[Vetinari] Install dependencies: pip install 'litestar>=2.12' 'uvicorn>=0.30'")  # noqa: VET301 — user guidance string
-        logger.warning("Litestar not installed — web dashboard unavailable: %s", e)
-        return 1
-    except Exception as e:
-        print(f"[Vetinari] Dashboard error: {e}")
+    except (OSError, subprocess.CalledProcessError) as e:
+        print(f"[AM Workbench] Native Rust kernel server unavailable: {e}")
+        print("[AM Workbench] Build the Rust workspace with `cargo build -p amw-kernel` and retry.")
         logger.warning(
-            "Web dashboard failed to start on port %d: %s — web UI unavailable, CLI still functional",
+            "Native Rust kernel server failed to start on port %d: %s - CLI still functional",
             port,
             e,
         )
         return 1
 
 
+def _run_startup_preflight(args: Any) -> bool:
+    if getattr(args, "skip_preflight", False):
+        return True
+    try:
+        from vetinari.preflight import run_preflight
+
+        report = run_preflight(interactive=sys.stdin.isatty())
+        missing_required = [
+            item.package
+            for item in getattr(report, "dependency_matrix", [])
+            if getattr(item, "status", "") == "missing-required"
+        ]
+    except Exception as exc:
+        logger.warning("Preflight check failed before startup", exc_info=True)
+        print(f"[AM Workbench] Startup preflight failed: {exc}")
+        return False
+    if not missing_required:
+        return True
+    print("[AM Workbench] Startup blocked: missing required dependencies: " + ", ".join(missing_required))
+    print("[AM Workbench] Install the required packages or rerun with --skip-preflight for diagnostics only.")
+    return False
+
+
+def _auto_run_init_wizard_if_needed(args: Any) -> bool:
+    if not getattr(args, "auto_init_if_needed", False):
+        return False
+    from vetinari.setup import init_wizard
+
+    config_path = init_wizard.DEFAULT_CONFIG_PATH
+    if config_path.exists():
+        return False
+    print("[AM Workbench] First-run config missing; running vetinari init --skip-download.")
+    init_wizard.run_wizard(skip_download=True, non_interactive=True, config_path=config_path)
+    return True
+
+
+def _start_dashboard_thread(args: Any, *, web_host: str, port: int) -> tuple[bool, threading.Thread | None]:
+    if args.no_dashboard:
+        return False, None
+    try:
+        command = _native_kernel_server_command(web_host=web_host, port=port)
+
+        def _run_dashboard() -> None:
+            subprocess.run(  # noqa: S603 - command is built from the bundled Rust kernel binary and validated host/port.
+                command,
+                check=False,
+            )
+
+        thread_name = "native-kernel-server"
+
+        dashboard_thread = threading.Thread(target=_run_dashboard, daemon=True, name=thread_name)
+        dashboard_thread.start()
+        time.sleep(VETINARI_STARTUP_DELAY)  # Give the native server time to start.
+        if not dashboard_thread.is_alive():
+            print(f"[AM Workbench] Native API server startup failed - server exited (port {port} may be in use)")
+            return False, dashboard_thread
+
+        from vetinari.system import health_monitor
+
+        health_monitor.register_dashboard_thread(dashboard_thread)
+        print(f"[AM Workbench] Local API server started: http://{web_host}:{port}")
+        return True, dashboard_thread
+    except Exception as exc:
+        logger.warning("Exception handled by  start dashboard thread fallback", exc_info=True)
+        print(f"[AM Workbench] Local API server unavailable: {exc}")
+        return False, None
+
+
+def _start_auto_tuner_thread() -> tuple[threading.Event, threading.Thread]:
+    shutdown_event = threading.Event()
+
+    def _auto_tuner_loop() -> None:
+        while not shutdown_event.is_set():
+            shutdown_event.wait(timeout=SHUTDOWN_TIMEOUT)  # 15 min, interruptible.
+            if shutdown_event.is_set():
+                break
+            try:
+                from vetinari.learning.auto_tuner import get_auto_tuner
+
+                get_auto_tuner().run_cycle()
+                logger.debug("[AutoTuner] Periodic cycle complete")
+            except Exception as exc:
+                logger.warning("[AutoTuner] Cycle error (non-fatal): %s", exc)
+
+    tuner_thread = threading.Thread(target=_auto_tuner_loop, daemon=True, name="auto-tuner")
+    tuner_thread.start()
+    return shutdown_event, tuner_thread
+
+
+def _wait_for_dashboard_shutdown(
+    *,
+    web_host: str,
+    port: int,
+    shutdown_event: threading.Event,
+    tuner_thread: threading.Thread,
+    dashboard_thread: threading.Thread | None,
+) -> None:
+    print(f"\n[AM Workbench] Local API server running at http://{web_host}:{port}")
+    print("[AM Workbench] Press Ctrl+C to exit")
+    try:
+        while True:
+            time.sleep(MAIN_LOOP_POLL_INTERVAL)
+    except KeyboardInterrupt:
+        print("\n[AM Workbench] Shutting down...")
+        shutdown_event.set()
+        tuner_thread.join(timeout=THREAD_JOIN_TIMEOUT)
+        if dashboard_thread is not None and dashboard_thread.is_alive():
+            dashboard_thread.join(timeout=THREAD_JOIN_TIMEOUT_SHORT)
+
+
 def cmd_start(args: Any) -> int:
     """Start CLI + optional web dashboard (recommended entry point).
 
-    Wires all subsystems, optionally launches the Litestar dashboard in a
-    background thread via uvicorn, starts the AutoTuner cycle, then either
-    executes a provided goal/task or blocks in interactive REPL mode.
-
     Args:
-        args: Parsed CLI arguments with goal, task, port, no_dashboard,
-              web_host, mode, verbose.
+        args: Parsed CLI arguments with goal, task, port, no_dashboard, web_host, mode, verbose.
 
     Returns:
         Exit code (0 for success, 1 for error).
-
-    Raises:
-        KeyboardInterrupt: Propagated from the interactive REPL loop when the
-            user presses Ctrl+C while no goal or task was provided and the
-            dashboard is not running (handled by the top-level CLI entry point).
     """
     from vetinari.cli_startup import (
         _check_drift_at_startup,
@@ -204,111 +338,43 @@ def cmd_start(args: Any) -> int:
     _setup_logging(args.verbose)
     _check_drift_at_startup()
     _print_banner(args.mode)
+    _auto_run_init_wizard_if_needed(args)
     try:
         port = _resolve_web_port(args.port)
     except ValueError as exc:
         logger.warning("Invalid web port for start command: %s", exc)
-        print(f"[Vetinari] Invalid web port: {exc}")
+        print(f"[AM Workbench] Invalid web port: {exc}")
         return 1
 
-    # Preflight: detect hardware, report missing deps, offer to install
-    if not getattr(args, "skip_preflight", False):
-        try:
-            from vetinari.preflight import run_preflight
-
-            report = run_preflight(interactive=sys.stdin.isatty())
-            missing_required = [
-                item.package
-                for item in getattr(report, "dependency_matrix", [])
-                if getattr(item, "status", "") == "missing-required"
-            ]
-            if missing_required:
-                print(
-                    "[Vetinari] Startup blocked: missing required dependencies: "
-                    + ", ".join(missing_required)
-                )
-                print("[Vetinari] Install the required packages or rerun with --skip-preflight for diagnostics only.")
-                return 1
-        except Exception as exc:
-            logger.warning("Preflight check failed before startup", exc_info=True)
-            print(f"[Vetinari] Startup preflight failed: {exc}")
-            return 1
+    if not _run_startup_preflight(args):
+        return 1
 
     _wire_subsystems()
 
-    # Start web dashboard in background thread
     # Default to loopback — require explicit opt-in for network binding
     web_host = _resolve_web_host(getattr(args, "web_host", None))
-    dashboard_started = False
-    dashboard_thread: threading.Thread | None = None
+    dashboard_started, dashboard_thread = _start_dashboard_thread(args, web_host=web_host, port=port)
 
-    if not args.no_dashboard:
-        try:
-            if uvicorn is None:
-                raise ImportError("uvicorn is not installed")
-
-            from vetinari.web.litestar_app import create_app as create_litestar_app
-
-            _litestar_app = create_litestar_app()
-
-            def _run_dashboard():
-                uvicorn.run(_litestar_app, host=web_host, port=port, log_level="warning")
-
-            dashboard_thread = threading.Thread(target=_run_dashboard, daemon=True, name="dashboard")
-            dashboard_thread.start()
-            time.sleep(VETINARI_STARTUP_DELAY)  # Give Litestar/uvicorn time to start
-            if not dashboard_thread.is_alive():
-                print(f"[Vetinari] Dashboard startup failed — uvicorn thread exited (port {port} may be in use)")
-            else:
-                print(f"[Vetinari] Dashboard started: http://{web_host}:{port}")
-                dashboard_started = True
-        except Exception as e:
-            print(f"[Vetinari] Dashboard unavailable: {e}")
-
-    # Run health check
-    print("\n[Vetinari] Running startup health checks...")
+    print("\n[AM Workbench] Running startup health checks...")
     if not _health_check_quiet():
-        print("[Vetinari] Startup health checks reported a degraded or failed subsystem.")
+        print("[AM Workbench] Startup health checks reported a degraded or failed subsystem.")
 
-    # Start AutoTuner background cycle (every 15 minutes while running)
-    _shutdown_event = threading.Event()
+    shutdown_event, tuner_thread = _start_auto_tuner_thread()
 
-    def _auto_tuner_loop():
-        while not _shutdown_event.is_set():
-            _shutdown_event.wait(timeout=SHUTDOWN_TIMEOUT)  # 15 min, interruptible
-            if _shutdown_event.is_set():
-                break
-            try:
-                from vetinari.learning.auto_tuner import get_auto_tuner
-
-                get_auto_tuner().run_cycle()
-                logger.debug("[AutoTuner] Periodic cycle complete")
-            except Exception as _at_err:
-                logger.warning("[AutoTuner] Cycle error (non-fatal): %s", _at_err)
-
-    _tuner_thread = threading.Thread(target=_auto_tuner_loop, daemon=True, name="auto-tuner")
-    _tuner_thread.start()
-
-    # Execute goal if provided
     if args.goal:
         return cmd_run(args)
 
     if args.task:
         return cmd_run(args)
 
-    # Enter interactive REPL if no task specified
     if dashboard_started:
-        print(f"\n[Vetinari] Dashboard running at http://{web_host}:{port}")
-        print("[Vetinari] Press Ctrl+C to exit")
-        try:
-            while True:
-                time.sleep(MAIN_LOOP_POLL_INTERVAL)
-        except KeyboardInterrupt:
-            print("\n[Vetinari] Shutting down...")
-            _shutdown_event.set()
-            _tuner_thread.join(timeout=THREAD_JOIN_TIMEOUT)
-            if dashboard_thread is not None and dashboard_thread.is_alive():
-                dashboard_thread.join(timeout=THREAD_JOIN_TIMEOUT_SHORT)
+        _wait_for_dashboard_shutdown(
+            web_host=web_host,
+            port=port,
+            shutdown_event=shutdown_event,
+            tuner_thread=tuner_thread,
+            dashboard_thread=dashboard_thread,
+        )
     else:
         return cmd_interactive(args)
 
@@ -327,15 +393,18 @@ def cmd_status(args: Any) -> int:
     from vetinari.cli_startup import _setup_logging
 
     _setup_logging(args.verbose)
+    previous_log_disable = logging.root.manager.disable
+    if not getattr(args, "verbose", False):
+        logging.disable(logging.WARNING)
 
-    print("\n[Vetinari] System Status")
+    print("\n[AM Workbench] System Status")
     print(f"  Config:         {args.config}")
 
     # Check local inference adapter
     try:
-        from vetinari.adapters.llama_cpp_local_adapter import LocalInferenceAdapter
+        from vetinari.adapters.adapter_cache import get_local_inference_adapter
 
-        adapter = LocalInferenceAdapter()
+        adapter = get_local_inference_adapter("cli-status")
         models = adapter.list_loaded_models()
         print(f"  Models loaded:  {len(models)}")
         for m in models[:5]:
@@ -348,7 +417,9 @@ def cmd_status(args: Any) -> int:
 
             hint = find_remediation(str(e))
             if hint:
-                print(f"    Hint: {hint.suggested_action}")
+                suggested_action = getattr(hint, "suggested_action", None)
+                if suggested_action:
+                    print(f"    Hint: {suggested_action}")
         except Exception:
             logger.warning(
                 "Remediation hint lookup failed for error %r — status output continues without hint",
@@ -365,7 +436,7 @@ def cmd_status(args: Any) -> int:
         providers = status.get("providers", {})
         print(f"\n  Providers: {len(providers)}")
         for pname, pinfo in list(providers.items())[:5]:
-            health = pinfo.get("health", "unknown")
+            health = _provider_health_label(pinfo)
             print(f"    - {pname}: {health}")
     except Exception as e:
         print(f"  Adapter Manager: {e}")
@@ -381,6 +452,81 @@ def cmd_status(args: Any) -> int:
     except Exception as e:
         print(f"  Learning System: {e}")
 
+    if not getattr(args, "verbose", False):
+        logging.disable(previous_log_disable)
+    return 0
+
+
+def cmd_audit_results(args: Any) -> int:
+    """Display full-spectrum audit results from the on-disk run index.
+
+    When ``args.run_id`` is set, shows detail for that single run with optional
+    finding filters (status, severity, lane, text query).  Otherwise prints a
+    summary table of recent runs.
+
+    Args:
+        args: Parsed CLI arguments with limit, include_archived, run_id,
+            finding_limit, finding_status, severity, lane, query, json.
+
+    Returns:
+        Exit code (0 for success, 1 for error).
+    """
+    import json as _json
+
+    from vetinari import audit_results
+
+    run_id: str | None = getattr(args, "run_id", None)
+    include_archived: bool = getattr(args, "include_archived", False)
+    as_json: bool = getattr(args, "json", False)
+
+    try:
+        if run_id:
+            payload = audit_results.load_full_spectrum_audit_run(
+                run_id=run_id,
+                include_archived=include_archived,
+                finding_limit=getattr(args, "finding_limit", 50),
+                finding_status=getattr(args, "finding_status", "open"),
+                severity=getattr(args, "severity", None),
+                lane=getattr(args, "lane", None),
+                query=getattr(args, "query", None),
+            )
+            if as_json:
+                print(_json.dumps(payload))
+            else:
+                run = payload.get("run", {})
+                print(f"Full-spectrum audit run: {run.get('run_id', run_id)}")
+                print(
+                    f"  Status: {run.get('status', 'unknown')}  Phase: {run.get('phase', 'unknown')}  Round: {run.get('current_round', '?')}"
+                )
+                print(
+                    f"  Findings: {run.get('finding_result_count', 0)} shown / {run.get('finding_count', 0)} total  Open: {run.get('open_findings', 0)}"
+                )
+                for finding in run.get("findings", []):
+                    status_label = finding.get("closure_status") or finding.get("status") or "?"
+                    print(
+                        f"  [{finding.get('severity', '?').upper():<8}] {finding.get('id', '?')}: {finding.get('title', '?')}  ({status_label})"
+                    )
+        else:
+            payload = audit_results.load_full_spectrum_audit_results(
+                limit=getattr(args, "limit", 10),
+                include_archived=include_archived,
+            )
+            if as_json:
+                print(_json.dumps(payload))
+            else:
+                summary = payload.get("summary", {})
+                print(f"Full-spectrum audit results  ({summary.get('visible_runs', 0)} runs)")
+                for run in payload.get("runs", []):
+                    print(
+                        f"  {run.get('run_id', '?')}  status={run.get('status', '?')}  open={run.get('open_findings', 0)}/{run.get('finding_count', 0)}"
+                    )
+                    for finding in run.get("top_findings", []):
+                        print(
+                            f"    [{finding.get('severity', '?').upper():<8}] {finding.get('id', '?')}: {finding.get('title', '?')}"
+                        )
+    except Exception as exc:
+        logger.exception("Audit results command failed: %s", exc)
+        return 1
     return 0
 
 
@@ -397,7 +543,7 @@ def cmd_health(args: Any) -> int:
 
     _setup_logging(args.verbose)
 
-    print("[Vetinari] Running health checks...")
+    print("[AM Workbench] Running health checks...")
     return 0 if _health_check_quiet() else 1
 
 
@@ -417,7 +563,7 @@ def cmd_interactive(args: Any) -> int:
 
     _setup_logging(args.verbose)
 
-    print("[Vetinari] Interactive mode. Type your goal and press Enter.")
+    print("[AM Workbench] Interactive mode. Type your goal and press Enter.")
     print("Commands: /quit, /status, /review, /help")
     print("-" * 50)
 
@@ -439,13 +585,13 @@ def cmd_interactive(args: Any) -> int:
             goal = input("\nGoal> ").strip()
         except (EOFError, KeyboardInterrupt):
             logger.warning("Interactive mode interrupted by user — exiting")
-            print("\n[Vetinari] Exiting interactive mode.")
+            print("\n[AM Workbench] Exiting interactive mode.")
             return 0
 
         if not goal:
             continue
         if goal.lower() in ("/quit", "/exit", "quit", "exit"):
-            print("[Vetinari] Goodbye.")
+            print("[AM Workbench] Goodbye.")
             return 0
         if goal.lower() == "/status":
             cmd_status(args)
@@ -462,7 +608,7 @@ def cmd_interactive(args: Any) -> int:
             print("  Any other text - Execute as a goal")
             continue
 
-        print(f"\n[Vetinari] Working on: {goal[:60]}...")
+        print(f"\n[AM Workbench] Working on: {goal[:60]}...")
         try:
             if orch:
                 results = orch.generate_and_execute(goal=goal, constraints={"mode": args.mode})
@@ -471,132 +617,23 @@ def cmd_interactive(args: Any) -> int:
                     print("\n--- Output ---")
                     print(str(results["final_output"])[:1500])
             else:
-                print("[Vetinari] Orchestrator not available. Check local inference adapter.")
+                print("[AM Workbench] Orchestrator not available. Check local inference adapter.")
         except Exception as e:
-            print(f"[Vetinari] Error: {e}")
+            print(f"[AM Workbench] Error: {e}")
             logger.warning("Interactive execution error", exc_info=True)
-
-
-def cmd_prompt(args: Any) -> int:
-    """Manage agent prompt versions — history and rollback.
-
-    Args:
-        args: Parsed CLI arguments with action, agent, mode, version.
-
-    Returns:
-        Exit code (0 for success, 1 for error).
-    """
-    # Reject path-like traversal strings before reaching the persistence layer.
-    # Agent names are simple identifiers like "WORKER" or "FOREMAN" — slashes,
-    # dots, and null bytes have no valid meaning here.
-    agent_name = args.agent
-    if any(ch in agent_name for ch in ("/", "\\", "..", "\x00")) or agent_name.startswith("."):
-        print(f"Error: invalid agent name {agent_name!r} — must be a plain identifier")
-        return 1
-
-    from vetinari.prompts import get_version_manager
-
-    mgr = get_version_manager()
-
-    if args.action == "history":
-        try:
-            history = mgr.get_history(args.agent.upper(), args.mode)
-        except ValueError as exc:
-            # Persistence layer rejects traversal-style agent names before touching disk.
-            logger.warning("Could not retrieve prompt history for agent %s — invalid agent name", args.agent)
-            print(f"Error: invalid agent name — {exc}")
-            return 1
-        if not history:
-            print(f"No prompt versions found for {args.agent}:{args.mode}")
-            return 0
-        print(f"Prompt history for {args.agent}:{args.mode}:")
-        for v in history:
-            score_str = f" (score: {v.quality_score:.3f})" if v.quality_score is not None else ""
-            print(f"  {v.version}  {v.timestamp[:19]}  {v.checksum[:12]}...{score_str}  {v.notes}")
-        return 0
-
-    if args.action == "rollback":
-        if not args.version:
-            print("Error: --version is required for rollback")
-            return 1
-        try:
-            result = mgr.rollback(args.agent.upper(), args.mode, args.version)
-        except ValueError as exc:
-            # Persistence layer rejects traversal-style agent names before touching disk.
-            logger.warning("Could not rollback prompt version for agent %s — invalid agent name", args.agent)
-            print(f"Error: invalid agent name — {exc}")
-            return 1
-        if result:
-            print(f"Rolled back {args.agent}:{args.mode} to version {args.version} (new version: {result.version})")
-            return 0
-        print(f"Version {args.version} not found for {args.agent}:{args.mode}")
-        return 1
-
-    return 0
-
-
-def cmd_migrate(args: Any) -> int:
-    """Apply database migrations to initialise or upgrade storage schemas.
-
-    Args:
-        args: Parsed CLI arguments with db_path and optional verbose.
-
-    Returns:
-        0 on success, 1 on failure.
-    """
-    from vetinari.cli_startup import _setup_logging
-    from vetinari.migrations import run_migrations
-
-    db_path = args.db_path or os.environ.get("VETINARI_DB_PATH", ".vetinari/vetinari.db")
-    _setup_logging(getattr(args, "verbose", False))
-    logger.info("Running migrations on %s", db_path)
-    try:
-        applied = run_migrations(db_path)
-        print(f"Migrations complete — {applied} applied to {db_path}")
-        return 0
-    except Exception:
-        logger.exception("Migration failed")
-        return 1
 
 
 def _health_check_quiet() -> bool:
     """Run health checks on all providers and print results to stdout."""
-    healthy = True
-    try:
-        from vetinari.adapters.llama_cpp_local_adapter import LocalInferenceAdapter
-
-        adapter = LocalInferenceAdapter()
-        is_healthy = adapter.is_healthy()
-        if is_healthy:
-            models = adapter.list_loaded_models()
-            print(f"  Local inference: OK ({len(models)} models)")
-        else:
-            print("  Local inference: FAIL (unhealthy)")
-            healthy = False
-    except Exception as e:
-        print(f"  Local inference: FAIL ({e})")
-        healthy = False
-
-    try:
-        from vetinari.adapter_manager import get_adapter_manager
-
-        mgr = get_adapter_manager()
-        results = mgr.health_check()
-        for name, info in results.items():
-            status = "OK" if info.get("healthy") else "FAIL"
-            print(f"  {name:20s}: {status}")
-            if not info.get("healthy"):
-                healthy = False
-    except Exception:
-        logger.warning("Adapter manager health check unavailable", exc_info=True)
-        healthy = False
-    return healthy
+    return run_health_check_quiet(_health_failure_hint)
 
 
 __all__ = [
     "_health_check_quiet",
     "_resolve_web_host",
     "_resolve_web_port",
+    "cmd_audit_results",
+    "cmd_capability_packs",
     "cmd_health",
     "cmd_interactive",
     "cmd_migrate",

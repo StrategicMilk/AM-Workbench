@@ -1,0 +1,38 @@
+schema_version: 1
+kinds:
+  - id: prompt
+    display_label: "Prompt"
+    description: "A revision-pinned prompt template used by an agent or pipeline."
+  - id: model_route
+    display_label: "Model Route"
+    description: "A configured model selection addressable by a route key."
+  - id: dataset
+    display_label: "Dataset"
+    description: "A versioned data revision used for training, evaluation, or RAG retrieval."
+  - id: eval_suite
+    display_label: "Eval Suite"
+    description: "A named set of evaluations with a stable scoring contract."
+  - id: trace
+    display_label: "Trace"
+    description: "A captured run trace tree usable for debugging or distillation."
+  - id: adapter
+    display_label: "Adapter"
+    description: "A model-extension artifact pinned to a base model."
+  - id: scraping_recipe
+    display_label: "Scraping Recipe"
+    description: "A configured source, extractor, and schedule used to produce a dataset revision."
+  - id: runtime_profile
+    display_label: "Runtime Profile"
+    description: "A hardware-fit and runtime-flag bundle tied to a model route."
+  - id: policy
+    display_label: "Policy"
+    description: "A gateway, training, or eval policy addressable by name."
+  - id: benchmark_run
+    display_label: "Benchmark Run"
+    description: "A captured external-benchmark execution with reproduction metadata."
+  - id: release_evidence_package
+    display_label: "Release Evidence Package"
+    description: "A signed bundle of receipts, eval results, and provenance attesting to a release."
+  - id: public_export_snapshot
+    display_label: "Public Export Snapshot"
+    description: "A vetted export of receipts and assets prepared for public publication."

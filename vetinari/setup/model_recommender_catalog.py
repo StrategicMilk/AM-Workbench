@@ -2,9 +2,104 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Any
 
-from vetinari.setup.model_recommender_types import SetupModelRecommendation
+from vetinari.setup.model_recommender_modality_catalog import (
+    _DEVSTRAL_NOTE as _IMPORTED_DEVSTRAL_NOTE,
+)
+from vetinari.setup.model_recommender_modality_catalog import (
+    _MODALITY_TIERS as _IMPORTED_MODALITY_TIERS,
+)
+from vetinari.setup.model_recommender_modality_catalog import (
+    _QWEN_VL_TRADEOFF as _IMPORTED_QWEN_VL_TRADEOFF,
+)
+from vetinari.setup.model_recommender_modality_catalog import (
+    _VLLM_SOURCE as _IMPORTED_VLLM_SOURCE,
+)
+from vetinari.setup.model_recommender_types import Modality, SetupModelRecommendation, SourceCitation
+
+_DEVSTRAL_NOTE = _IMPORTED_DEVSTRAL_NOTE
+_MODALITY_TIERS = _IMPORTED_MODALITY_TIERS
+_QWEN_VL_TRADEOFF = _IMPORTED_QWEN_VL_TRADEOFF
+_VLLM_SOURCE = _IMPORTED_VLLM_SOURCE
+
+_VERIFIED_ON = date(2026, 4, 25)
+MODEL_RECOMMENDER_CATALOG_REFRESH_INTERVAL_DAYS = 90
+_REFRESH_AFTER = _VERIFIED_ON + timedelta(days=MODEL_RECOMMENDER_CATALOG_REFRESH_INTERVAL_DAYS)
+
+
+def _sources_for(model_id: str, backend: str) -> tuple[SourceCitation, ...]:
+    sources = [
+        SourceCitation(
+            url=f"https://huggingface.co/{model_id}",
+            retrieved_on=_VERIFIED_ON,
+            fetched_in_session=True,
+        )
+    ]
+    if backend == "vllm":
+        sources.append(_VLLM_SOURCE)
+    return tuple(sources)
+
+
+def catalog_refresh_due_on() -> date:
+    """Return the date when the static model recommendation catalog must be refreshed."""
+    return _REFRESH_AFTER
+
+
+def catalog_is_stale(as_of: date | None = None) -> bool:
+    """Return True once static recommendation evidence has exceeded its freshness window.
+
+    Returns:
+        Value produced for the caller.
+    """
+    checked_at = as_of or date.today()
+    return checked_at > _REFRESH_AFTER
+
+
+def _rec(
+    *,
+    model_id: str,
+    name: str,
+    modality: Modality,
+    backend: str,
+    quant: str,
+    vram: float | None,
+    license: str = "see-upstream",
+    reason: str = "Verified 2026-04-25 catalog recommendation.",
+    best_for: tuple[str, ...] = (),
+    tradeoffs: tuple[str, ...] = (),
+    requires_upstream_image: bool = False,
+    cloud_only: bool = False,
+    swap_in_for: str | None = None,
+) -> SetupModelRecommendation:
+    """Build a sourced modality recommendation row."""
+    return SetupModelRecommendation(
+        name=name,
+        repo_id=model_id,
+        filename="",
+        size_gb=vram or 0.0,
+        quantization=quant,
+        parameter_count="",
+        reason=reason,
+        model_format="safetensors",
+        backend=backend,
+        gpu_only=not cloud_only,
+        best_for=best_for,
+        modality=modality,
+        recommended_backend=backend,
+        recommended_quant=quant,
+        vram_gb_loaded=vram,
+        host_ram_gb_min=16.0,
+        verified_on=_VERIFIED_ON,
+        sources=_sources_for(model_id, backend),
+        requires_upstream_image=requires_upstream_image,
+        tradeoffs=tradeoffs,
+        cloud_only=cloud_only,
+        swap_in_for=swap_in_for,
+        co_residency_notes=f"license={license}",
+    )
+
 
 _VRAM_TIERS: list[dict[str, Any]] = [
     {
@@ -19,7 +114,7 @@ _VRAM_TIERS: list[dict[str, Any]] = [
                 size_gb=1.1,
                 quantization="Q4_K_M",
                 parameter_count="1.5B",
-                reason="Smallest capable model — fits in RAM for CPU inference",
+                reason="Smallest capable model - fits in RAM for CPU inference",
                 is_primary=True,
             ),
             SetupModelRecommendation(
@@ -71,7 +166,7 @@ _VRAM_TIERS: list[dict[str, Any]] = [
                 size_gb=6.0,
                 quantization="Q6_K",
                 parameter_count="7B",
-                reason="Higher quantization — better output quality with 12+ GB VRAM",
+                reason="Higher quantization - better output quality with 12+ GB VRAM",
                 is_primary=True,
             ),
             SetupModelRecommendation(
@@ -97,7 +192,7 @@ _VRAM_TIERS: list[dict[str, Any]] = [
                 size_gb=8.7,
                 quantization="Q4_K_M",
                 parameter_count="14B",
-                reason="14B parameters at 4-bit — substantial quality jump over 7B",
+                reason="14B parameters at 4-bit - substantial quality jump over 7B",
                 is_primary=True,
             ),
             SetupModelRecommendation(
@@ -123,7 +218,7 @@ _VRAM_TIERS: list[dict[str, Any]] = [
                 size_gb=12.0,
                 quantization="Q6_K",
                 parameter_count="14B",
-                reason="14B at 6-bit — best quality for 24GB+ cards",
+                reason="14B at 6-bit - best quality for 24GB+ cards",
                 is_primary=True,
             ),
             SetupModelRecommendation(
@@ -133,141 +228,14 @@ _VRAM_TIERS: list[dict[str, Any]] = [
                 size_gb=19.8,
                 quantization="Q4_K_M",
                 parameter_count="32B",
-                reason="32B parameters — top-tier reasoning and instruction following",
+                reason="32B parameters - top-tier reasoning and instruction following",
             ),
         ],
     },
 ]
 
 
-_VLLM_MODEL_TIERS: list[dict[str, Any]] = [
-    {
-        "min_vram_gb": 8.0,
-        "max_vram_gb": 16.0,
-        "label": "8-16 GB VRAM (vLLM)",
-        "models": [
-            SetupModelRecommendation(
-                name="Qwen 2.5 7B AWQ",
-                repo_id="Qwen/Qwen2.5-7B-Instruct-AWQ",
-                filename="",  # vLLM loads from HF repo directly
-                size_gb=4.5,
-                quantization="AWQ",
-                parameter_count="7B",
-                reason="AWQ quantized — faster throughput on vLLM than GGUF",
-                is_primary=True,
-                model_format="awq",
-                backend="vllm",
-                gpu_only=True,
-            ),
-            SetupModelRecommendation(
-                name="Qwen 2.5 Coder 7B SafeTensors",
-                repo_id="Qwen/Qwen2.5-Coder-7B-Instruct",
-                filename="",
-                size_gb=14.0,
-                quantization="BF16",
-                parameter_count="7B",
-                reason="Native SafeTensors snapshot for vLLM when VRAM allows full precision",
-                model_format="safetensors",
-                backend="vllm",
-                gpu_only=True,
-                best_for=("coding", "review", "documentation"),
-            ),
-        ],
-    },
-    {
-        "min_vram_gb": 16.0,
-        "max_vram_gb": 24.0,
-        "label": "16-24 GB VRAM (vLLM)",
-        "models": [
-            SetupModelRecommendation(
-                name="Qwen 2.5 14B AWQ",
-                repo_id="Qwen/Qwen2.5-14B-Instruct-AWQ",
-                filename="",
-                size_gb=9.0,
-                quantization="AWQ",
-                parameter_count="14B",
-                reason="14B AWQ — fits in 16GB+ VRAM with fast vLLM throughput",
-                is_primary=True,
-                model_format="awq",
-                backend="vllm",
-                gpu_only=True,
-            ),
-            SetupModelRecommendation(
-                name="Codestral 22B GPTQ",
-                repo_id="bartowski/Codestral-22B-v0.1-GPTQ",
-                filename="",
-                size_gb=13.0,
-                quantization="GPTQ",
-                parameter_count="22B",
-                reason="Specialist coding model — GPTQ for vLLM",
-                model_format="gptq",
-                backend="vllm",
-                gpu_only=True,
-            ),
-            SetupModelRecommendation(
-                name="Qwen 2.5 14B SafeTensors",
-                repo_id="Qwen/Qwen2.5-14B-Instruct",
-                filename="",
-                size_gb=28.0,
-                quantization="BF16",
-                parameter_count="14B",
-                reason="Native SafeTensors snapshot for vLLM/NIM on larger GPUs",
-                model_format="safetensors",
-                backend="vllm",
-                gpu_only=True,
-                best_for=("reasoning", "planning", "research"),
-            ),
-        ],
-    },
-    {
-        "min_vram_gb": 24.0,
-        "max_vram_gb": 999.0,
-        "label": "24+ GB VRAM (vLLM)",
-        "models": [
-            SetupModelRecommendation(
-                name="Qwen 2.5 32B AWQ",
-                repo_id="Qwen/Qwen2.5-32B-Instruct-AWQ",
-                filename="",
-                size_gb=18.0,
-                quantization="AWQ",
-                parameter_count="32B",
-                reason="32B AWQ — top-tier reasoning, fits in 24GB+ VRAM on vLLM",
-                is_primary=True,
-                model_format="awq",
-                backend="vllm",
-                gpu_only=True,
-            ),
-            SetupModelRecommendation(
-                name="Qwen 2.5 14B GPTQ",
-                repo_id="Qwen/Qwen2.5-14B-Instruct-GPTQ-Int4",
-                filename="",
-                size_gb=9.0,
-                quantization="GPTQ",
-                parameter_count="14B",
-                reason="14B GPTQ — alternative quantization for vLLM",
-                model_format="gptq",
-                backend="vllm",
-                gpu_only=True,
-            ),
-            SetupModelRecommendation(
-                name="Qwen 2.5 14B SafeTensors",
-                repo_id="Qwen/Qwen2.5-14B-Instruct",
-                filename="",
-                size_gb=28.0,
-                quantization="BF16",
-                parameter_count="14B",
-                reason="Native SafeTensors snapshot for vLLM/NIM full-precision serving",
-                model_format="safetensors",
-                backend="vllm",
-                gpu_only=True,
-                best_for=("reasoning", "planning", "research"),
-            ),
-        ],
-    },
-]
-
-
-# ── CPU Offload Models (llama-cpp only, GGUF, larger than VRAM) ───────────────
+# CPU Offload Models (llama-cpp only, GGUF, larger than VRAM)
 # These models are too large for most GPUs but can run via llama-cpp's CPU
 # offload (partial GPU layers + RAM).  Slower but dramatically more capable.
 
@@ -279,7 +247,7 @@ _CPU_OFFLOAD_MODELS: list[SetupModelRecommendation] = [
         size_gb=42.0,
         quantization="Q4_K_M",
         parameter_count="72B",
-        reason="72B model — requires VRAM+RAM split via llama-cpp CPU offload, slower but top-tier reasoning",
+        reason="72B model - requires VRAM+RAM split via llama-cpp CPU offload, slower but top-tier reasoning",
         model_format="gguf",
         backend="llama_cpp",
         gpu_only=False,
@@ -291,7 +259,7 @@ _CPU_OFFLOAD_MODELS: list[SetupModelRecommendation] = [
         size_gb=40.0,
         quantization="Q4_K_M",
         parameter_count="70B",
-        reason="70B flagship — requires CPU offload, excellent for complex reasoning",
+        reason="70B flagship - requires CPU offload, excellent for complex reasoning",
         model_format="gguf",
         backend="llama_cpp",
         gpu_only=False,

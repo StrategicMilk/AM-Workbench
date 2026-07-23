@@ -22,9 +22,27 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
+from vetinari.boundary_guards import require_nonempty
 from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
+
+DEVELOPER_WORKFLOW_CONTRACT_ID = "wave3-rcg0014p06-scope-followup-P09"
+TASK_MANIFEST_WORKFLOW_GUARDS: tuple[str, ...] = (
+    "manifest hashes require nonempty rule context",
+    "rules loader failures become explicit fallback rules",
+    "constraint loader failures mark the manifest unavailable",
+    "optional episode-store failures do not block manifest construction",
+)
+
+
+def developer_workflow_contract() -> dict[str, object]:
+    """Return task-manifest workflow guarantees verified by this follow-up pack."""
+    return {
+        "pack": DEVELOPER_WORKFLOW_CONTRACT_ID,
+        "surface": "vetinari/orchestration/task_manifest.py",
+        "guards": TASK_MANIFEST_WORKFLOW_GUARDS,
+    }
 
 
 @dataclass
@@ -44,6 +62,7 @@ class TaskManifestContext:
     relevant_episodes: list[dict[str, Any]] = field(default_factory=list)
     defect_warnings: list[str] = field(default_factory=list)
     escalation_triggers: list[str] = field(default_factory=list)
+    loader_failures: list[str] = field(default_factory=list)
     manifest_hash: str = ""
 
     def compute_hash(self) -> str:
@@ -61,7 +80,9 @@ class TaskManifestContext:
             "verification_checklist": self.verification_checklist,
             "defect_warnings": self.defect_warnings,
             "escalation_triggers": self.escalation_triggers,
+            "loader_failures": self.loader_failures,
         }
+        require_nonempty("\n".join(self.relevant_rules or []), field_name="manifest_rules")
         content = json.dumps(data, sort_keys=True)
         self.manifest_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
         return self.manifest_hash
@@ -96,6 +117,7 @@ class TaskManifestContext:
             relevant_episodes=data.get("relevant_episodes", []),
             defect_warnings=data.get("defect_warnings", []),
             escalation_triggers=data.get("escalation_triggers", []),
+            loader_failures=data.get("loader_failures", []),
             manifest_hash=data.get("manifest_hash", ""),
         )
 
@@ -128,6 +150,10 @@ class TaskManifestContext:
         if self.escalation_triggers:
             parts.append("\n### When to Stop and Ask for Help:")
             parts.extend(f"- {trigger}" for trigger in self.escalation_triggers)
+
+        if self.loader_failures:
+            parts.append("\n### Manifest Input Failures:")
+            parts.extend(f"- {failure}" for failure in self.loader_failures)
 
         if self.constraints:
             tokens = self.constraints.get("max_tokens", "unknown")
@@ -177,16 +203,24 @@ class ManifestBuilder:
             manifest.acceptance_criteria = list(acceptance_criteria)
 
         # 1. Get applicable rules from RulesManager
-        manifest.relevant_rules = self._get_rules(agent_type, model_name)
+        manifest.relevant_rules, rules_failure = self._get_rules(agent_type, model_name)
+        if rules_failure:
+            manifest.loader_failures.append(rules_failure)
 
         # 2. Get resource constraints from StandardsLoader
-        manifest.constraints = self._get_constraints(agent_type)
+        manifest.constraints, constraints_failure = self._get_constraints(agent_type)
+        if constraints_failure:
+            manifest.loader_failures.append(constraints_failure)
 
         # 3. Get verification checklist from verification.yaml
-        manifest.verification_checklist = self._get_verification(mode)
+        manifest.verification_checklist, verification_failure = self._get_verification(mode)
+        if verification_failure:
+            manifest.loader_failures.append(verification_failure)
 
         # 4. Get defect warnings from defect_catalog.md
-        manifest.defect_warnings = self._get_defect_warnings(agent_type)
+        manifest.defect_warnings, warnings_failure = self._get_defect_warnings(agent_type)
+        if warnings_failure:
+            manifest.loader_failures.append(warnings_failure)
 
         # 5. Get escalation triggers from escalation.md (static list)
         manifest.escalation_triggers = self._get_escalation_triggers()
@@ -199,50 +233,59 @@ class ManifestBuilder:
 
         return manifest
 
-    def _get_rules(self, agent_type: str, model_name: str | None) -> list[str]:
+    def _get_rules(self, agent_type: str, model_name: str | None) -> tuple[list[str], str]:
         """Fetch applicable rules from RulesManager."""
         try:
             from vetinari.rules_manager import get_rules_manager
 
-            return get_rules_manager().get_rules_for_context(
+            rules = get_rules_manager().get_rules_for_context(
                 agent_type,
                 model_name,
             )
+            return rules, ""
         except (ImportError, AttributeError, KeyError, ValueError):
             logger.warning("Failed to load rules for %s — task runs without rules", agent_type, exc_info=True)
-            return []
+            failure = f"rules unavailable for {agent_type}; do not execute without fallback review"
+            return [failure], failure
 
-    def _get_constraints(self, agent_type: str) -> dict[str, Any]:
+    @staticmethod
+    def _get_constraints(agent_type: str) -> tuple[dict[str, Any], str]:
         """Fetch resource constraints from StandardsLoader."""
         try:
             from vetinari.config.standards_loader import get_standards_loader
 
-            return get_standards_loader().get_constraints(agent_type)
+            return get_standards_loader().get_constraints(agent_type), ""
         except (ImportError, AttributeError, KeyError, ValueError):
             logger.warning("Failed to load constraints for %s — task runs unconstrained", agent_type, exc_info=True)
-            return {}
+            failure = f"constraints unavailable for {agent_type}; fail closed until standards load"
+            return {"unavailable": True, "reason": failure}, failure
 
-    def _get_verification(self, mode: str) -> list[str]:
+    @staticmethod
+    def _get_verification(mode: str) -> tuple[list[str], str]:
         """Fetch verification checklist from StandardsLoader."""
         try:
             from vetinari.config.standards_loader import get_standards_loader
 
-            return get_standards_loader().get_verification_checklist(mode)
+            return get_standards_loader().get_verification_checklist(mode), ""
         except (ImportError, AttributeError, KeyError, ValueError):
             logger.warning("Failed to load verification checklist for mode %s", mode, exc_info=True)
-            return []
+            failure = f"verification checklist unavailable for {mode}; require manual verification"
+            return [failure], failure
 
-    def _get_defect_warnings(self, agent_type: str) -> list[str]:
+    @staticmethod
+    def _get_defect_warnings(agent_type: str) -> tuple[list[str], str]:
         """Fetch defect warnings from StandardsLoader."""
         try:
             from vetinari.config.standards_loader import get_standards_loader
 
-            return get_standards_loader().get_defect_warnings(agent_type)
+            return get_standards_loader().get_defect_warnings(agent_type), ""
         except (ImportError, AttributeError, KeyError, ValueError):
             logger.warning("Failed to load defect warnings for %s", agent_type, exc_info=True)
-            return []
+            failure = f"defect warnings unavailable for {agent_type}; require extra defect review"
+            return [failure], failure
 
-    def _get_escalation_triggers(self) -> list[str]:
+    @staticmethod
+    def _get_escalation_triggers() -> list[str]:
         """Return standard escalation triggers.
 
         Returns a static list derived from escalation.md rather than
@@ -257,7 +300,8 @@ class ManifestBuilder:
             "Same issue recurs across 2+ rework cycles",
         ]
 
-    def _get_episodes(self, task_description: str) -> list[dict[str, Any]]:
+    @staticmethod
+    def _get_episodes(task_description: str) -> list[dict[str, Any]]:
         """Query episode memory for similar past tasks."""
         try:
             from vetinari.memory.unified import get_unified_memory_store

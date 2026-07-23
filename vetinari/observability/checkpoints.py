@@ -21,7 +21,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from vetinari.boundary_guards import account_evidence_drop, assert_dependency_success, require_nonempty
+from vetinari.privacy.envelope import PrivacyClass, privacy_receipt
+from vetinari.security.fail_closed import assert_closed_schema, sanitize_untrusted_text
+from vetinari.security.redaction import redact_value
+
 logger = logging.getLogger(__name__)
+
 
 # -- Module-level singleton (double-checked locking) --
 _store: PipelineCheckpointStore | None = None
@@ -30,6 +36,12 @@ _store_lock = threading.Lock()
 # Snapshot size cap: 64 KB per input/output to bound database growth.
 # Larger payloads are truncated with a preview to preserve debuggability.
 _MAX_SNAPSHOT_BYTES = 65_536
+CHECKPOINT_PRIVACY_SOURCE = "observability.pipeline_checkpoint"
+CHECKPOINT_PRIVACY_RETENTION_DAYS = 30
+
+
+class CheckpointCorruptError(RuntimeError):
+    """Raised when persisted checkpoint replay evidence is structurally corrupt."""
 
 
 @dataclass
@@ -64,6 +76,15 @@ class PipelineCheckpoint:
     quality_score: float | None = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
+    def __post_init__(self) -> None:
+        if self.status not in {"completed", "failed", "skipped"}:
+            raise ValueError("checkpoint status must be completed, failed, or skipped")
+        self.trace_id = sanitize_untrusted_text(self.trace_id, max_length=200)
+        self.execution_id = sanitize_untrusted_text(self.execution_id, max_length=200)
+        self.step_name = sanitize_untrusted_text(self.step_name, max_length=200)
+        if self.model_id:
+            self.model_id = sanitize_untrusted_text(self.model_id, max_length=200)
+
     def __repr__(self) -> str:
         """Show key fields for debugging."""
         return (
@@ -83,7 +104,7 @@ class PipelineCheckpointStore:
     failures are logged at WARNING and the caller continues normally.
     """
 
-    def save_checkpoint(self, checkpoint: PipelineCheckpoint) -> None:
+    def save_checkpoint(self, checkpoint: PipelineCheckpoint, *, allow_checkpoint_failure: bool = False) -> None:
         """Persist a stage checkpoint to the ``pipeline_traces`` table.
 
         Snapshots larger than 64 KB are truncated to a preview dict to bound
@@ -91,13 +112,19 @@ class PipelineCheckpointStore:
 
         Args:
             checkpoint: The checkpoint to persist.
+            allow_checkpoint_failure: When true, persistence failures are
+                accounted but do not abort the caller.
+
+        Raises:
+            RuntimeError: If checkpoint persistence fails and
+                ``allow_checkpoint_failure`` is false.
         """
         try:
             from vetinari.database import get_connection
 
             conn = get_connection()
-            input_json = json.dumps(checkpoint.input_snapshot, default=str)
-            output_json = json.dumps(checkpoint.output_snapshot, default=str)
+            input_json = json.dumps(_privacy_safe_snapshot(checkpoint.input_snapshot), default=str)
+            output_json = json.dumps(_privacy_safe_snapshot(checkpoint.output_snapshot), default=str)
             # Truncate oversized snapshots rather than failing
             if len(input_json) > _MAX_SNAPSHOT_BYTES:
                 input_json = json.dumps({"_truncated": True, "preview": input_json[:500]})
@@ -133,7 +160,19 @@ class PipelineCheckpointStore:
                 checkpoint.step_name,
                 checkpoint.status,
             )
-        except Exception:
+        except Exception as exc:
+            account_evidence_drop(
+                logger=logger,
+                evidence_ref=f"checkpoint:{checkpoint.trace_id}:{checkpoint.step_name}",
+                reason="checkpoint_persist_failure",
+            )
+            if not allow_checkpoint_failure:
+                try:
+                    assert_dependency_success(False, dependency_id="pipeline_checkpoint_persist")
+                except RuntimeError:
+                    raise RuntimeError(
+                        "pipeline checkpoint persist failed - refusing to continue without evidence"
+                    ) from exc
             logger.warning(
                 "Failed to save checkpoint for trace=%s step=%s — observability data lost, pipeline continues normally",
                 checkpoint.trace_id,
@@ -150,6 +189,10 @@ class PipelineCheckpointStore:
 
         Returns:
             The most recent matching checkpoint, or ``None`` if not found.
+
+        Raises:
+            CheckpointCorruptError: If the persisted checkpoint payload is
+                corrupt.
         """
         try:
             from vetinari.database import get_connection
@@ -169,6 +212,8 @@ class PipelineCheckpointStore:
             if row is None:
                 return None
             return self._row_to_checkpoint(row)
+        except CheckpointCorruptError:
+            raise
         except Exception:
             logger.warning(
                 "Failed to load checkpoint for trace=%s step=%s",
@@ -186,6 +231,10 @@ class PipelineCheckpointStore:
 
         Returns:
             All checkpoints for this trace, ordered by ``step_index`` ascending.
+
+        Raises:
+            CheckpointCorruptError: If any persisted checkpoint payload is
+                corrupt.
         """
         try:
             from vetinari.database import get_connection
@@ -203,6 +252,8 @@ class PipelineCheckpointStore:
                 (trace_id,),
             ).fetchall()
             return [self._row_to_checkpoint(r) for r in rows]
+        except CheckpointCorruptError:
+            raise
         except Exception:
             logger.warning(
                 "Failed to list checkpoints for trace=%s",
@@ -222,6 +273,9 @@ class PipelineCheckpointStore:
         Returns:
             List of dicts with keys: ``trace_id``, ``execution_id``,
             ``step_count``, ``total_tokens``, ``total_latency_ms``, ``created_at``.
+
+        Raises:
+            CheckpointCorruptError: If checkpoint summary data is corrupt.
         """
         try:
             from vetinari.database import get_connection
@@ -259,6 +313,8 @@ class PipelineCheckpointStore:
                     (limit,),
                 ).fetchall()
             return [dict(r) for r in rows]
+        except CheckpointCorruptError:
+            raise
         except Exception:
             logger.warning("Failed to list traces", exc_info=True)
             return []
@@ -320,7 +376,21 @@ class PipelineCheckpointStore:
             logger.warning("Failed to list all checkpoints for cost analysis", exc_info=True)
             return []
 
-    def _row_to_checkpoint(self, row: Any) -> PipelineCheckpoint:
+    @staticmethod
+    def _load_snapshot_json(raw: Any, *, field_name: str) -> dict[str, Any]:
+        try:
+            if raw is None:
+                raise ValueError(f"{field_name} is required")
+            text = require_nonempty(str(raw), field_name=field_name)
+            loaded = json.loads(text)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise CheckpointCorruptError(f"{field_name} is corrupt") from exc
+        if not isinstance(loaded, dict):
+            raise CheckpointCorruptError(f"{field_name} must decode to an object")
+        return loaded
+
+    @staticmethod
+    def _row_to_checkpoint(row: Any) -> PipelineCheckpoint:
         """Convert a ``sqlite3.Row`` to a ``PipelineCheckpoint``.
 
         Args:
@@ -329,14 +399,14 @@ class PipelineCheckpointStore:
         Returns:
             Populated ``PipelineCheckpoint`` instance.
         """
-        try:
-            input_snap = json.loads(row["input_snapshot_json"] or "{}")
-        except (json.JSONDecodeError, TypeError):
-            input_snap = {}
-        try:
-            output_snap = json.loads(row["output_snapshot_json"] or "{}")
-        except (json.JSONDecodeError, TypeError):
-            output_snap = {}
+        input_snap = PipelineCheckpointStore._load_snapshot_json(
+            row["input_snapshot_json"],
+            field_name="input_snapshot_json",
+        )
+        output_snap = PipelineCheckpointStore._load_snapshot_json(
+            row["output_snapshot_json"],
+            field_name="output_snapshot_json",
+        )
         return PipelineCheckpoint(
             trace_id=row["trace_id"],
             execution_id=row["execution_id"] or "",
@@ -351,6 +421,24 @@ class PipelineCheckpointStore:
             quality_score=row["quality_score"],
             created_at=row["created_at"] or "",
         )
+
+
+def _privacy_safe_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Return a checkpoint snapshot with sensitive values redacted and receipted."""
+    assert_closed_schema(snapshot, allowed_keys=snapshot.keys())
+    return {
+        "payload": _redact_snapshot_value(snapshot),
+        "privacy_receipt": privacy_receipt(
+            privacy_class=PrivacyClass.OPERATIONAL.value,
+            retention_days=CHECKPOINT_PRIVACY_RETENTION_DAYS,
+            source=CHECKPOINT_PRIVACY_SOURCE,
+            redaction_applied=True,
+        ),
+    }
+
+
+def _redact_snapshot_value(value: Any) -> Any:
+    return redact_value(value)
 
 
 # -- Singleton factory --------------------------------------------------------

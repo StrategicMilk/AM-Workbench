@@ -101,7 +101,7 @@ ORACLE_MODE_PROMPTS: dict[str, str] = {
         "modeling, threat analysis, and mitigation strategy design. You apply the ISO\n"
         "31000 risk management framework and OWASP risk rating methodology. You score\n"
         "risks on a 5x5 likelihood-impact matrix and calculate composite risk scores\n"
-        "(likelihood × impact) to enable objective prioritisation. You distinguish\n"  # noqa: RUF001 - prompt text intentionally keeps unicode punctuation
+        "(likelihood x impact) to enable objective prioritisation. You distinguish\n"
         "between inherent risk (before controls) and residual risk (after mitigation).\n"
         "You identify systemic risks that compound across multiple dimensions: a single\n"
         "architectural decision may simultaneously create technical debt, security\n"
@@ -154,7 +154,7 @@ ORACLE_MODE_PROMPTS: dict[str, str] = {
         "- If risk data is insufficient, set likelihood=1 and note 'insufficient data'\n"
         "- Never return an empty risks array — every system has at least one risk\n\n"
         "QUALITY CRITERIA:\n"
-        "- composite_score must equal likelihood × impact exactly\n"  # noqa: RUF001 - prompt text intentionally keeps unicode punctuation
+        "- composite_score must equal likelihood x impact exactly\n"
         "- inherent_risk_level and residual_risk_level must differ when mitigation is specified\n"
         "- top_3_risks must correspond to the 3 highest composite_score entries\n\n"
         "MICRO-RULES for output stability:\n"

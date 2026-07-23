@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass, field
 
 from vetinari.context.session_state import SessionState
-from vetinari.context.window_manager import WindowConversationMessage, estimate_tokens
+from vetinari.context.window_manager import WindowConversationMessage, count_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +202,8 @@ class ContextRestorer:
 
     # ── Private helpers ────────────────────────────────────────────────
 
-    def _truncate_to_budget(self, text: str, max_tokens: int) -> tuple[str, bool]:
+    @staticmethod
+    def _truncate_to_budget(text: str, max_tokens: int) -> tuple[str, bool]:
         """Shorten *text* to fit within *max_tokens*, preserving a suffix marker.
 
         Truncation is word-based to avoid cutting multi-byte characters midway.
@@ -221,11 +222,11 @@ class ContextRestorer:
         if not text:
             return text, False
 
-        if estimate_tokens(text) <= max_tokens:
+        if count_tokens(text) <= max_tokens:
             return text, False
 
         marker = "\n[...truncated...]"
-        marker_tokens = estimate_tokens(marker)
+        marker_tokens = count_tokens(marker)
         # Reserve tokens for the marker itself
         target_tokens = max(0, max_tokens - marker_tokens)
 
@@ -234,7 +235,7 @@ class ContextRestorer:
         lo, hi = 0, len(words)
         while lo < hi:
             mid = (lo + hi + 1) // 2
-            if estimate_tokens(" ".join(words[:mid])) <= target_tokens:
+            if count_tokens(" ".join(words[:mid])) <= target_tokens:
                 lo = mid
             else:
                 hi = mid - 1
@@ -260,21 +261,12 @@ class ContextRestorer:
 
         # 1. Agent instructions — highest priority, injected first
         if context.agent_instructions.strip():
-            body, was_truncated = self._truncate_to_budget(context.agent_instructions, self._budget.agent_instructions)
-            content = f"[Restored: agent instructions]\n{body}"
-            msg = WindowConversationMessage(
-                role="system",
-                content=content,
-                metadata={
-                    "restoration_category": "agent_instructions",
-                    "was_truncated": was_truncated,
-                },
-            )
-            messages.append(msg)
-            logger.debug(
-                "Restoration: agent_instructions %d tokens (truncated=%s)",
-                msg.token_count,
-                was_truncated,
+            self._append_restored_message(
+                messages,
+                "agent_instructions",
+                "agent instructions",
+                context.agent_instructions,
+                self._budget.agent_instructions,
             )
 
         # 2. Task description + plan summary — combined into one message so
@@ -287,64 +279,60 @@ class ContextRestorer:
 
         if task_parts:
             combined = "\n\n".join(task_parts)
-            body, was_truncated = self._truncate_to_budget(combined, self._budget.task_and_plan)
-            content = f"[Restored: task and plan]\n{body}"
-            msg = WindowConversationMessage(
-                role="system",
-                content=content,
-                metadata={
-                    "restoration_category": "task_and_plan",
-                    "was_truncated": was_truncated,
-                },
-            )
-            messages.append(msg)
-            logger.debug(
-                "Restoration: task_and_plan %d tokens (truncated=%s)",
-                msg.token_count,
-                was_truncated,
+            self._append_restored_message(
+                messages, "task_and_plan", "task and plan", combined, self._budget.task_and_plan
             )
 
         # 3. Most recent pipeline output
         if context.recent_output.strip():
-            body, was_truncated = self._truncate_to_budget(context.recent_output, self._budget.recent_output)
-            content = f"[Restored: recent pipeline output]\n{body}"
-            msg = WindowConversationMessage(
-                role="system",
-                content=content,
-                metadata={
-                    "restoration_category": "recent_output",
-                    "was_truncated": was_truncated,
-                },
-            )
-            messages.append(msg)
-            logger.debug(
-                "Restoration: recent_output %d tokens (truncated=%s)",
-                msg.token_count,
-                was_truncated,
+            self._append_restored_message(
+                messages,
+                "recent_output",
+                "recent pipeline output",
+                context.recent_output,
+                self._budget.recent_output,
             )
 
         # 4. Memory snippets — injected as a single block to avoid many small messages
         non_empty_memories = [m for m in context.memories if m.strip()]
         if non_empty_memories:
             combined = "\n---\n".join(non_empty_memories)
-            body, was_truncated = self._truncate_to_budget(combined, self._budget.memories)
-            content = f"[Restored: key memories]\n{body}"
-            msg = WindowConversationMessage(
-                role="system",
-                content=content,
-                metadata={
-                    "restoration_category": "memories",
-                    "was_truncated": was_truncated,
-                },
-            )
-            messages.append(msg)
-            logger.debug(
-                "Restoration: memories %d tokens (truncated=%s)",
-                msg.token_count,
-                was_truncated,
+            self._append_restored_message(
+                messages,
+                "memories",
+                "key memories",
+                combined,
+                self._budget.memories,
+                role="assistant",
+                authority="retrieved_memory",
             )
 
         return messages
+
+    def _append_restored_message(
+        self,
+        messages: list[WindowConversationMessage],
+        category: str,
+        label: str,
+        text: str,
+        budget: int,
+        *,
+        role: str = "system",
+        authority: str = "restored_context",
+    ) -> None:
+        body, was_truncated = self._truncate_to_budget(text, budget)
+        msg = WindowConversationMessage(
+            role=role,
+            content=f"[Restored: {label}]\n{body}",
+            metadata={
+                "restoration_category": category,
+                "was_truncated": was_truncated,
+                "authority": authority,
+                "source": "context_restoration",
+            },
+        )
+        messages.append(msg)
+        logger.debug("Restoration: %s %d tokens (truncated=%s)", category, msg.token_count, was_truncated)
 
 
 # ── Module-level singleton ─────────────────────────────────────────────

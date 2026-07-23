@@ -13,30 +13,65 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
+from pathlib import Path
 from typing import Any
 
-from vetinari.constants import get_user_dir
+from vetinari.boundary_guards import require_nonempty
+from vetinari.constants import OUTPUTS_DIR, get_user_dir
+from vetinari.utils import privacy_receipt
 
 logger = logging.getLogger(__name__)
 
+
 # Promotion thresholds — ALL must pass for a candidate to be promoted
-_MIN_QUALITY_IMPROVEMENT = -0.02  # Allow up to 2% quality regression
+_MIN_QUALITY_IMPROVEMENT = 0.0  # Candidate quality must not regress.
 _MAX_LATENCY_RATIO = 1.3  # Candidate can be at most 30% slower than production
 _MAX_ERROR_RATE_INCREASE = 0.05  # Allow at most 5 percentage points more errors
 _ROLLBACK_WINDOW_HOURS = 24  # Auto-rollback if degradation detected within this window
 _ROLLBACK_QUALITY_MARGIN = 0.05  # Roll back if quality falls 5 pts below pre-promotion baseline
+_SUBJECT_FIELD_NAMES = ("subject", "subject_id", "privacy_subject_id", "user_id")
+_SUBJECT_MARKER_RE = re.compile(r"(?:^|\b)(?:subject|subject_id|privacy_subject_id|user_id)\s*[=: ]\s*(?P<id>[^\s,;]+)")
+
+
+class ShadowTestStatus(str, Enum):
+    """Canonical lifecycle states for shadow tests."""
+
+    RUNNING = "running"
+    PROMOTED = "promoted"
+    REJECTED = "rejected"
+    ROLLED_BACK = "rolled_back"
+
+    @classmethod
+    def coerce(cls, value: str | ShadowTestStatus) -> ShadowTestStatus:
+        """Support coerce behavior for Vetinari callers.
+
+        Returns:
+            Value produced for the caller.
+
+        Raises:
+            ValueError: Propagated when validation, persistence, or execution fails.
+        """
+        if isinstance(value, cls):
+            return value
+        try:
+            return cls(value)
+        except ValueError as exc:
+            allowed = ", ".join(status.value for status in cls)
+            raise ValueError(f"unsupported shadow test status {value!r}; expected one of: {allowed}") from exc
 
 
 @dataclass
 class ShadowMetrics:
     """Collected metrics for one side (production or candidate) of a shadow test."""
 
-    quality_scores: list[float] = field(default_factory=list)  # noqa: VET220 — capped to 500 at append site; list kept for json.dump(asdict()) compatibility
-    latency_ms_values: list[float] = field(default_factory=list)  # noqa: VET220 — capped to 500 at append site; list kept for json.dump(asdict()) compatibility
+    quality_scores: list[float] = field(default_factory=list)
+    latency_ms_values: list[float] = field(default_factory=list)
     error_count: int = 0
     total_runs: int = 0
 
@@ -73,14 +108,16 @@ class ShadowTest:
     candidate_config: dict[str, Any]
     production_metrics: ShadowMetrics = field(default_factory=ShadowMetrics)
     candidate_metrics: ShadowMetrics = field(default_factory=ShadowMetrics)
-    # Status lifecycle: running -> promoted | rejected | rolled_back
-    status: str = "running"
+    status: ShadowTestStatus = ShadowTestStatus.RUNNING
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     promoted_at: str | None = None
     min_samples: int = 10  # Minimum observations before a promotion decision is allowed
 
+    def __post_init__(self) -> None:
+        self.status = ShadowTestStatus.coerce(self.status)
+
     def __repr__(self) -> str:
-        return f"ShadowTest(test_id={self.test_id!r}, status={self.status!r})"
+        return f"ShadowTest(test_id={self.test_id!r}, status={self.status.value!r})"
 
 
 class ShadowTestRunner:
@@ -168,7 +205,7 @@ class ShadowTestRunner:
         """
         with self._lock:
             test = self._tests.get(test_id)
-            if test and test.status == "running":
+            if test and test.status is ShadowTestStatus.RUNNING:
                 test.production_metrics.quality_scores.append(quality)
                 if len(test.production_metrics.quality_scores) > 500:
                     test.production_metrics.quality_scores = test.production_metrics.quality_scores[-500:]
@@ -178,6 +215,7 @@ class ShadowTestRunner:
                 test.production_metrics.total_runs += 1
                 if error:
                     test.production_metrics.error_count += 1
+                self._save_state()
 
     def record_candidate(
         self,
@@ -199,7 +237,7 @@ class ShadowTestRunner:
         """
         with self._lock:
             test = self._tests.get(test_id)
-            if test and test.status == "running":
+            if test and test.status is ShadowTestStatus.RUNNING:
                 test.candidate_metrics.quality_scores.append(quality)
                 if len(test.candidate_metrics.quality_scores) > 500:
                     test.candidate_metrics.quality_scores = test.candidate_metrics.quality_scores[-500:]
@@ -209,32 +247,43 @@ class ShadowTestRunner:
                 test.candidate_metrics.total_runs += 1
                 if error:
                     test.candidate_metrics.error_count += 1
+                self._save_state()
 
-    def evaluate(self, test_id: str) -> dict[str, Any]:
+    def record_production_run(
+        self,
+        test_id: str,
+        *,
+        quality: float,
+        latency_ms: float,
+        error: bool = False,
+    ) -> None:
+        """Compatibility alias for callers that name observations as runs."""
+        self.record_production(test_id, quality=quality, latency_ms=latency_ms, error=error)
+
+    def record_candidate_run(
+        self,
+        test_id: str,
+        *,
+        quality: float,
+        latency_ms: float,
+        error: bool = False,
+    ) -> None:
+        """Compatibility alias for callers that name observations as runs."""
+        self.record_candidate(test_id, quality=quality, latency_ms=latency_ms, error=error)
+
+    def evaluate(self, test_id: str, *, allow_latency_tradeoff: bool = False) -> dict[str, Any]:
         """Decide whether the candidate variant should be promoted to production.
 
-        ALL three thresholds must pass for promotion:
-        - Quality regression no worse than ``_MIN_QUALITY_IMPROVEMENT``
-        - Latency ratio no higher than ``_MAX_LATENCY_RATIO``
-        - Error-rate increase no higher than ``_MAX_ERROR_RATE_INCREASE``
-
-        Mutates test status to ``"promoted"`` or ``"rejected"`` and persists state.
-
-        Args:
-            test_id: Shadow test ID returned by :meth:`create_test`.
-
         Returns:
-            Dict containing ``decision`` (one of ``"promote"``, ``"reject"``,
-            ``"insufficient_data"``, ``"not_found"``, or the current status if
-            already concluded) plus supporting metric values and reasoning.
+            Value produced for the caller.
         """
         with self._lock:
             test = self._tests.get(test_id)
             if not test:
                 return {"decision": "not_found", "reasoning": f"Test {test_id} not found"}
 
-            if test.status != "running":
-                return {"decision": test.status, "reasoning": f"Test already {test.status}"}
+            if test.status is not ShadowTestStatus.RUNNING:
+                return {"decision": test.status.value, "reasoning": f"Test already {test.status.value}"}
 
             prod = test.production_metrics
             cand = test.candidate_metrics
@@ -247,59 +296,48 @@ class ShadowTestRunner:
                     "min_samples": test.min_samples,
                 }
 
-            quality_delta = cand.avg_quality - prod.avg_quality
-            latency_ratio = cand.avg_latency / max(prod.avg_latency, 1.0)
-            error_rate_delta = cand.error_rate - prod.error_rate
-
-            reasons: list[str] = []
-            if quality_delta < _MIN_QUALITY_IMPROVEMENT:
-                reasons.append(
-                    f"Quality regression: delta {quality_delta:+.3f} worse than floor {_MIN_QUALITY_IMPROVEMENT:+.3f}"
-                )
-            if latency_ratio > _MAX_LATENCY_RATIO:
-                reasons.append(
-                    f"Latency regression: candidate is {latency_ratio:.2f}x slower, limit is {_MAX_LATENCY_RATIO:.2f}x"
-                )
-            if error_rate_delta > _MAX_ERROR_RATE_INCREASE:
-                reasons.append(
-                    f"Error rate increase: {error_rate_delta:+.3f} exceeds limit {_MAX_ERROR_RATE_INCREASE:+.3f}"
-                )
+            metrics = _shadow_evaluation_metrics(prod, cand)
+            reasons = _shadow_rejection_reasons(metrics, allow_latency_tradeoff)
 
             if reasons:
-                test.status = "rejected"
-                self._save_state()
-                logger.info(
-                    "[ShadowTest] Rejected %s — %d threshold(s) failed: %s",
-                    test_id,
-                    len(reasons),
-                    "; ".join(reasons),
-                )
-                return {
-                    "decision": "reject",
-                    "quality_delta": round(quality_delta, 4),
-                    "latency_ratio": round(latency_ratio, 3),
-                    "error_rate_delta": round(error_rate_delta, 4),
-                    "reasons": reasons,
-                }
+                return self._reject_test(test, metrics, reasons)
+            return self._promote_test(test, metrics)
 
-            test.status = "promoted"
-            test.promoted_at = datetime.now(timezone.utc).isoformat()
-            self._save_state()
+    def _reject_test(self, test: ShadowTest, metrics: dict[str, float], reasons: list[str]) -> dict[str, Any]:
+        test.status = ShadowTestStatus.REJECTED
+        self._save_state()
+        logger.info(
+            "[ShadowTest] Rejected %s - %d threshold(s) failed: %s",
+            test.test_id,
+            len(reasons),
+            "; ".join(reasons),
+        )
+        return {
+            "decision": "reject",
+            "quality_delta": round(metrics["quality_delta"], 4),
+            "latency_ratio": round(metrics["latency_ratio"], 3),
+            "error_rate_delta": round(metrics["error_rate_delta"], 4),
+            "reasons": reasons,
+        }
 
-            logger.info(
-                "[ShadowTest] Promoted %s: quality_delta=%+.3f, latency_ratio=%.2f, error_rate_delta=%+.3f",
-                test_id,
-                quality_delta,
-                latency_ratio,
-                error_rate_delta,
-            )
-            return {
-                "decision": "promote",
-                "quality_delta": round(quality_delta, 4),
-                "latency_ratio": round(latency_ratio, 3),
-                "error_rate_delta": round(error_rate_delta, 4),
-                "candidate_config": test.candidate_config,
-            }
+    def _promote_test(self, test: ShadowTest, metrics: dict[str, float]) -> dict[str, Any]:
+        test.status = ShadowTestStatus.PROMOTED
+        test.promoted_at = datetime.now(timezone.utc).isoformat()
+        self._save_state()
+        logger.info(
+            "[ShadowTest] Promoted %s: quality_delta=%+.3f, latency_ratio=%.2f, error_rate_delta=%+.3f",
+            test.test_id,
+            metrics["quality_delta"],
+            metrics["latency_ratio"],
+            metrics["error_rate_delta"],
+        )
+        return {
+            "decision": "promote",
+            "quality_delta": round(metrics["quality_delta"], 4),
+            "latency_ratio": round(metrics["latency_ratio"], 3),
+            "error_rate_delta": round(metrics["error_rate_delta"], 4),
+            "candidate_config": test.candidate_config,
+        }
 
     def check_rollback(self, test_id: str, current_quality: float) -> bool:
         """Check whether a promoted test should be rolled back due to degradation.
@@ -322,7 +360,7 @@ class ShadowTestRunner:
         """
         with self._lock:
             test = self._tests.get(test_id)
-            if not test or test.status != "promoted" or not test.promoted_at:
+            if not test or test.status is not ShadowTestStatus.PROMOTED or not test.promoted_at:
                 return False
 
             promoted_time = datetime.fromisoformat(test.promoted_at)
@@ -333,7 +371,7 @@ class ShadowTestRunner:
 
             baseline_quality = test.production_metrics.avg_quality
             if current_quality < baseline_quality - _ROLLBACK_QUALITY_MARGIN:
-                test.status = "rolled_back"
+                test.status = ShadowTestStatus.ROLLED_BACK
                 self._save_state()
                 logger.warning(
                     "[ShadowTest] Rolling back %s: current_quality=%.3f dropped below "
@@ -361,14 +399,46 @@ class ShadowTestRunner:
                 {
                     "test_id": t.test_id,
                     "description": t.description,
-                    "status": t.status,
+                    "status": t.status.value,
                     "production_runs": t.production_metrics.total_runs,
                     "candidate_runs": t.candidate_metrics.total_runs,
                     "created_at": t.created_at,
                 }
                 for t in self._tests.values()
-                if t.status == "running"
+                if t.status is ShadowTestStatus.RUNNING
             ]
+
+    def export_subject_data(self, subject: str) -> dict[str, Any]:
+        """Export shadow-test configs and metrics explicitly tied to ``subject``.
+
+        Returns:
+            Export payload containing matching shadow-test records.
+        """
+        marker = subject.strip()
+        with self._lock:
+            records = [asdict(test) for test in self._tests.values() if _value_marks_subject(asdict(test), marker)]
+        return {"records": records}
+
+    def records_for_subject(self, subject: str) -> list[dict[str, Any]]:
+        """Return shadow-test records explicitly tied to ``subject``."""
+        return list(self.export_subject_data(subject)["records"])
+
+    def delete_records_for_subject(self, subject: str) -> int:
+        """Delete shadow-test records explicitly tied to ``subject``.
+
+        Returns:
+            Number of deleted shadow-test records.
+        """
+        marker = subject.strip()
+        if not marker:
+            return 0
+        with self._lock:
+            doomed = [test_id for test_id, test in self._tests.items() if _value_marks_subject(asdict(test), marker)]
+            for test_id in doomed:
+                self._tests.pop(test_id, None)
+            if doomed:
+                self._save_state()
+            return len(doomed)
 
     def _load_state(self) -> None:
         """Restore shadow test state from the JSON persistence file on disk.
@@ -419,11 +489,168 @@ class ShadowTestRunner:
             )
 
 
+def _shadow_evaluation_metrics(prod: ShadowMetrics, cand: ShadowMetrics) -> dict[str, float]:
+    return {
+        "quality_delta": cand.avg_quality - prod.avg_quality,
+        "latency_ratio": cand.avg_latency / max(prod.avg_latency, 1.0),
+        "error_rate_delta": cand.error_rate - prod.error_rate,
+    }
+
+
+def _shadow_rejection_reasons(metrics: dict[str, float], allow_latency_tradeoff: bool) -> list[str]:
+    quality_delta = metrics["quality_delta"]
+    latency_ratio = metrics["latency_ratio"]
+    error_rate_delta = metrics["error_rate_delta"]
+    reasons: list[str] = []
+    if quality_delta < _MIN_QUALITY_IMPROVEMENT:
+        reasons.append(
+            f"Quality regression: delta {quality_delta:+.3f} is below non-regression floor {_MIN_QUALITY_IMPROVEMENT:+.3f}"
+        )
+    if latency_ratio > _MAX_LATENCY_RATIO:
+        reasons.append(
+            f"Latency regression: candidate is {latency_ratio:.2f}x slower, limit is {_MAX_LATENCY_RATIO:.2f}x"
+        )
+    if error_rate_delta > _MAX_ERROR_RATE_INCREASE:
+        reasons.append(f"Error rate increase: {error_rate_delta:+.3f} exceeds limit {_MAX_ERROR_RATE_INCREASE:+.3f}")
+    return reasons
+
+
 # Module-level singleton; guarded by double-checked locking.
 # Written by: get_shadow_test_runner()
 # Read by: learning subsystem, training pipeline, prompt evolution
 _shadow_runner: ShadowTestRunner | None = None
 _shadow_runner_lock = threading.Lock()
+
+
+# Default results path written by ``persist_shadow_test_result``. Tests inject
+# a ``tmp_path``-rooted file by passing ``results_path=`` explicitly.
+SHADOW_RESULTS_PATH = OUTPUTS_DIR / "shadow_tests" / "results.jsonl"
+
+
+def persist_shadow_test_result(
+    run_id: str,
+    *,
+    passed: bool,
+    score: float,
+    model_id: str,
+    results_path: Path | None = None,
+) -> Path:
+    """Append one shadow-test result row to the JSONL results store.
+
+    Closes the wiring gap where ``ShadowTestRunner`` computed results but had
+    no reader-visible persistence path. Each call appends a single JSONL line
+    with ``run_id``, ``timestamp`` (ISO-8601 UTC), ``passed``, ``score``, and
+    ``model_id``. Writes are atomic at the line level (single ``append``).
+
+    Args:
+        run_id: Shadow test run identifier (typically ``ShadowTest.test_id``).
+        passed: Whether the candidate passed the promotion gate.
+        score: Mean candidate quality score (0.0-1.0).
+        model_id: Model identifier that produced the candidate observations.
+        results_path: Optional override for the results file location. Defaults
+            to :data:`SHADOW_RESULTS_PATH`.
+
+    Returns:
+        The path that was written to (useful for test assertions).
+    """
+    validated_run_id = require_nonempty(run_id, field_name="run_id")
+    target = results_path if results_path is not None else SHADOW_RESULTS_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "run_id": validated_run_id,
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "passed": bool(passed),
+        "score": float(score),
+        "model_id": model_id,
+        "privacy_receipt": privacy_receipt(
+            privacy_class="operational",
+            retention_days=30,
+            source="shadow_testing.result",
+            redaction_applied=True,
+        ),
+    }
+    with target.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record) + "\n")
+    return target
+
+
+def recall_token_f1(expected: str, actual: str) -> float:
+    """Token-F1 overlap scoring for shadow-test recall.
+
+    Replaces the prior substring-containment recall heuristic. Tokens are
+    whitespace-split and lowercased; the F1 over those token sets is the
+    final score. Identical strings score ``1.0``; disjoint strings score
+    ``0.0``; partial overlaps score proportionally.
+
+    Args:
+        expected: Reference answer text. Empty input returns ``0.0``.
+        actual: Candidate answer text.
+
+    Returns:
+        F1 value in the closed interval ``[0.0, 1.0]``.
+    """
+    expected_tokens = expected.lower().split()
+    actual_tokens = actual.lower().split()
+    if not expected_tokens or not actual_tokens:
+        return 0.0
+    expected_set = set(expected_tokens)
+    actual_set = set(actual_tokens)
+    intersection = expected_set & actual_set
+    if not intersection:
+        return 0.0
+    return (2 * len(intersection)) / (len(expected_set) + len(actual_set))
+
+
+def record_shadow_comparison(
+    test_id: str,
+    *,
+    expected_output: str,
+    actual_output: str,
+    latency_ms: float = 0.0,
+    error: bool = False,
+) -> float:
+    """Record one candidate observation scored via token-F1 recall.
+
+    Convenience entry-point that computes the candidate quality score using
+    :func:`recall_token_f1` and then records both the production baseline and
+    candidate observation on the singleton runner.
+    Callers that only have raw text outputs should use this rather than
+    computing scores themselves.
+
+    Args:
+        test_id: Shadow test ID returned by :meth:`ShadowTestRunner.create_test`.
+        expected_output: Reference (production) answer text.
+        actual_output: Candidate answer text to score.
+        latency_ms: Candidate inference latency in milliseconds.
+        error: Whether this run ended in an error condition.
+
+    Returns:
+        Token-F1 quality score in the closed interval ``[0.0, 1.0]`` that was
+        recorded against the candidate metrics.
+    """
+    quality = recall_token_f1(expected_output, actual_output)
+    runner = get_shadow_test_runner()
+    runner.record_production_run(test_id, quality=1.0, latency_ms=0.0, error=False)
+    runner.record_candidate_run(test_id, quality=quality, latency_ms=latency_ms, error=error)
+    return quality
+
+
+def _value_marks_subject(value: Any, subject: str) -> bool:
+    if not subject:
+        return False
+    if isinstance(value, dict):
+        for key in _SUBJECT_FIELD_NAMES:
+            if value.get(key) == subject:
+                return True
+        receipt = value.get("privacy_receipt") or value.get("_privacy_envelope")
+        if isinstance(receipt, dict) and receipt.get("subject_id") == subject:
+            return True
+        return any(_value_marks_subject(item, subject) for item in value.values())
+    if isinstance(value, list):
+        return any(_value_marks_subject(item, subject) for item in value)
+    if isinstance(value, str):
+        return any(match.group("id") == subject for match in _SUBJECT_MARKER_RE.finditer(value))
+    return False
 
 
 def get_shadow_test_runner() -> ShadowTestRunner:

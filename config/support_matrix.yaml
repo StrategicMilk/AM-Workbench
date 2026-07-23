@@ -1,0 +1,1045 @@
+﻿schema_version: 1
+last_verified: '2026-06-01'
+freshness_days: 90
+hardware_profile_semantics:
+  nvidia_cuda_8gb: minimum detected NVIDIA CUDA VRAM >= 8 GiB
+  nvidia_cuda_16gb: minimum detected NVIDIA CUDA VRAM >= 16 GiB
+  nvidia_cuda_24gb: minimum detected NVIDIA CUDA VRAM >= 24 GiB
+  nvidia_cuda_32gb: 32 GB-class NVIDIA CUDA GPU; minimum detected VRAM >= 31 GiB to account for reserved memory reporting
+inference_endpoint_capability_contract:
+  status: validated
+  support_matrix_version: '1'
+  route_receipt_policy:
+    redaction: prompt_hash_only
+    required_fields:
+    - tiers_tried
+    - accepted_tier
+    - confidence
+    - cost_usd
+    - fallback_reason
+    - provider_health
+    - support_matrix_version
+  unavailable_provider_behavior: fail_closed_before_execution
+  stale_support_matrix_behavior: reject_routing_before_execution
+  recovery_behavior: refresh config/model_families.yaml and support_matrix proof, then rerun scripts/check_inference_endpoint_capabilities.py --strict
+  proof_commands:
+  - python scripts/check_inference_endpoint_capabilities.py --strict
+  - python scripts/check_default_routing_and_kaizen.py --strict --routing-only
+backend_evidence:
+  am_engine:
+    status: validated
+    verified_on: '2026-07-18'
+    local_inference_tiers:
+    - hardware: nvidia_cuda_8gb
+      os: windows_11
+      maturity: validated
+      probe_command: python scripts/check_local_inference_backend.py --hardware nvidia_cuda_8gb --os windows_11 --backend am_engine --timeout-s 90
+    - hardware: nvidia_cuda_16gb
+      os: windows_11
+      maturity: validated
+      probe_command: python scripts/check_local_inference_backend.py --hardware nvidia_cuda_16gb --os windows_11 --backend am_engine --timeout-s 90
+    - hardware: nvidia_cuda_24gb
+      os: windows_11
+      maturity: validated
+      probe_command: python scripts/check_local_inference_backend.py --hardware nvidia_cuda_24gb --os windows_11 --backend am_engine --timeout-s 90
+    - hardware: nvidia_cuda_32gb
+      os: windows_11
+      maturity: validated
+      probe_command: python scripts/check_local_inference_backend.py --hardware nvidia_cuda_32gb --os windows_11 --backend am_engine --timeout-s 90
+axes:
+  hardware:
+  - cpu_only
+  - nvidia_cuda_8gb
+  - nvidia_cuda_16gb
+  - nvidia_cuda_24gb
+  - nvidia_cuda_32gb
+  - apple_silicon_mps
+  os:
+  - windows_10
+  - windows_11
+  - ubuntu_22_04
+  - ubuntu_24_04
+  - macos_14_plus
+  workflow:
+  - local_inference
+  - local_training
+  - native_kernel_api
+  - cli
+  - agent_pipeline
+  maturity:
+  - unsupported
+  - experimental
+  - validated
+  - promotion_eligible
+public_distribution_readiness:
+  category_statement:
+    status: validated
+    artifact: docs/public/release-and-distribution-readiness.md
+    claim_boundary: local-first AI workstation category wording and launch packet exist; this is not external publication proof
+  public_export_boundary:
+    status: experimental
+    artifact: scripts/build_public_export.py
+    required_followup: run check_publication_boundary.py against the exact export tree before public push
+  release_tag:
+    status: unsupported
+    go_to_market_gap: external_evidence_missing:no_current_public_release_tag
+    readiness_reference: docs/public/release-and-distribution-readiness.md
+    required_followup: create and verify a real public release tag before claiming release availability
+  community_presence:
+    status: unsupported
+    go_to_market_gap: external_evidence_missing:no_external_community_artifact
+    readiness_reference: docs/public/release-and-distribution-readiness.md
+    required_followup: publish or cite a durable external community artifact before claiming community presence
+  developer_survey_or_tooling_list:
+    status: unsupported
+    go_to_market_gap: external_evidence_missing:not_submitted_or_listed
+    readiness_reference: docs/public/release-and-distribution-readiness.md
+    required_followup: submit to a real survey/tooling list and cite the accepted entry before claiming category recognition
+  marketplace_distribution:
+    status: unsupported
+    go_to_market_gap: external_evidence_missing:no_marketplace_listing
+    readiness_reference: docs/public/release-and-distribution-readiness.md
+    runtime_dependency: mcp_oauth_backed_install_flow
+    required_followup: cite an external marketplace entry before claiming marketplace distribution
+audit_cluster_closure_readiness:
+  capgap_r5_001:
+    blocker: CAPGAP-R5-001
+    status: validated
+    cluster: RCG-0015
+    closure_source: maintainer full-spectrum closure run 20260518T170523Z
+    member_findings:
+    - FSA-00030
+    - FSA-00032
+    - FSA-00033
+    - FSA-00034
+    - FSA-00035
+    - FSA-00036
+    - FSA-00037
+    - FSA-00038
+    terminal_closure_rule: all member findings must be resolved with substantive source, test, docs, config, UI, script, ADR, or README evidence outside workflow/status artifacts
+    non_terminal_evidence: maintainer closure note is evidence assembly only
+  capmat_r5_001:
+    blocker: CAPMAT-R5-001
+    status: validated
+    cluster: RCG-0025
+    closure_source: maintainer full-spectrum closure run 20260518T170523Z
+    member_findings:
+    - FSA-00039
+    - FSA-00041
+    - FSA-00042
+    - FSA-00043
+    terminal_closure_rule: all member findings must be resolved with substantive source, test, docs, config, UI, script, ADR, or README evidence outside workflow/status artifacts
+    non_terminal_evidence: maintainer closure note is evidence assembly only
+  gt_r5_001:
+    blocker: GT-R5-001
+    status: validated
+    cluster: RCG-0027
+    closure_source: maintainer full-spectrum closure run 20260518T170523Z
+    member_findings:
+    - FSA-00110
+    - FSA-00111
+    - FSA-00113
+    - FSA-00116
+    terminal_closure_rule: all member findings must be resolved with substantive source, test, docs, config, UI, script, ADR, or README evidence outside workflow/status artifacts
+    non_terminal_evidence: maintainer closure note is evidence assembly only
+cells:
+- hardware: cpu_only
+  os: windows_10
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: windows_10
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:no_verified_training_path
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: windows_10
+  workflow: native_kernel_api
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: windows_10
+  workflow: cli
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: windows_10
+  workflow: agent_pipeline
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_8gb
+  os: windows_10
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: unsupported:no_verified_backend
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_8gb
+  os: windows_10
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:insufficient_training_proof
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_8gb
+  os: windows_10
+  workflow: native_kernel_api
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_8gb
+  os: windows_10
+  workflow: cli
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_8gb
+  os: windows_10
+  workflow: agent_pipeline
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_16gb
+  os: windows_10
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: unsupported:no_verified_backend
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_16gb
+  os: windows_10
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:insufficient_training_proof
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_16gb
+  os: windows_10
+  workflow: native_kernel_api
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_16gb
+  os: windows_10
+  workflow: cli
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_16gb
+  os: windows_10
+  workflow: agent_pipeline
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_24gb
+  os: windows_10
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_24gb
+  os: windows_10
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_24gb
+  os: windows_10
+  workflow: native_kernel_api
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_24gb
+  os: windows_10
+  workflow: cli
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_24gb
+  os: windows_10
+  workflow: agent_pipeline
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: windows_10
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: windows_10
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: windows_10
+  workflow: native_kernel_api
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: windows_10
+  workflow: cli
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: windows_10
+  workflow: agent_pipeline
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: apple_silicon_mps
+  os: windows_10
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: windows_10
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: windows_10
+  workflow: native_kernel_api
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: windows_10
+  workflow: cli
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: windows_10
+  workflow: agent_pipeline
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: windows_11
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: unsupported:no_verified_backend
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: windows_11
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:no_verified_training_path
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: windows_11
+  workflow: native_kernel_api
+  maturity: validated
+  proof_command: cargo test -p amw-kernel api::routes::workbench_domains::tests::kernel_request_dispatches_migration_owned_routes_without_http_proxy
+  verified_on: '2026-05-31'
+- hardware: cpu_only
+  os: windows_11
+  workflow: cli
+  maturity: validated
+  proof_command: python -m vetinari --help
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: windows_11
+  workflow: agent_pipeline
+  maturity: validated
+  proof_command: python -c "from vetinari.agents.consolidated.foreman import ForemanAgent; print(ForemanAgent.__name__)"
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_8gb
+  os: windows_11
+  workflow: local_inference
+  maturity: validated
+  proof_command: python scripts/check_local_inference_backend.py --hardware nvidia_cuda_8gb --os windows_11 --backend lmstudio --timeout-s 90
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_8gb
+  os: windows_11
+  workflow: local_training
+  maturity: validated
+  proof_command: python scripts/check_local_training_path.py --hardware nvidia_cuda_8gb --os windows_11 --require-cuda
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_8gb
+  os: windows_11
+  workflow: native_kernel_api
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_8gb --os windows_11 --workflow native_kernel_api
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_8gb
+  os: windows_11
+  workflow: cli
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_8gb --os windows_11 --workflow cli
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_8gb
+  os: windows_11
+  workflow: agent_pipeline
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_8gb --os windows_11 --workflow agent_pipeline
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_16gb
+  os: windows_11
+  workflow: local_inference
+  maturity: validated
+  proof_command: python scripts/check_local_inference_backend.py --hardware nvidia_cuda_16gb --os windows_11 --backend lmstudio --timeout-s 90
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_16gb
+  os: windows_11
+  workflow: local_training
+  maturity: validated
+  proof_command: python scripts/check_local_training_path.py --hardware nvidia_cuda_16gb --os windows_11 --require-cuda
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_16gb
+  os: windows_11
+  workflow: native_kernel_api
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_16gb --os windows_11 --workflow native_kernel_api
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_16gb
+  os: windows_11
+  workflow: cli
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_16gb --os windows_11 --workflow cli
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_16gb
+  os: windows_11
+  workflow: agent_pipeline
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_16gb --os windows_11 --workflow agent_pipeline
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_24gb
+  os: windows_11
+  workflow: local_inference
+  maturity: validated
+  proof_command: python scripts/check_local_inference_backend.py --hardware nvidia_cuda_24gb --os windows_11 --backend lmstudio --timeout-s 90
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_24gb
+  os: windows_11
+  workflow: local_training
+  maturity: validated
+  proof_command: python scripts/check_local_training_path.py --hardware nvidia_cuda_24gb --os windows_11 --require-cuda
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_24gb
+  os: windows_11
+  workflow: native_kernel_api
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_24gb --os windows_11 --workflow native_kernel_api
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_24gb
+  os: windows_11
+  workflow: cli
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_24gb --os windows_11 --workflow cli
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_24gb
+  os: windows_11
+  workflow: agent_pipeline
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_24gb --os windows_11 --workflow agent_pipeline
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: windows_11
+  workflow: local_inference
+  maturity: validated
+  proof_command: python scripts/check_local_inference_backend.py --hardware nvidia_cuda_32gb --os windows_11 --backend lmstudio --timeout-s 90
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: windows_11
+  workflow: local_training
+  maturity: validated
+  proof_command: python scripts/check_local_training_path.py --hardware nvidia_cuda_32gb --os windows_11 --require-cuda
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: windows_11
+  workflow: native_kernel_api
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_32gb --os windows_11 --workflow native_kernel_api
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: windows_11
+  workflow: cli
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_32gb --os windows_11 --workflow cli
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: windows_11
+  workflow: agent_pipeline
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_32gb --os windows_11 --workflow agent_pipeline
+  verified_on: '2026-06-01'
+- hardware: apple_silicon_mps
+  os: windows_11
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: windows_11
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: windows_11
+  workflow: native_kernel_api
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: windows_11
+  workflow: cli
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: windows_11
+  workflow: agent_pipeline
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: ubuntu_22_04
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: ubuntu_22_04
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:no_verified_training_path
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: ubuntu_22_04
+  workflow: native_kernel_api
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: ubuntu_22_04
+  workflow: cli
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: ubuntu_22_04
+  workflow: agent_pipeline
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_8gb
+  os: ubuntu_22_04
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: unsupported:no_verified_backend
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_8gb
+  os: ubuntu_22_04
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:insufficient_training_proof
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_8gb
+  os: ubuntu_22_04
+  workflow: native_kernel_api
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_8gb
+  os: ubuntu_22_04
+  workflow: cli
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_8gb
+  os: ubuntu_22_04
+  workflow: agent_pipeline
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_16gb
+  os: ubuntu_22_04
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: unsupported:no_verified_backend
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_16gb
+  os: ubuntu_22_04
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:insufficient_training_proof
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_16gb
+  os: ubuntu_22_04
+  workflow: native_kernel_api
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_16gb
+  os: ubuntu_22_04
+  workflow: cli
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_16gb
+  os: ubuntu_22_04
+  workflow: agent_pipeline
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_24gb
+  os: ubuntu_22_04
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: unsupported:no_verified_backend
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_24gb
+  os: ubuntu_22_04
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:insufficient_training_proof
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_24gb
+  os: ubuntu_22_04
+  workflow: native_kernel_api
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_24gb
+  os: ubuntu_22_04
+  workflow: cli
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_24gb
+  os: ubuntu_22_04
+  workflow: agent_pipeline
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_32gb
+  os: ubuntu_22_04
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: unsupported:no_verified_backend
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_32gb
+  os: ubuntu_22_04
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:insufficient_training_proof
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_32gb
+  os: ubuntu_22_04
+  workflow: native_kernel_api
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_32gb
+  os: ubuntu_22_04
+  workflow: cli
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_32gb
+  os: ubuntu_22_04
+  workflow: agent_pipeline
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: ubuntu_22_04
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: ubuntu_22_04
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: ubuntu_22_04
+  workflow: native_kernel_api
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: ubuntu_22_04
+  workflow: cli
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: ubuntu_22_04
+  workflow: agent_pipeline
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: ubuntu_24_04
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: ubuntu_24_04
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:no_verified_training_path
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: ubuntu_24_04
+  workflow: native_kernel_api
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: ubuntu_24_04
+  workflow: cli
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: ubuntu_24_04
+  workflow: agent_pipeline
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_8gb
+  os: ubuntu_24_04
+  workflow: local_inference
+  maturity: validated
+  proof_command: VLLM_USE_FLASHINFER_SAMPLER=0 python scripts/check_local_inference_backend.py --hardware nvidia_cuda_8gb --os ubuntu_24_04 --backend vllm --endpoint http://127.0.0.1:18000 --model qwen2.5-3b-smoke --timeout-s 30
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_8gb
+  os: ubuntu_24_04
+  workflow: local_training
+  maturity: validated
+  verified_on: '2026-06-01'
+  proof_command: python scripts/check_local_training_path.py --hardware nvidia_cuda_8gb --os ubuntu_24_04 --require-cuda
+- hardware: nvidia_cuda_8gb
+  os: ubuntu_24_04
+  workflow: native_kernel_api
+  maturity: validated
+  verified_on: '2026-06-01'
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_8gb --os ubuntu_24_04 --workflow native_kernel_api
+- hardware: nvidia_cuda_8gb
+  os: ubuntu_24_04
+  workflow: cli
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_8gb --os ubuntu_24_04 --workflow cli
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_8gb
+  os: ubuntu_24_04
+  workflow: agent_pipeline
+  maturity: validated
+  verified_on: '2026-06-01'
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_8gb --os ubuntu_24_04 --workflow agent_pipeline
+- hardware: nvidia_cuda_16gb
+  os: ubuntu_24_04
+  workflow: local_inference
+  maturity: validated
+  proof_command: VLLM_USE_FLASHINFER_SAMPLER=0 python scripts/check_local_inference_backend.py --hardware nvidia_cuda_16gb --os ubuntu_24_04 --backend vllm --endpoint http://127.0.0.1:18000 --model qwen2.5-3b-smoke --timeout-s 30
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_16gb
+  os: ubuntu_24_04
+  workflow: local_training
+  maturity: validated
+  verified_on: '2026-06-01'
+  proof_command: python scripts/check_local_training_path.py --hardware nvidia_cuda_16gb --os ubuntu_24_04 --require-cuda
+- hardware: nvidia_cuda_16gb
+  os: ubuntu_24_04
+  workflow: native_kernel_api
+  maturity: validated
+  verified_on: '2026-06-01'
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_16gb --os ubuntu_24_04 --workflow native_kernel_api
+- hardware: nvidia_cuda_16gb
+  os: ubuntu_24_04
+  workflow: cli
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_16gb --os ubuntu_24_04 --workflow cli
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_16gb
+  os: ubuntu_24_04
+  workflow: agent_pipeline
+  maturity: validated
+  verified_on: '2026-06-01'
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_16gb --os ubuntu_24_04 --workflow agent_pipeline
+- hardware: nvidia_cuda_24gb
+  os: ubuntu_24_04
+  workflow: local_inference
+  maturity: validated
+  proof_command: VLLM_USE_FLASHINFER_SAMPLER=0 python scripts/check_local_inference_backend.py --hardware nvidia_cuda_24gb --os ubuntu_24_04 --backend vllm --endpoint http://127.0.0.1:18000 --model qwen2.5-3b-smoke --timeout-s 30
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_24gb
+  os: ubuntu_24_04
+  workflow: local_training
+  maturity: validated
+  proof_command: python scripts/check_local_training_path.py --hardware nvidia_cuda_24gb --os ubuntu_24_04 --require-cuda
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_24gb
+  os: ubuntu_24_04
+  workflow: native_kernel_api
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_24gb --os ubuntu_24_04 --workflow native_kernel_api
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_24gb
+  os: ubuntu_24_04
+  workflow: cli
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_24gb --os ubuntu_24_04 --workflow cli
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_24gb
+  os: ubuntu_24_04
+  workflow: agent_pipeline
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_24gb --os ubuntu_24_04 --workflow agent_pipeline
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: ubuntu_24_04
+  workflow: local_inference
+  maturity: validated
+  proof_command: VLLM_USE_FLASHINFER_SAMPLER=0 python scripts/check_local_inference_backend.py --hardware nvidia_cuda_32gb --os ubuntu_24_04 --backend vllm --endpoint http://127.0.0.1:18000 --model qwen2.5-3b-smoke --timeout-s 30
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: ubuntu_24_04
+  workflow: local_training
+  maturity: validated
+  proof_command: python scripts/check_local_training_path.py --hardware nvidia_cuda_32gb --os ubuntu_24_04 --require-cuda
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: ubuntu_24_04
+  workflow: native_kernel_api
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_32gb --os ubuntu_24_04 --workflow native_kernel_api
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: ubuntu_24_04
+  workflow: cli
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_32gb --os ubuntu_24_04 --workflow cli
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: ubuntu_24_04
+  workflow: agent_pipeline
+  maturity: validated
+  proof_command: python scripts/check_support_matrix_current_runner.py --hardware nvidia_cuda_32gb --os ubuntu_24_04 --workflow agent_pipeline
+  verified_on: '2026-06-01'
+- hardware: apple_silicon_mps
+  os: ubuntu_24_04
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: ubuntu_24_04
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: ubuntu_24_04
+  workflow: native_kernel_api
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: ubuntu_24_04
+  workflow: cli
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: ubuntu_24_04
+  workflow: agent_pipeline
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: macos_14_plus
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: macos_14_plus
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:no_verified_training_path
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: macos_14_plus
+  workflow: native_kernel_api
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: macos_14_plus
+  workflow: cli
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: cpu_only
+  os: macos_14_plus
+  workflow: agent_pipeline
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_8gb
+  os: macos_14_plus
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_8gb
+  os: macos_14_plus
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_8gb
+  os: macos_14_plus
+  workflow: native_kernel_api
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_8gb
+  os: macos_14_plus
+  workflow: cli
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_8gb
+  os: macos_14_plus
+  workflow: agent_pipeline
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_16gb
+  os: macos_14_plus
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_16gb
+  os: macos_14_plus
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_16gb
+  os: macos_14_plus
+  workflow: native_kernel_api
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_16gb
+  os: macos_14_plus
+  workflow: cli
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_16gb
+  os: macos_14_plus
+  workflow: agent_pipeline
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-04-26'
+- hardware: nvidia_cuda_24gb
+  os: macos_14_plus
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_24gb
+  os: macos_14_plus
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_24gb
+  os: macos_14_plus
+  workflow: native_kernel_api
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_24gb
+  os: macos_14_plus
+  workflow: cli
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_24gb
+  os: macos_14_plus
+  workflow: agent_pipeline
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: macos_14_plus
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: macos_14_plus
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: macos_14_plus
+  workflow: native_kernel_api
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: macos_14_plus
+  workflow: cli
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: nvidia_cuda_32gb
+  os: macos_14_plus
+  workflow: agent_pipeline
+  maturity: unsupported
+  known_limitation: unsupported:hardware_os_mismatch
+  verified_on: '2026-06-01'
+- hardware: apple_silicon_mps
+  os: macos_14_plus
+  workflow: local_inference
+  maturity: unsupported
+  known_limitation: unsupported:no_verified_backend
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: macos_14_plus
+  workflow: local_training
+  maturity: unsupported
+  known_limitation: unsupported:insufficient_training_proof
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: macos_14_plus
+  workflow: native_kernel_api
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: macos_14_plus
+  workflow: cli
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'
+- hardware: apple_silicon_mps
+  os: macos_14_plus
+  workflow: agent_pipeline
+  maturity: experimental
+  known_limitation: untested:no_current_runner
+  verified_on: '2026-04-26'

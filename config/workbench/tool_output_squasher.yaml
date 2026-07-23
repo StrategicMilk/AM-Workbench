@@ -1,0 +1,7 @@
+policy:
+  require_raw_ref_for_hazards: true
+  block_compressed_only_hazards: true
+  preserve_tracebacks: true
+  preserve_file_line_evidence: true
+  max_noise_lines: 8
+  min_bytes_to_claim_savings: 256

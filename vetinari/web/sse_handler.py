@@ -24,6 +24,7 @@ from vetinari.web.shared import _push_sse_event
 
 logger = logging.getLogger(__name__)
 
+
 # Map pipeline stages to human-friendly SSE stage names
 _STAGE_SSE_NAME: dict[PipelineStage, str] = {
     PipelineStage.INTAKE: "Analyzing request",
@@ -50,7 +51,7 @@ _EVENT_TYPE_MAP: dict[str, str] = {
     "paused": "paused",
     "resumed": "resumed",
     "status": "status",
-    # Backward compat for emitters not yet migrated
+    # Legacy aliases accepted at integration boundaries.
     "stage_start": "stage_started",
     "stage_complete": "stage_completed",
     "task_start": "task_started",

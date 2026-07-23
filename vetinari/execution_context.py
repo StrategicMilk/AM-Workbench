@@ -23,6 +23,13 @@ from enum import Enum
 from typing import Any
 
 from vetinari.exceptions import SecurityError
+from vetinari.execution_context_manager import ContextManagerPermissionMixin
+from vetinari.execution_context_permissions import (
+    check_permission_unified_impl,
+    enforce_agent_permissions_impl,
+    enforce_permission_unified_impl,
+)
+from vetinari.security.fail_closed import sanitize_untrusted_text
 from vetinari.types import AgentType, ExecutionMode  # canonical source
 
 logger = logging.getLogger(__name__)
@@ -49,6 +56,7 @@ class ToolPermission(Enum):
     WEB_ACCESS = "web_access"
     NETWORK_REQUEST = "network_request"
     DATABASE_WRITE = "database_write"
+    MEMORY_READ = "memory_read"
     MEMORY_WRITE = "memory_write"
 
     # Planning operations
@@ -92,6 +100,7 @@ DEFAULT_POLICIES = {
             ToolPermission.MODEL_DISCOVERY,
             ToolPermission.NETWORK_REQUEST,  # Read-only requests
             ToolPermission.WEB_ACCESS,  # Web search for research during planning
+            ToolPermission.MEMORY_READ,
             ToolPermission.PLANNING,  # Plan generation tools
         },
         require_confirmation={
@@ -112,6 +121,7 @@ DEFAULT_POLICIES = {
             ToolPermission.MODEL_DISCOVERY,
             ToolPermission.NETWORK_REQUEST,
             ToolPermission.DATABASE_WRITE,
+            ToolPermission.MEMORY_READ,
             ToolPermission.MEMORY_WRITE,
             ToolPermission.GIT_READ,  # Read-only git is always allowed in execution
             ToolPermission.GIT_COMMIT,
@@ -195,14 +205,24 @@ class ExecutionContext:
 
         Hook signature: (operation_name: str, operation_params: Dict) -> bool
         Should return True to proceed, False to block.
+
+        Raises:
+            SecurityError: If ``hook`` is not callable.
         """
+        if not callable(hook):
+            raise SecurityError("pre-execution hook must be callable")
         self.pre_execution_hooks.append(hook)
 
     def add_post_execution_hook(self, hook: Callable[[str, dict[str, Any], Any], None]) -> None:
         """Register a hook to run after execution.
 
         Hook signature: (operation_name: str, operation_params: Dict, result: Any) -> None
+
+        Raises:
+            SecurityError: If ``hook`` is not callable.
         """
+        if not callable(hook):
+            raise SecurityError("post-execution hook must be callable")
         self.post_execution_hooks.append(hook)
 
     def record_operation(self, operation_name: str, params: dict[str, Any], result: Any) -> None:
@@ -213,11 +233,13 @@ class ExecutionContext:
             params: The params.
             result: The result.
         """
+        operation_name = sanitize_untrusted_text(operation_name, max_length=160)
+        safe_params = _safe_audit_payload(params)
         self.executed_operations.append({
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "operation": operation_name,
-            "params": params,
-            "result": result,
+            "params": safe_params,
+            "result": _safe_audit_payload(result),
         })
 
     def get_audit_trail(self) -> list[dict[str, Any]]:
@@ -241,12 +263,10 @@ class ExecutionContext:
 # Who reads:  ContextManager._get_stack(), current_context(), current_mode()
 # Lifecycle:  created once at module import; each coroutine/thread gets its own copy
 # Lock:       not needed — ContextVar guarantees copy-on-write semantics per task
-_context_stack_var: contextvars.ContextVar[list[ExecutionContext]] = contextvars.ContextVar(
-    "vetinari_context_stack"
-)
+_context_stack_var: contextvars.ContextVar[list[ExecutionContext]] = contextvars.ContextVar("vetinari_context_stack")
 
 
-class ContextManager:
+class ContextManager(ContextManagerPermissionMixin):
     """Manages execution contexts for Vetinari.
 
     Provides context-switching, safety checks, and enforcement of permissions.
@@ -335,72 +355,6 @@ class ContextManager:
         """Check if an operation requires user confirmation."""
         return self.current_context.requires_confirmation(permission)
 
-    def enforce_permission(self, permission: ToolPermission, operation_name: str = "operation") -> None:
-        """Enforce a permission, raising SecurityError if not allowed or if confirmation is required.
-
-        Fails closed in headless/automated contexts: operations marked as requiring
-        confirmation are blocked because there is no interactive prompt available.
-        Callers that have obtained explicit user consent should switch to EXECUTION mode
-        before invoking the operation.
-
-        Args:
-            permission: The ToolPermission to enforce.
-            operation_name: Human-readable operation name used in error messages.
-
-        Raises:
-            SecurityError: If the permission is denied in the current mode, or if
-                the current policy requires confirmation for this permission (since
-                automated agents cannot solicit interactive confirmation).
-        """
-        if not self.check_permission(permission):
-            try:
-                from vetinari.audit import get_audit_logger
-
-                get_audit_logger().log_permission_check(
-                    agent_type=operation_name,
-                    permission=permission.value,
-                    outcome="denied",
-                )
-            except Exception:
-                logger.warning("Audit logging failed for denied permission %s", permission.value, exc_info=True)
-            raise SecurityError(
-                f"'{operation_name}' operation requires {permission.value} permission, "
-                f"which is not allowed in {self.current_mode.value} mode",
-            )
-
-        # Fail-closed for confirmation-required operations: automated agents have no
-        # mechanism to solicit user confirmation, so treat it as a denial.
-        if self.requires_confirmation(permission):
-            try:
-                from vetinari.audit import get_audit_logger
-
-                get_audit_logger().log_permission_check(
-                    agent_type=operation_name,
-                    permission=permission.value,
-                    outcome="denied",
-                )
-            except Exception:
-                logger.warning(
-                    "Audit logging failed for confirmation-blocked permission %s",
-                    permission.value,
-                    exc_info=True,
-                )
-            raise SecurityError(
-                f"'{operation_name}' operation requires {permission.value} confirmation "
-                f"before proceeding — switch to an execution context with explicit approval",
-            )
-
-        try:
-            from vetinari.audit import get_audit_logger
-
-            get_audit_logger().log_permission_check(
-                agent_type=operation_name,
-                permission=permission.value,
-                outcome="allowed",
-            )
-        except Exception:
-            logger.warning("Audit logging failed for allowed permission %s", permission.value, exc_info=True)
-
     @contextmanager
     def temporary_mode(self, mode: ExecutionMode, task_id: str | None = None) -> Generator[None, None, None]:
         """Context manager for temporarily switching to a different execution mode.
@@ -479,6 +433,20 @@ def get_context_manager() -> ContextManager:
     return _context_manager
 
 
+def _safe_audit_payload(value: Any) -> Any:
+    if isinstance(value, str):
+        return sanitize_untrusted_text(value, max_length=4_000) if value.strip() else ""
+    if isinstance(value, dict):
+        return {
+            sanitize_untrusted_text(str(key), max_length=160): _safe_audit_payload(item) for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_safe_audit_payload(item) for item in value]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return sanitize_untrusted_text(str(value), max_length=4_000)
+
+
 def current_mode() -> ExecutionMode:
     """Convenience accessor for the active execution mode on the global context stack."""
     return get_context_manager().current_mode
@@ -529,50 +497,7 @@ def enforce_agent_permissions(agent_type: AgentType, permission: ToolPermission)
     Raises:
         PermissionError: If the agent type is not allowed the requested permission.
     """
-    allowed = AGENT_PERMISSION_MAP.get(agent_type)
-    if allowed is None:
-        logger.warning(
-            "No permission map entry for agent type %s — denying %s by default",
-            agent_type.value,
-            permission.value,
-        )
-        raise SecurityError(
-            f"Agent {agent_type.value} has no permission mapping — "
-            f"cannot use {permission.value}. Add an entry to AGENT_PERMISSION_MAP.",
-        )
-    if permission not in allowed:
-        logger.warning(
-            "Permission denied: agent %s attempted %s (allowed: %s)",
-            agent_type.value,
-            permission.value,
-            ", ".join(p.value for p in sorted(allowed, key=lambda p: p.value)),
-        )
-        # Phase 6.43: Log permission denial to persistent audit log
-        try:
-            from vetinari.audit import get_audit_logger
-
-            get_audit_logger().log_permission_check(
-                agent_type=agent_type.value,
-                permission=permission.value,
-                outcome="denied",
-            )
-        except Exception:
-            logger.warning("Audit logging failed", exc_info=True)
-        raise SecurityError(
-            f"Agent {agent_type.value} is not allowed {permission.value}. "
-            f"Allowed permissions: {', '.join(p.value for p in sorted(allowed, key=lambda p: p.value))}",
-        )
-    # Phase 6.43: Log permission allow to persistent audit log
-    try:
-        from vetinari.audit import get_audit_logger
-
-        get_audit_logger().log_permission_check(
-            agent_type=agent_type.value,
-            permission=permission.value,
-            outcome="allowed",
-        )
-    except Exception:
-        logger.warning("Audit logging failed", exc_info=True)
+    enforce_agent_permissions_impl(agent_type, permission, AGENT_PERMISSION_MAP, SecurityError)
 
 
 # ── Unified permission arbitration (most-restrictive-wins) ────────────────
@@ -590,53 +515,30 @@ def check_permission_unified(
 
     Most-restrictive-wins: all three layers (mode policy, agent permission map, and
     when ``action`` is supplied, the ``PolicyEnforcer`` jurisdiction/irreversibility
-    rules) must agree.  Any exception inside a check causes an immediate ``False``
+    rules) must agree. Any exception inside a check causes an immediate ``False``
     (fail-closed behaviour).
 
     Args:
         agent_type: The type of agent requesting the permission.
         permission: The permission being requested.
-        action: Optional action verb (e.g. ``"write"``, ``"delete"``).  When
+        action: Optional action verb (e.g. ``"write"``, ``"delete"``). When
             provided the ``PolicyEnforcer`` is also consulted.
-        target: Optional resource path acted on.  Defaults to ``""`` when
+        target: Optional resource path acted on. Defaults to ``""`` when
             ``action`` is given but ``target`` is omitted.
         context: Optional context dict forwarded to ``PolicyEnforcer.check_action``.
 
     Returns:
         ``True`` only if every applicable layer permits the request.
     """
-    try:
-        ctx_mgr = get_context_manager()
-        mode_allowed = ctx_mgr.check_permission(permission)
-        if not mode_allowed:
-            return False
-
-        agent_allowed_set = AGENT_PERMISSION_MAP.get(agent_type)
-        agent_allowed = agent_allowed_set is not None and permission in agent_allowed_set
-        if not agent_allowed:
-            return False
-
-        if action is not None:
-            from vetinari.safety.policy_enforcer import get_policy_enforcer
-
-            decision = get_policy_enforcer().check_action(
-                agent_type=agent_type,
-                action=action,
-                target=target or "",  # noqa: VET112 — Optional per func param
-                context=context or {},  # noqa: VET112 — Optional per func param
-            )
-            if not decision.allowed:
-                return False
-
-        return True
-    except Exception:
-        logger.warning(
-            "check_permission_unified failed for agent=%s permission=%s action=%s — failing closed",
-            agent_type.value,
-            permission.value,
-            action,
-        )
-        return False
+    return check_permission_unified_impl(
+        agent_type,
+        permission,
+        AGENT_PERMISSION_MAP,
+        get_context_manager,
+        action=action,
+        target=target,
+        context=context,
+    )
 
 
 def enforce_permission_unified(
@@ -654,18 +556,12 @@ def enforce_permission_unified(
     Raises:
         SecurityError: If either the mode policy or agent map denies the permission.
     """
-    if not check_permission_unified(agent_type, permission):
-        ctx_mgr = get_context_manager()
-        mode_ok = ctx_mgr.check_permission(permission)
-        agent_set = AGENT_PERMISSION_MAP.get(agent_type)
-        agent_ok = agent_set is not None and permission in agent_set
-
-        denied_by = []
-        if not mode_ok:
-            denied_by.append(f"mode={ctx_mgr.current_mode.value}")
-        if not agent_ok:
-            denied_by.append(f"agent={agent_type.value}")
-
-        raise SecurityError(
-            f"'{operation_name}' requires {permission.value}, denied by: {', '.join(denied_by)}",
-        )
+    enforce_permission_unified_impl(
+        agent_type,
+        permission,
+        AGENT_PERMISSION_MAP,
+        get_context_manager,
+        check_permission_unified,
+        SecurityError,
+        operation_name,
+    )

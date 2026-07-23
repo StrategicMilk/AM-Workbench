@@ -1,0 +1,28 @@
+kind: standard
+version: "1.0"
+grading_criteria:
+  - id: test_suite_passes
+    name: Test suite passes
+    required: true
+    description: The declared verification test suite passed.
+    evidence_type: criterion_field
+    evidence_key: test_results
+    allowed_values: ["passed"]
+    rejection_reason: Required test suite did not pass.
+  - id: code_quality_clean
+    name: Code quality clean
+    required: true
+    description: Static quality checks report a clean result.
+    evidence_type: criterion_field
+    evidence_key: code_quality
+    allowed_values: ["clean"]
+    rejection_reason: Code quality evidence is missing or not clean.
+  - id: acceptance_criteria_met
+    name: Acceptance criteria met
+    required: true
+    description: Declared acceptance criteria are satisfied.
+    evidence_type: criterion_field
+    evidence_key: acceptance_criteria
+    allowed_values: ["met"]
+    rejection_reason: Acceptance criteria evidence is missing or unmet.
+rejection_policy: all_required

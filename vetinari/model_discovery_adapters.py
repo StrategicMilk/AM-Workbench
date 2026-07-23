@@ -14,16 +14,18 @@ Sources covered:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 
 import requests
 
+from vetinari.clock import utc_now_iso
 from vetinari.constants import MODEL_DISCOVERY_TIMEOUT
 from vetinari.credentials import get_credential_manager
 from vetinari.model_discovery import ModelCandidate
+from vetinari.security.redaction import redact_text
 from vetinari.utils import estimate_model_memory_gb
 
 logger = logging.getLogger(__name__)
+
 
 HF_API_URL = "https://huggingface.co/api"
 PWC_API_URL = "https://paperswithcode.com/api/v1"
@@ -61,71 +63,9 @@ _HF_KEYWORD_TO_USE: dict[str, str] = {
 }
 
 
-def _infer_uses_from_hf_tags(tags: list[str], pipeline_tag: str) -> list[str]:
-    """Derive human-friendly use-case labels from HuggingFace metadata.
-
-    Args:
-        tags: Raw tag list from the HF model card (e.g. ``["transformers",
-            "safetensors", "gemma4", "text-generation"]``).
-        pipeline_tag: The HF pipeline tag (e.g. ``"text-generation"``).
-
-    Returns:
-        Deduplicated, sorted list of use-case strings like
-        ``["chat", "general", "vision"]``.
-    """
-    uses: set[str] = set()
-
-    # Map pipeline tag
-    if pipeline_tag and pipeline_tag in _HF_TAG_TO_USE:
-        uses.add(_HF_TAG_TO_USE[pipeline_tag])
-
-    # Map raw tags
-    for tag in tags:
-        tag_lower = tag.lower()
-        if tag_lower in _HF_TAG_TO_USE:
-            uses.add(_HF_TAG_TO_USE[tag_lower])
-        # Check keyword substrings in tag names (e.g. "qwen2.5-coder" -> coding)
-        for keyword, use in _HF_KEYWORD_TO_USE.items():
-            if keyword in tag_lower:
-                uses.add(use)
-
-    # Fallback: if nothing matched, at least say "general" for text models
-    if not uses and any(t in tags for t in ("transformers", "pytorch", "safetensors")):
-        uses.add("general")
-
-    return sorted(uses)
-
-
-# Maps HuggingFace pipeline tags and model tags to user-facing use-case labels.
-_HF_TAG_TO_USE: dict[str, str] = {
-    "text-generation": "general",
-    "text2text-generation": "general",
-    "conversational": "chat",
-    "image-text-to-text": "vision",
-    "visual-question-answering": "vision",
-    "image-to-text": "vision",
-    "feature-extraction": "embeddings",
-    "question-answering": "reasoning",
-    "summarization": "documentation",
-    "translation": "translation",
-    "fill-mask": "general",
-    "text-classification": "classification",
-    "token-classification": "extraction",
-    "code": "coding",
-    "math": "reasoning",
-}
-
-# Tags found in HF model card tags (not pipeline tags) that hint at use-case.
-_HF_KEYWORD_TO_USE: dict[str, str] = {
-    "code": "coding",
-    "coder": "coding",
-    "math": "reasoning",
-    "vision": "vision",
-    "vl": "vision",
-    "instruct": "general",
-    "chat": "chat",
-    "uncensored": "creative",
-}
+def _redacted_external_query(query: str) -> str:
+    redacted = redact_text(query)
+    return redacted if redacted.strip() else "[redacted-query]"
 
 
 def _infer_uses_from_hf_tags(tags: list[str], pipeline_tag: str) -> list[str]:
@@ -161,6 +101,16 @@ def _infer_uses_from_hf_tags(tags: list[str], pipeline_tag: str) -> list[str]:
         uses.add("general")
 
     return sorted(uses)
+
+
+def _bounded_score(value: float, *, minimum: float = 0.0, maximum: float = 1.0) -> float:
+    """Clamp and round source-derived scores."""
+    return round(max(minimum, min(maximum, float(value))), 3)
+
+
+def _count_signal_score(count: int | float, *, scale: float, base: float = 0.0, maximum: float = 1.0) -> float:
+    """Convert a count-like source signal into a bounded confidence score."""
+    return _bounded_score(base + (max(float(count), 0.0) / scale), maximum=maximum)
 
 
 class HuggingFaceAdapter:
@@ -192,7 +142,7 @@ class HuggingFaceAdapter:
         try:
             response = self.session.get(
                 f"{self.api_url}/models",
-                params={"search": query, "limit": limit, "full": "false"},
+                params={"search": _redacted_external_query(query), "limit": limit, "full": "false"},
                 timeout=MODEL_DISCOVERY_TIMEOUT,
             )
             if response.status_code == 200:
@@ -205,11 +155,21 @@ class HuggingFaceAdapter:
             logger.error("HF search error: %s", e)
         return candidates
 
-    def _parse_model(self, model: dict) -> ModelCandidate:
+    @staticmethod
+    def _parse_model(model: dict) -> ModelCandidate:
         model_id = model.get("id", "")
         last_modified = model.get("lastModified", "")
         metrics = model.get("metrics", [])
-        hard_data = 0.8 if metrics else 0.6
+        downloads = model.get("downloads", 0) or 0
+        likes = model.get("likes", 0) or 0
+        hard_data = _bounded_score(
+            0.25
+            + (0.12 if model.get("sha") else 0.0)
+            + (0.08 if last_modified else 0.0)
+            + min(len(metrics), 5) * 0.1
+            + min(downloads, 50_000) / 250_000
+        )
+        benchmark = _bounded_score(min(len(metrics), 6) / 6)
         rationale_parts = []
         if metrics:
             rationale_parts.append(f"Benchmarks: {len(metrics)} metrics available")
@@ -222,8 +182,8 @@ class HuggingFaceAdapter:
             source_type="huggingface",
             recommended_for=recommended_for,
             metrics={
-                "downloads": model.get("downloads", 0),
-                "likes": model.get("likes", 0),
+                "downloads": downloads,
+                "likes": likes,
                 "tags": tags[:5],
             },
             memory_gb=estimate_model_memory_gb(model_id),
@@ -231,13 +191,13 @@ class HuggingFaceAdapter:
             version=model.get("sha", "latest")[:8],
             last_updated=last_modified,
             hard_data_score=hard_data,
-            benchmark_score=0.7,
-            sentiment_score=min(0.5 + (model.get("likes", 0) / 1000), 1.0),
+            benchmark_score=benchmark,
+            sentiment_score=_count_signal_score(likes, scale=1000, base=0.5),
             provenance=[
                 {
                     "source_type": "huggingface",
                     "url": f"https://huggingface.co/{model_id}",
-                    "last_checked": datetime.now(timezone.utc).isoformat(),
+                    "last_checked": utc_now_iso(),
                     "confidence": 0.9,
                 },
             ],
@@ -278,7 +238,7 @@ class RedditAdapter:
             try:
                 response = self.session.get(
                     f"https://www.reddit.com/r/{subreddit}/search.json",
-                    params={"q": query, "limit": limit, "sort": "relevance", "t": "year"},
+                    params={"q": _redacted_external_query(query), "limit": limit, "sort": "relevance", "t": "year"},
                     timeout=MODEL_DISCOVERY_TIMEOUT,
                 )
                 if response.status_code == 200:
@@ -300,6 +260,7 @@ class RedditAdapter:
             return None
         best_model = model_mentions[0]
         sentiment = min(0.5 + (score / 500), 1.0)
+        hard_data = _bounded_score(0.15 + min(num_comments, 200) / 1000 + min(score, 1000) / 5000)
         return ModelCandidate(
             id=best_model.lower().replace(" ", "-"),
             name=best_model,
@@ -308,28 +269,29 @@ class RedditAdapter:
                 "subreddit": subreddit,
                 "upvotes": score,
                 "comments": num_comments,
-                "title": title[:100],
+                "title": redact_text(title[:100]),
                 "all_mentions": model_mentions,
             },
             memory_gb=estimate_model_memory_gb(best_model),
             context_len=8192,
             version="latest",
-            last_updated=datetime.now(timezone.utc).isoformat(),
-            hard_data_score=0.3,
-            benchmark_score=0.4,
+            last_updated=utc_now_iso(),
+            hard_data_score=hard_data,
+            benchmark_score=0.0,
             sentiment_score=sentiment,
             provenance=[
                 {
                     "source_type": "reddit",
                     "url": f"https://reddit.com{post.get('permalink', '')}",
-                    "last_checked": datetime.now(timezone.utc).isoformat(),
+                    "last_checked": utc_now_iso(),
                     "confidence": 0.6,
                 },
             ],
             short_rationale=f"Mentioned in r/{subreddit}: {score} upvotes, {num_comments} comments",
         )
 
-    def _extract_model_mentions(self, text: str) -> list[str]:
+    @staticmethod
+    def _extract_model_mentions(text: str) -> list[str]:
         known_models = [
             "Qwen",
             "Llama",
@@ -376,7 +338,11 @@ class GitHubAdapter:
         try:
             response = self.session.get(
                 f"{self.api_url}/search/repositories",
-                params={"q": f"{query} language:python stars:>100", "per_page": limit, "sort": "stars"},
+                params={
+                    "q": f"{_redacted_external_query(query)} language:python stars:>100",
+                    "per_page": limit,
+                    "sort": "stars",
+                },
                 timeout=MODEL_DISCOVERY_TIMEOUT,
             )
             if response.status_code == 200:
@@ -389,32 +355,35 @@ class GitHubAdapter:
             logger.error("GitHub search error: %s", e)
         return candidates
 
-    def _parse_repo(self, repo: dict) -> ModelCandidate:
+    @staticmethod
+    def _parse_repo(repo: dict) -> ModelCandidate:
         full_name = repo.get("full_name", "")
         name = full_name.split("/")[-1] if "/" in full_name else repo.get("name", "")
         stars = repo.get("stargazers_count", 0)
+        forks = repo.get("forks_count", 0)
         updated = repo.get("updated_at", "")
+        hard_data = _bounded_score(0.2 + min(stars, 10_000) / 20_000 + min(forks, 2_000) / 10_000)
         return ModelCandidate(
             id=f"github/{full_name}",
             name=name,
             source_type="github",
             metrics={
                 "stars": stars,
-                "forks": repo.get("forks_count", 0),
-                "description": repo.get("description", "")[:100],
+                "forks": forks,
+                "description": redact_text(repo.get("description", "")[:100]),
             },
             memory_gb=4,
             context_len=8192,
             version="latest",
             last_updated=updated,
-            hard_data_score=0.4,
-            benchmark_score=0.5,
-            sentiment_score=min(0.4 + (stars / 5000), 1.0),
+            hard_data_score=hard_data,
+            benchmark_score=0.0,
+            sentiment_score=_count_signal_score(stars, scale=5000, base=0.4),
             provenance=[
                 {
                     "source_type": "github",
                     "url": repo.get("html_url", ""),
-                    "last_checked": datetime.now(timezone.utc).isoformat(),
+                    "last_checked": utc_now_iso(),
                     "confidence": 0.7,
                 },
             ],
@@ -446,7 +415,9 @@ class PapersWithCodeAdapter:
         candidates = []
         try:
             response = self.session.get(
-                f"{self.api_url}/papers/", params={"search": query}, timeout=MODEL_DISCOVERY_TIMEOUT
+                f"{self.api_url}/papers/",
+                params={"search": _redacted_external_query(query)},
+                timeout=MODEL_DISCOVERY_TIMEOUT,
             )
             if response.status_code == 200:
                 for paper in response.json().get("results", [])[:limit]:
@@ -458,34 +429,38 @@ class PapersWithCodeAdapter:
             logger.error("PapersWithCode search error: %s", e)
         return candidates
 
-    def _parse_paper(self, paper: dict) -> ModelCandidate:
+    @staticmethod
+    def _parse_paper(paper: dict) -> ModelCandidate:
         title = paper.get("title", "")
         arxiv_id = paper.get("arxiv_id", "")
         benchmarks = paper.get("benchmarks", [])
+        benchmark_count = len(benchmarks)
         rationale = "Paper on PapersWithCode"
         if benchmarks:
-            rationale += f", {len(benchmarks)} benchmarks"
+            rationale += f", {benchmark_count} benchmarks"
+        benchmark_score = _bounded_score(min(benchmark_count, 8) / 8)
+        hard_data = _bounded_score(0.45 + benchmark_score * 0.5 + (0.05 if arxiv_id else 0.0))
         return ModelCandidate(
             id=f"pwcode/{arxiv_id}" if arxiv_id else f"pwcode/{title[:20]}",
             name=title[:40],
             source_type="paperswithcode",
             metrics={
-                "title": title,
-                "abstract": paper.get("abstract", "")[:200],
-                "benchmarks_count": len(benchmarks),
+                "title": redact_text(title),
+                "abstract": redact_text(paper.get("abstract", "")[:200]),
+                "benchmarks_count": benchmark_count,
             },
             memory_gb=4,
             context_len=8192,
             version="latest",
             last_updated=paper.get("published", ""),
-            hard_data_score=0.9,
-            benchmark_score=0.85,
+            hard_data_score=hard_data,
+            benchmark_score=benchmark_score,
             sentiment_score=0.7,
             provenance=[
                 {
                     "source_type": "paperswithcode",
                     "url": f"https://paperswithcode.com/paper/{arxiv_id}" if arxiv_id else "",
-                    "last_checked": datetime.now(timezone.utc).isoformat(),
+                    "last_checked": utc_now_iso(),
                     "confidence": 0.9,
                 },
             ],

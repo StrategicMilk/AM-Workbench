@@ -3,16 +3,19 @@
 The helpers here run immediately after task execution and before review. They
 publish task events, record failure categories, update Andon scope pauses, and
 run the optional AutoTuner cycle without changing the stage ordering owned by
-``PipelineStagesMixin``.
+``PipelineStageRunner``.
 """
 
 from __future__ import annotations
 
 import logging
-import time
 from datetime import datetime, timezone
 from typing import Any
 
+import vetinari.analytics.failure_taxonomy as failure_taxonomy
+import vetinari.learning.auto_tuner as auto_tuner
+import vetinari.structured_logging as structured_logging
+import vetinari.workflow.andon as andon_workflow
 from vetinari.events import (
     TaskCompleted,
     TaskStarted,
@@ -31,7 +34,7 @@ def _parse_iso_to_epoch(iso_str: str) -> float:
         iso_str: ISO 8601 formatted timestamp.
 
     Returns:
-        POSIX timestamp as a float. Returns the current time if parsing fails.
+        POSIX timestamp as a float.
     """
     try:
         dt = datetime.fromisoformat(iso_str)
@@ -39,15 +42,14 @@ def _parse_iso_to_epoch(iso_str: str) -> float:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.timestamp()
     except (ValueError, TypeError):
-        logger.warning("Could not parse ISO timestamp %r; using current time", iso_str)
-        return time.time()
+        raise ValueError(f"invalid ISO timestamp: {iso_str!r}") from None
 
 
-class _PipelineStageExecutionSideEffectsMixin:
+class _PipelineStageExecutionSideEffects:
     """Provide side-effect helpers for completed execution-stage tasks."""
 
+    @staticmethod
     def _publish_task_execution_events(
-        self,
         *,
         bus: Any,
         graph: Any,
@@ -71,9 +73,9 @@ class _PipelineStageExecutionSideEffectsMixin:
             task_start_ts: float = (
                 _parse_iso_to_epoch(raw_start) if isinstance(raw_start, str) else (raw_start or start_time)
             )
-            task_end_ts: float = (
-                _parse_iso_to_epoch(raw_end) if isinstance(raw_end, str) else (raw_end or time.time())
-            )
+            if raw_end is None:
+                raise ValueError(f"completed task {node_id!r} is missing completed_at")
+            task_end_ts: float = _parse_iso_to_epoch(raw_end) if isinstance(raw_end, str) else raw_end
             task_duration_ms = (task_end_ts - task_start_ts) * 1000.0
             task_success = node.status == StatusEnum.COMPLETED
 
@@ -118,13 +120,11 @@ class _PipelineStageExecutionSideEffectsMixin:
         self._update_andon_scope_after_execution(graph=graph)
         self._run_auto_tuner_after_execution()
 
-    def _record_execution_failures(self, *, graph: Any) -> None:
+    @staticmethod
+    def _record_execution_failures(*, graph: Any) -> None:
         """Classify failed tasks for analytics dashboards."""
         try:
-            from vetinari.analytics.failure_taxonomy import get_failure_tracker
-            from vetinari.structured_logging import set_failure_category
-
-            tracker = get_failure_tracker()
+            tracker = failure_taxonomy.get_failure_tracker()
             last_category: str | None = None
             for node_id, node in graph.nodes.items():
                 if node.status == StatusEnum.FAILED and node.error:
@@ -139,7 +139,8 @@ class _PipelineStageExecutionSideEffectsMixin:
                         context={"stage": "pipeline_execution"},
                     )
                     last_category = record.category.value
-            if last_category is not None:
+            set_failure_category = getattr(structured_logging, "set_failure_category", None)
+            if last_category is not None and set_failure_category is not None:
                 set_failure_category(last_category)
         except Exception as exc:
             logger.warning(
@@ -147,12 +148,11 @@ class _PipelineStageExecutionSideEffectsMixin:
                 exc,
             )
 
-    def _update_andon_scope_after_execution(self, *, graph: Any) -> None:
+    @staticmethod
+    def _update_andon_scope_after_execution(*, graph: Any) -> None:
         """Pause or acknowledge Andon scopes based on per-scope task outcomes."""
         try:
-            from vetinari.workflow.andon import AndonSignal, get_andon_system
-
-            andon = get_andon_system()
+            andon = andon_workflow.get_andon_system()
             scope_failed: dict[str, list[str]] = {}
             scope_succeeded: set[str] = set()
             for node_id, node in graph.nodes.items():
@@ -166,7 +166,7 @@ class _PipelineStageExecutionSideEffectsMixin:
                     scope_succeeded.add(node_scope)
             for failed_scope, failed_ids in scope_failed.items():
                 if failed_scope not in scope_succeeded and not andon.is_scope_paused(failed_scope):
-                    scope_signal = AndonSignal(
+                    scope_signal = andon_workflow.AndonSignal(
                         source="pipeline_stages",
                         severity="critical",
                         message=f"All tasks in scope {failed_scope!r} failed ({len(failed_ids)} task(s))",
@@ -180,12 +180,11 @@ class _PipelineStageExecutionSideEffectsMixin:
         except Exception as exc:
             logger.warning("Andon scope pause/resume skipped after pipeline execution - andon unavailable: %s", exc)
 
-    def _run_auto_tuner_after_execution(self) -> None:
+    @staticmethod
+    def _run_auto_tuner_after_execution() -> None:
         """Run the optional AutoTuner cycle after execution completes."""
         try:
-            from vetinari.learning.auto_tuner import get_auto_tuner
-
-            tuner = get_auto_tuner()
+            tuner = auto_tuner.get_auto_tuner()
             actions = tuner.run_cycle()
             if actions:
                 logger.info("[AutoTuner] Applied %d tuning actions after execution", len(actions))

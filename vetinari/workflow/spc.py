@@ -13,6 +13,7 @@ Andon, Nelson rules, and WIP tracking are in their own modules:
 
 from __future__ import annotations
 
+import enum
 import logging
 import math
 import threading
@@ -29,7 +30,16 @@ logger = logging.getLogger(__name__)
 # =========================================================================
 
 
-@dataclass
+class SPCAlertType(str, enum.Enum):
+    """Typed alert categories emitted by SPC control charts."""
+
+    ABOVE_UCL = "above_ucl"
+    BELOW_LCL = "below_lcl"
+    TREND = "trend"
+    RUN = "run"
+
+
+@dataclass(frozen=True, slots=True)
 class SPCAlert:
     """Alert raised when a metric goes out of statistical control."""
 
@@ -39,8 +49,12 @@ class SPCAlert:
     lcl: float
     mean: float
     sigma: float
-    alert_type: str  # "above_ucl", "below_lcl", "trend", "run"
+    alert_type: SPCAlertType
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.alert_type, SPCAlertType):
+            object.__setattr__(self, "alert_type", SPCAlertType(self.alert_type))
 
     def __repr__(self) -> str:
         """Show key identifying fields for debugging."""
@@ -308,7 +322,8 @@ class SPCMonitor:
             )
         return self._charts[metric_name]
 
-    def _check_control(self, chart: ControlChart, value: float) -> SPCAlert | None:
+    @staticmethod
+    def _check_control(chart: ControlChart, value: float) -> SPCAlert | None:
         """Check whether *value* is out of control on *chart*."""
         # Basic limit check
         if value > chart.ucl:
@@ -319,7 +334,7 @@ class SPCMonitor:
                 lcl=chart.lcl,
                 mean=chart.mean,
                 sigma=chart.sigma,
-                alert_type="above_ucl",
+                alert_type=SPCAlertType.ABOVE_UCL,
             )
         if value < chart.lcl:
             return SPCAlert(
@@ -329,7 +344,7 @@ class SPCMonitor:
                 lcl=chart.lcl,
                 mean=chart.mean,
                 sigma=chart.sigma,
-                alert_type="below_lcl",
+                alert_type=SPCAlertType.BELOW_LCL,
             )
 
         # Western Electric supplementary rules
@@ -341,7 +356,7 @@ class SPCMonitor:
                 lcl=chart.lcl,
                 mean=chart.mean,
                 sigma=chart.sigma,
-                alert_type="trend",
+                alert_type=SPCAlertType.TREND,
             )
         if chart._detect_run():
             return SPCAlert(
@@ -351,7 +366,7 @@ class SPCMonitor:
                 lcl=chart.lcl,
                 mean=chart.mean,
                 sigma=chart.sigma,
-                alert_type="run",
+                alert_type=SPCAlertType.RUN,
             )
         return None
 

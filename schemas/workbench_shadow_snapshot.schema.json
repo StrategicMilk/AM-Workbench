@@ -1,0 +1,319 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_shadow_snapshot.schema.json",
+  "title": "Workbench Shadow Snapshot Undo",
+  "oneOf": [
+    {"$ref": "#/$defs/snapshot_record"},
+    {"$ref": "#/$defs/rollback_attempt_record"},
+    {"$ref": "#/$defs/mission_control_undo_item"}
+  ],
+  "$defs": {
+    "non_empty_string": {"type": "string", "minLength": 1},
+    "string_array": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/non_empty_string"},
+      "uniqueItems": true
+    },
+    "operation_kind": {
+      "type": "string",
+      "enum": ["file_edit", "command", "process_start", "automation", "policy_verdict", "user_approval"]
+    },
+    "reversibility": {
+      "type": "string",
+      "enum": ["reversible", "manual_recovery_required", "irreversible"]
+    },
+    "rollback_strategy": {
+      "type": "string",
+      "enum": ["file_restore", "manual_recovery", "irreversible_refusal"]
+    },
+    "rollback_status": {
+      "type": "string",
+      "enum": ["success", "failed", "skipped_irreversible", "manual_recovery_required"]
+    },
+    "undoability_status": {
+      "type": "string",
+      "enum": ["undoable", "manual_recovery", "irreversible", "unavailable", "rolled_back", "failed"]
+    },
+    "operation_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "run_id",
+        "kind",
+        "summary",
+        "risk_domain",
+        "policy_verdict_ref",
+        "approval_ref",
+        "dry_run_evidence_ref",
+        "shield_decision_ref",
+        "command_text",
+        "cwd_ref",
+        "canonical_path",
+        "before_sha256",
+        "before_content_b64",
+        "after_sha256",
+        "diff_ref",
+        "process_ref",
+        "automation_shadow_plan_ref",
+        "automation_shadow_receipt_ref",
+        "metadata"
+      ],
+      "properties": {
+        "operation_id": {"$ref": "#/$defs/non_empty_string"},
+        "run_id": {"$ref": "#/$defs/non_empty_string"},
+        "kind": {"$ref": "#/$defs/operation_kind"},
+        "summary": {"$ref": "#/$defs/non_empty_string"},
+        "risk_domain": {"$ref": "#/$defs/non_empty_string"},
+        "policy_verdict_ref": {"$ref": "#/$defs/non_empty_string"},
+        "approval_ref": {"$ref": "#/$defs/non_empty_string"},
+        "dry_run_evidence_ref": {"$ref": "#/$defs/non_empty_string"},
+        "shield_decision_ref": {"type": "string"},
+        "command_text": {"type": "string"},
+        "cwd_ref": {"type": "string"},
+        "canonical_path": {"type": "string"},
+        "before_sha256": {"type": "string"},
+        "before_content_b64": {"type": "string"},
+        "after_sha256": {"type": "string"},
+        "diff_ref": {"type": "string"},
+        "process_ref": {"type": "string"},
+        "automation_shadow_plan_ref": {"type": "string"},
+        "automation_shadow_receipt_ref": {"type": "string"},
+        "metadata": {"type": "object"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "file_edit"}}, "required": ["kind"]},
+          "then": {
+            "required": ["canonical_path", "before_sha256", "before_content_b64"],
+            "properties": {
+              "canonical_path": {"$ref": "#/$defs/non_empty_string"},
+              "before_sha256": {"$ref": "#/$defs/non_empty_string"},
+              "before_content_b64": {"$ref": "#/$defs/non_empty_string"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"kind": {"const": "command"}}, "required": ["kind"]},
+          "then": {
+            "properties": {
+              "command_text": {"$ref": "#/$defs/non_empty_string"},
+              "cwd_ref": {"$ref": "#/$defs/non_empty_string"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"kind": {"const": "process_start"}}, "required": ["kind"]},
+          "then": {"properties": {"process_ref": {"$ref": "#/$defs/non_empty_string"}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "automation"}}, "required": ["kind"]},
+          "then": {
+            "properties": {
+              "automation_shadow_plan_ref": {"$ref": "#/$defs/non_empty_string"},
+              "automation_shadow_receipt_ref": {"$ref": "#/$defs/non_empty_string"}
+            }
+          }
+        }
+      ]
+    },
+    "rollback_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plan_id",
+        "operation_id",
+        "reversibility",
+        "strategy",
+        "target_path",
+        "restore_sha256",
+        "restore_content_b64",
+        "expected_current_sha256",
+        "manual_recovery_guidance",
+        "refusal_reason",
+        "evidence_refs"
+      ],
+      "properties": {
+        "plan_id": {"$ref": "#/$defs/non_empty_string"},
+        "operation_id": {"$ref": "#/$defs/non_empty_string"},
+        "reversibility": {"$ref": "#/$defs/reversibility"},
+        "strategy": {"$ref": "#/$defs/rollback_strategy"},
+        "target_path": {"type": "string"},
+        "restore_sha256": {"type": "string"},
+        "restore_content_b64": {"type": "string"},
+        "expected_current_sha256": {"type": "string"},
+        "manual_recovery_guidance": {"type": "string"},
+        "refusal_reason": {"type": "string"},
+        "evidence_refs": {"$ref": "#/$defs/string_array"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"strategy": {"const": "file_restore"}}, "required": ["strategy"]},
+          "then": {
+            "properties": {
+              "target_path": {"$ref": "#/$defs/non_empty_string"},
+              "restore_sha256": {"$ref": "#/$defs/non_empty_string"},
+              "restore_content_b64": {"$ref": "#/$defs/non_empty_string"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"strategy": {"const": "manual_recovery"}}, "required": ["strategy"]},
+          "then": {"properties": {"manual_recovery_guidance": {"$ref": "#/$defs/non_empty_string"}}}
+        },
+        {
+          "if": {"properties": {"strategy": {"const": "irreversible_refusal"}}, "required": ["strategy"]},
+          "then": {"properties": {"refusal_reason": {"$ref": "#/$defs/non_empty_string"}}}
+        }
+      ]
+    },
+    "snapshot_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshot_id",
+        "run_id",
+        "operation",
+        "reversibility",
+        "rollback_plan",
+        "original_run_record_ref",
+        "original_run_record_hash",
+        "captured_at_utc",
+        "original_run_record_payload"
+      ],
+      "properties": {
+        "snapshot_id": {"$ref": "#/$defs/non_empty_string"},
+        "run_id": {"$ref": "#/$defs/non_empty_string"},
+        "operation": {"$ref": "#/$defs/operation_record"},
+        "reversibility": {"$ref": "#/$defs/reversibility"},
+        "rollback_plan": {"$ref": "#/$defs/rollback_plan"},
+        "original_run_record_ref": {"$ref": "#/$defs/non_empty_string"},
+        "original_run_record_hash": {"$ref": "#/$defs/non_empty_string"},
+        "captured_at_utc": {"$ref": "#/$defs/non_empty_string"},
+        "original_run_record_payload": {"type": "object", "minProperties": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"reversibility": {"const": "reversible"}}, "required": ["reversibility"]},
+          "then": {
+            "properties": {
+              "operation": {
+                "properties": {
+                  "kind": {"const": "file_edit"},
+                  "before_sha256": {"$ref": "#/$defs/non_empty_string"},
+                  "before_content_b64": {"$ref": "#/$defs/non_empty_string"}
+                }
+              },
+              "rollback_plan": {
+                "properties": {
+                  "strategy": {"const": "file_restore"},
+                  "target_path": {"$ref": "#/$defs/non_empty_string"},
+                  "restore_sha256": {"$ref": "#/$defs/non_empty_string"},
+                  "restore_content_b64": {"$ref": "#/$defs/non_empty_string"}
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "rollback_attempt_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt_id",
+        "snapshot_id",
+        "operation_id",
+        "status",
+        "attempted_at_utc",
+        "restored_path",
+        "before_target_sha256",
+        "after_target_sha256",
+        "error_code",
+        "error_message",
+        "recovery_guidance"
+      ],
+      "properties": {
+        "attempt_id": {"$ref": "#/$defs/non_empty_string"},
+        "snapshot_id": {"$ref": "#/$defs/non_empty_string"},
+        "operation_id": {"$ref": "#/$defs/non_empty_string"},
+        "status": {"$ref": "#/$defs/rollback_status"},
+        "attempted_at_utc": {"$ref": "#/$defs/non_empty_string"},
+        "restored_path": {"type": "string"},
+        "before_target_sha256": {"type": "string"},
+        "after_target_sha256": {"type": "string"},
+        "error_code": {"type": "string"},
+        "error_message": {"type": "string"},
+        "recovery_guidance": {"type": "string"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "failed"}}, "required": ["status"]},
+          "then": {
+            "properties": {
+              "error_code": {"$ref": "#/$defs/non_empty_string"},
+              "error_message": {"$ref": "#/$defs/non_empty_string"},
+              "recovery_guidance": {"$ref": "#/$defs/non_empty_string"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {"enum": ["skipped_irreversible", "manual_recovery_required"]}
+            },
+            "required": ["status"]
+          },
+          "then": {"properties": {"recovery_guidance": {"$ref": "#/$defs/non_empty_string"}}}
+        }
+      ]
+    },
+    "mission_control_undo_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshot_id",
+        "run_id",
+        "operation_id",
+        "operation_kind",
+        "undoability_status",
+        "label",
+        "risk_domain",
+        "policy_verdict_ref",
+        "approval_ref",
+        "original_run_record_ref",
+        "reason_code",
+        "rollback_status",
+        "recovery_guidance"
+      ],
+      "properties": {
+        "snapshot_id": {"$ref": "#/$defs/non_empty_string"},
+        "run_id": {"$ref": "#/$defs/non_empty_string"},
+        "operation_id": {"$ref": "#/$defs/non_empty_string"},
+        "operation_kind": {"$ref": "#/$defs/operation_kind"},
+        "undoability_status": {"$ref": "#/$defs/undoability_status"},
+        "label": {"$ref": "#/$defs/non_empty_string"},
+        "risk_domain": {"$ref": "#/$defs/non_empty_string"},
+        "policy_verdict_ref": {"$ref": "#/$defs/non_empty_string"},
+        "approval_ref": {"$ref": "#/$defs/non_empty_string"},
+        "original_run_record_ref": {"$ref": "#/$defs/non_empty_string"},
+        "reason_code": {"$ref": "#/$defs/non_empty_string"},
+        "rollback_status": {"type": "string"},
+        "recovery_guidance": {"type": "string"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "undoability_status": {
+                "enum": ["manual_recovery", "irreversible", "unavailable", "failed"]
+              }
+            },
+            "required": ["undoability_status"]
+          },
+          "then": {"properties": {"recovery_guidance": {"$ref": "#/$defs/non_empty_string"}}}
+        }
+      ]
+    }
+  }
+}

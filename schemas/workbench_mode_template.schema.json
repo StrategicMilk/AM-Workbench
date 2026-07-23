@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_mode_template.schema.json",
+  "title": "Workbench Mode Template Catalog",
+  "type": "object",
+  "required": ["schema_version", "templates"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "templates": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/template" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nonEmptyStringArray": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "template": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "version",
+        "charter",
+        "input_model",
+        "allowed_tools",
+        "tool_policy",
+        "memory_policy",
+        "output_artifact_schema",
+        "required_artifacts",
+        "review_rubric",
+        "transitions",
+        "export_paths",
+        "failure_recovery",
+        "provenance",
+        "evidence_refs"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "version": { "$ref": "#/$defs/nonEmptyString" },
+        "charter": { "$ref": "#/$defs/nonEmptyString" },
+        "input_model": { "$ref": "#/$defs/nonEmptyString" },
+        "allowed_tools": { "$ref": "#/$defs/nonEmptyStringArray" },
+        "tool_policy": {
+          "type": "object",
+          "required": [
+            "allowed_tool_ids",
+            "required_policy_refs",
+            "requires_citations",
+            "max_external_calls"
+          ],
+          "properties": {
+            "allowed_tool_ids": { "$ref": "#/$defs/nonEmptyStringArray" },
+            "required_policy_refs": { "$ref": "#/$defs/nonEmptyStringArray" },
+            "requires_citations": { "type": "boolean" },
+            "max_external_calls": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "memory_policy": {
+          "type": "object",
+          "required": [
+            "ephemeral_keys",
+            "persistent_keys",
+            "retention_policy",
+            "provenance_required"
+          ],
+          "properties": {
+            "ephemeral_keys": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/nonEmptyString" }
+            },
+            "persistent_keys": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/nonEmptyString" }
+            },
+            "retention_policy": { "$ref": "#/$defs/nonEmptyString" },
+            "provenance_required": { "const": true }
+          },
+          "additionalProperties": false
+        },
+        "output_artifact_schema": { "$ref": "#/$defs/nonEmptyString" },
+        "required_artifacts": { "$ref": "#/$defs/nonEmptyStringArray" },
+        "review_rubric": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "description", "evidence_required"],
+            "properties": {
+              "id": { "$ref": "#/$defs/nonEmptyString" },
+              "description": { "$ref": "#/$defs/nonEmptyString" },
+              "evidence_required": { "$ref": "#/$defs/nonEmptyString" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "transitions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["from", "to", "required_evidence"],
+            "properties": {
+              "from": { "$ref": "#/$defs/nonEmptyString" },
+              "to": { "$ref": "#/$defs/nonEmptyString" },
+              "required_evidence": { "$ref": "#/$defs/nonEmptyStringArray" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "export_paths": { "$ref": "#/$defs/nonEmptyStringArray" },
+        "failure_recovery": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["trigger", "action", "user_visible_status"],
+            "properties": {
+              "trigger": { "$ref": "#/$defs/nonEmptyString" },
+              "action": { "$ref": "#/$defs/nonEmptyString" },
+              "user_visible_status": { "$ref": "#/$defs/nonEmptyString" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "required": ["source", "decision_ref"],
+          "properties": {
+            "source": { "$ref": "#/$defs/nonEmptyString" },
+            "decision_ref": { "$ref": "#/$defs/nonEmptyString" }
+          },
+          "additionalProperties": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "evidence_refs": { "$ref": "#/$defs/nonEmptyStringArray" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,6 +1,7 @@
 # Keep the release artifact package-first. Start from an empty root-level
 # file list and re-include only the intended release inputs.
 exclude *
+prune *
 
 include CHANGELOG.md
 include LICENSE
@@ -17,10 +18,51 @@ recursive-include vetinari *.py *.typed *.json *.yaml *.yml *.sql
 recursive-include vetinari/config *.md
 recursive-include vetinari/skills/catalog *.md
 
-# Frontend/binary release boundary is enforced by the include-only package tree:
-# *.map *.safetensors *.gguf *.bin *.onnx *.pt *.pth *.ckpt esbuild.exe
+# Frontend workspaces, generated assets, private state, and model binaries are
+# outside the Python source-distribution boundary.
+prune build
+prune dist
 prune vetinari.egg-info
+prune .omc
+prune .playwright-mcp
 prune vetinari/.omc
-prune ui
+prune .vetinari
+prune ui/svelte/node_modules
+prune ui/svelte/.svelte-kit
+prune ui/svelte/coverage
+prune ui/svelte/dist
+prune ui/svelte/models
+prune ui/svelte/src
+prune ui/svelte/test-results
+prune ui/svelte/tests
+prune ui/static/svelte
 prune tests
 prune vetinari/.vetinari
+
+# Prune private workspace trees - must not appear in released sdist
+prune .agents
+prune .ai-codex
+prune .claude
+prune .claire
+prune .codex
+prune .github
+prune .pytest-probe3
+prune .lane_tmp
+prune .tmp
+prune .tmp-repro-launcher
+prune codex
+prune outputs
+prune private
+prune worktrees
+
+global-exclude *.map
+global-exclude *.safetensors
+global-exclude *.gguf
+global-exclude *.bin
+global-exclude *.onnx
+global-exclude *.pt
+global-exclude *.pth
+global-exclude *.ckpt
+global-exclude esbuild.exe
+global-exclude CLAUDE.md
+global-exclude AGENTS.md

@@ -1,0 +1,609 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_media_asset.schema.json",
+  "title": "Workbench Document And Media Intelligence Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "asset_id",
+    "asset_kind",
+    "source_card_id",
+    "dataset_revision_id",
+    "content_sha256",
+    "provenance_refs"
+  ],
+  "oneOf": [
+    {
+      "required": ["document_extraction"],
+      "not": {
+        "required": ["media_asset"]
+      }
+    },
+    {
+      "required": ["media_asset"],
+      "not": {
+        "required": ["document_extraction"]
+      }
+    }
+  ],
+  "properties": {
+    "asset_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "asset_kind": {
+      "enum": ["document", "audio", "video", "image_sequence"]
+    },
+    "source_card_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "dataset_revision_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "content_sha256": {
+      "type": "string",
+      "pattern": "^[a-fA-F0-9]{64}$"
+    },
+    "provenance_refs": {
+      "$ref": "#/$defs/non_empty_string_array"
+    },
+    "document_extraction": {
+      "$ref": "#/$defs/document_extraction"
+    },
+    "media_asset": {
+      "$ref": "#/$defs/media_asset"
+    }
+  },
+  "$defs": {
+    "non_empty_string_array": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "visual_grounding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["page_number", "region_ref", "provenance_refs"],
+      "properties": {
+        "page_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "region_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bounding_box": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "provenance_refs": {
+          "$ref": "#/$defs/non_empty_string_array"
+        }
+      }
+    },
+    "document_page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["page_number", "width", "height", "text_layer_present", "provenance_refs"],
+      "properties": {
+        "page_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "text_layer_present": {
+          "type": "boolean"
+        },
+        "provenance_refs": {
+          "$ref": "#/$defs/non_empty_string_array"
+        }
+      }
+    },
+    "document_chunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "chunk_id",
+        "kind",
+        "text",
+        "page_number",
+        "extraction_method",
+        "confidence",
+        "provenance_refs"
+      ],
+      "anyOf": [
+        {
+          "required": ["visual_grounding"]
+        },
+        {
+          "required": ["no_visual_region_reason"]
+        }
+      ],
+      "properties": {
+        "chunk_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": ["paragraph", "heading", "table", "image", "ocr_text"]
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "extraction_method": {
+          "enum": ["pdf_text_layer", "ocr", "layout_analysis", "table_detection", "image_extraction"]
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "provenance_refs": {
+          "$ref": "#/$defs/non_empty_string_array"
+        },
+        "visual_grounding": {
+          "$ref": "#/$defs/visual_grounding"
+        },
+        "no_visual_region_reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "ocr_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["page_number", "text", "ocr_engine", "confidence", "provenance_refs"],
+      "properties": {
+        "page_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ocr_engine": {
+          "type": "string",
+          "minLength": 1
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "provenance_refs": {
+          "$ref": "#/$defs/non_empty_string_array"
+        },
+        "visual_grounding": {
+          "$ref": "#/$defs/visual_grounding"
+        }
+      }
+    },
+    "document_table": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["table_id", "page_number", "rows", "confidence", "visual_grounding", "provenance_refs"],
+      "properties": {
+        "table_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "rows": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "visual_grounding": {
+          "$ref": "#/$defs/visual_grounding"
+        },
+        "provenance_refs": {
+          "$ref": "#/$defs/non_empty_string_array"
+        }
+      }
+    },
+    "document_image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image_id", "page_number", "alt_text", "confidence", "visual_grounding", "provenance_refs"],
+      "properties": {
+        "image_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "alt_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "visual_grounding": {
+          "$ref": "#/$defs/visual_grounding"
+        },
+        "provenance_refs": {
+          "$ref": "#/$defs/non_empty_string_array"
+        }
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["redaction_id", "redaction_reason", "policy_ref", "provenance_refs", "status"],
+      "properties": {
+        "redaction_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "start_offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_offset": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "start_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "end_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "redaction_reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policy_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provenance_refs": {
+          "$ref": "#/$defs/non_empty_string_array"
+        },
+        "status": {
+          "enum": ["proposed", "reviewed", "applied_upstream"]
+        }
+      }
+    },
+    "annotation_hook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["annotation_id", "target_ref", "label", "provenance_refs"],
+      "properties": {
+        "annotation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provenance_refs": {
+          "$ref": "#/$defs/non_empty_string_array"
+        }
+      }
+    },
+    "document_extraction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["extraction_id", "pages", "chunks", "provenance_refs", "ocr_evidence"],
+      "properties": {
+        "extraction_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pages": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/document_page"
+          }
+        },
+        "chunks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/document_chunk"
+          }
+        },
+        "provenance_refs": {
+          "$ref": "#/$defs/non_empty_string_array"
+        },
+        "ocr_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/ocr_evidence"
+          }
+        },
+        "tables": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/document_table"
+          }
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/document_image"
+          }
+        },
+        "redactions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/redaction"
+          }
+        },
+        "annotation_hooks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/annotation_hook"
+          }
+        }
+      }
+    },
+    "media_segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["segment_id", "start_seconds", "end_seconds", "confidence", "provenance_refs"],
+      "properties": {
+        "segment_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "end_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "provenance_refs": {
+          "$ref": "#/$defs/non_empty_string_array"
+        },
+        "label": {
+          "type": "string"
+        }
+      }
+    },
+    "transcript_alignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "alignment_id",
+        "segment_id",
+        "transcript_text",
+        "start_seconds",
+        "end_seconds",
+        "confidence",
+        "provenance_refs"
+      ],
+      "properties": {
+        "alignment_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "segment_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transcript_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "end_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "provenance_refs": {
+          "$ref": "#/$defs/non_empty_string_array"
+        }
+      }
+    },
+    "frame_sample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frame_id", "timestamp_seconds", "provenance_refs"],
+      "anyOf": [
+        {
+          "required": ["visual_grounding_ref"]
+        },
+        {
+          "required": ["object_labels"]
+        }
+      ],
+      "properties": {
+        "frame_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timestamp_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "provenance_refs": {
+          "$ref": "#/$defs/non_empty_string_array"
+        },
+        "visual_grounding_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "object_labels": {
+          "$ref": "#/$defs/non_empty_string_array"
+        }
+      }
+    },
+    "speaker_turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["turn_id", "speaker_id", "start_seconds", "end_seconds", "confidence", "provenance_refs"],
+      "properties": {
+        "turn_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "speaker_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "end_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "provenance_refs": {
+          "$ref": "#/$defs/non_empty_string_array"
+        }
+      }
+    },
+    "scene_metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scene_id", "start_seconds", "end_seconds", "labels", "confidence", "provenance_refs"],
+      "properties": {
+        "scene_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "end_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "labels": {
+          "$ref": "#/$defs/non_empty_string_array"
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "provenance_refs": {
+          "$ref": "#/$defs/non_empty_string_array"
+        }
+      }
+    },
+    "media_asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["segments", "provenance_refs"],
+      "properties": {
+        "provenance_refs": {
+          "$ref": "#/$defs/non_empty_string_array"
+        },
+        "segments": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/media_segment"
+          }
+        },
+        "transcript_alignments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/transcript_alignment"
+          }
+        },
+        "frame_samples": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/frame_sample"
+          }
+        },
+        "speaker_turns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/speaker_turn"
+          }
+        },
+        "scenes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scene_metadata"
+          }
+        },
+        "redactions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/redaction"
+          }
+        },
+        "annotation_hooks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/annotation_hook"
+          }
+        }
+      }
+    }
+  }
+}

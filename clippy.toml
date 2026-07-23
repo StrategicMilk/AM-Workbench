@@ -1,0 +1,11 @@
+msrv = "1.88.0"
+avoid-breaking-exported-api = false
+
+# Rust-surface hygiene parity (see scripts/check_rust_hygiene.py, RUST-CWD).
+# `std::env::current_dir` resolves against the process CWD; a workspace/state
+# path must be anchored to an explicit root env var or argument instead, or the
+# resulting path lands in an API payload / persisted artifact relative to
+# wherever the binary happened to be launched. Enforced by clippy::disallowed_methods.
+disallowed-methods = [
+    { path = "std::env::current_dir", reason = "anchor paths to an explicit workspace/state root (env var or arg), not the process CWD" },
+]

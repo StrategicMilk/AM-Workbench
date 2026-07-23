@@ -1,21 +1,4 @@
-"""Architecture Decision Record (ADR) management system.
-
-Provides a structured approach to documenting and tracking architecture
-decisions across the Vetinari project.  Each ADR is stored as a JSON file
-in the configured storage directory and loaded into memory at startup.
-
-Usage::
-
-    from vetinari.adr import ADRSystem
-
-    system = ADRSystem.get_instance()
-    adr = system.create_adr(
-        title="Use six-agent pipeline",
-        category="architecture",
-        context="Need a structured agent hierarchy ...",
-        decision="Adopt a six-agent pipeline: Planner -> Researcher -> ...",
-    )
-"""
+"""Architecture Decision Record (ADR) management system."""
 
 from __future__ import annotations
 
@@ -23,139 +6,14 @@ import contextlib
 import json
 import logging
 import threading
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from vetinari.adr_models import ADR, HIGH_STAKES_CATEGORIES, ADRAcceptance, ADRCategory, ADRProposal, ADRStatus
 from vetinari.security.sandbox import enforce_blocked_paths
-from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
-
-
-class ADRStatus(Enum):
-    """Lifecycle status of an Architecture Decision Record."""
-
-    PROPOSED = "proposed"
-    ACCEPTED = "accepted"
-    REJECTED = "rejected"
-    DEPRECATED = "deprecated"
-    SUPERSEDED = "superseded"
-
-
-class ADRCategory(Enum):
-    """Classification categories for ADRs."""
-
-    ARCHITECTURE = "architecture"
-    SECURITY = "security"
-    DATA_FLOW = "data_flow"
-    API_DESIGN = "api_design"
-    AGENT_DESIGN = "agent_design"
-    DECOMPOSITION = "decomposition"
-    PERFORMANCE = "performance"
-    INTEGRATION = "integration"
-
-
-HIGH_STAKES_CATEGORIES: frozenset[ADRCategory] = frozenset({
-    ADRCategory.ARCHITECTURE,
-    ADRCategory.SECURITY,
-    ADRCategory.DATA_FLOW,
-})
-
-
-@dataclass
-class ADR:
-    """A single Architecture Decision Record.
-
-    Args:
-        adr_id: Unique identifier (e.g. ``ADR-0001``).
-        title: Short descriptive title for the decision.
-        category: One of :class:`ADRCategory` values.
-        context: Problem statement or background motivating the decision.
-        decision: The decision that was made.
-        status: Lifecycle status (default ``proposed``).
-        consequences: Known positive and negative consequences.
-        related_adrs: IDs of related ADRs.
-        superseded_by: When ``status`` is ``superseded``, the ADR ID that
-            replaces this one (e.g. ``ADR-0065``). ``None`` otherwise.
-        created_at: ISO-8601 creation timestamp.
-        updated_at: ISO-8601 last-update timestamp.
-        created_by: Author identifier.
-        notes: Free-form notes or discussion points.
-    """
-
-    adr_id: str
-    title: str
-    category: str
-    context: str
-    decision: str
-    status: str = ADRStatus.PROPOSED.value
-    consequences: str = ""
-    related_adrs: list[str] = field(default_factory=list)
-    superseded_by: str | None = None
-    created_at: str = ""
-    updated_at: str = ""
-    created_by: str = "system"
-    notes: str = ""
-
-    def __repr__(self) -> str:
-        return f"ADR(adr_id={self.adr_id!r}, title={self.title!r}, category={self.category!r}, status={self.status!r})"
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to a JSON-compatible dictionary."""
-        return dataclass_to_dict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ADR:
-        """Deserialize an ADR from a dictionary.
-
-        Args:
-            data: Dictionary with ADR fields.
-
-        Returns:
-            Populated ADR instance with defaults for missing fields.
-        """
-        # @skip-validation: additive read of existing JSON key; no behavior change for missing key
-        # Normalize status to canonical lowercase (ADRStatus enum values are lowercase).
-        raw_status = data.get("status", ADRStatus.PROPOSED.value)
-        status = raw_status.lower() if isinstance(raw_status, str) else ADRStatus.PROPOSED.value
-        return cls(
-            adr_id=data.get("adr_id", ""),
-            title=data.get("title", ""),
-            category=data.get("category", "architecture"),
-            context=data.get("context", ""),
-            decision=data.get("decision", ""),
-            status=status,
-            consequences=data.get("consequences", ""),
-            related_adrs=data.get("related_adrs", []),
-            superseded_by=data.get("superseded_by"),
-            created_at=data.get("created_at", ""),
-            updated_at=data.get("updated_at", ""),
-            created_by=data.get("created_by", "system"),
-            notes=data.get("notes", ""),
-        )
-
-
-@dataclass
-class ADRProposal:
-    """A proposal for an architecture decision with multiple options.
-
-    Args:
-        question: The question or problem being addressed.
-        options: List of option dicts with ``id``, ``description``, ``pros``, ``cons``.
-        recommended: Zero-based index of the recommended option.
-        rationale: Explanation for the recommendation.
-    """
-
-    question: str
-    options: list[dict[str, Any]]
-    recommended: int = 0
-    rationale: str = ""
-
-    def __repr__(self) -> str:
-        return f"ADRProposal(options={len(self.options)}, recommended={self.recommended!r})"
 
 
 class ADRSystem:
@@ -203,10 +61,12 @@ class ADRSystem:
 
     def _load_adrs(self) -> None:
         """Load all ADR JSON files from the storage directory."""
-        for file in self.storage_path.glob("*.json"):
+        for file in self.storage_path.glob("ADR-*.json"):
             try:
                 with Path(file).open(encoding="utf-8") as f:
                     data = json.load(f)
+                    if not isinstance(data, dict) or not (data.get("adr_id") or data.get("id")):
+                        continue
                     adr = ADR.from_dict(data)
                     self.adrs[adr.adr_id] = adr
             except (OSError, json.JSONDecodeError, KeyError, ValueError):
@@ -282,6 +142,9 @@ class ADRSystem:
 
         Returns:
             The newly created ADR.
+
+        Raises:
+            ValueError: If the selected option or rationale is missing.
         """
         if adr_id is None:
             adr_id = self._next_adr_id()
@@ -298,7 +161,7 @@ class ADRSystem:
             updated_at=now,
             created_by=created_by,
             status=status,
-            related_adrs=related_adrs or [],  # noqa: VET112 - empty fallback preserves optional request metadata contract
+            related_adrs=related_adrs or [],
             notes=notes,
         )
 
@@ -410,8 +273,9 @@ class ADRSystem:
     def supersede_adr(self, adr_id: str, replacement_id: str) -> ADR | None:
         """Mark an ADR as superseded by a replacement and link both sides.
 
-        Use this when a newer ADR replaces an older one. Sets the superseded
-        ADR's status to ``superseded`` and populates its ``superseded_by`` field.
+        Use this when a newer ADR replaces an older one (per the supersession
+        protocol in the repository governance contract). Sets the superseded ADR's
+        status to ``superseded`` and populates its ``superseded_by`` field.
         Adds a bidirectional entry to both ADRs' ``related_adrs``. Persists
         both sides in one call.
 
@@ -522,9 +386,23 @@ class ADRSystem:
 
         Returns:
             The newly created ADR.
+
+        Raises:
+            ValueError: If the selected option or rationale is missing.
         """
+        try:
+            selected_option_raw = proposal.options[proposal.recommended].get("id")
+        except IndexError as exc:
+            raise ValueError("selected_option is required") from exc
+        if not isinstance(selected_option_raw, str):
+            selected_option_raw = None
+        acceptance = ADRAcceptance(selected_option=selected_option_raw, rationale=proposal.rationale)
         decision = "; ".join([f"{o['id']}: {o['description']}" for o in proposal.options])
-        consequences = "\n".join([f"Pros: {', '.join(o.get('pros', []))}" for o in proposal.options])
+        consequences = "\n".join([
+            f"Selected option: {acceptance.selected_option}",
+            f"Rationale: {acceptance.rationale}",
+            *[f"Pros: {', '.join(o.get('pros', []))}" for o in proposal.options],
+        ])
 
         return self.create_adr(
             title=title,
@@ -625,3 +503,54 @@ def get_adr_system() -> ADRSystem:
         The shared ADRSystem instance.
     """
     return ADRSystem.get_instance()
+
+
+def load_adr(adr_id: str | Path, *, storage_path: str | None = None) -> ADR:
+    """Load one ADR by ID using the existing ADRSystem storage contract.
+
+    Args:
+        adr_id: ADR identifier, such as ``ADR-0104``, or a path to an ADR JSON file.
+        storage_path: Optional ADR storage directory override.
+
+    Returns:
+        The matching ADR.
+
+    Raises:
+        KeyError: If no ADR with the given ID exists.
+    """
+    if isinstance(adr_id, Path):
+        with adr_id.open(encoding="utf-8") as f:
+            return ADR.from_dict(json.load(f))
+
+    system = ADRSystem(storage_path) if storage_path is not None else get_adr_system()
+    adr = system.get_adr(adr_id)
+    if adr is None:
+        raise KeyError(f"ADR not found: {adr_id}")
+    return adr
+
+
+def get_adr(adr_id: str, *, storage_path: str | None = None) -> ADR:
+    """Return one ADR or raise when it is not found."""
+    return load_adr(adr_id, storage_path=storage_path)
+
+
+def load_adrs(
+    *,
+    storage_path: str | None = None,
+    status: str | None = None,
+    category: str | None = None,
+    limit: int = 1000,
+) -> list[ADR]:
+    """Load ADRs using the existing ADRSystem list contract.
+
+    Args:
+        storage_path: Optional ADR storage directory override.
+        status: Optional status filter.
+        category: Optional category filter.
+        limit: Maximum number of ADRs to return.
+
+    Returns:
+        ADRs sorted newest-first by the underlying ADRSystem.
+    """
+    system = ADRSystem(storage_path) if storage_path is not None else get_adr_system()
+    return system.list_adrs(status=status, category=category, limit=limit)

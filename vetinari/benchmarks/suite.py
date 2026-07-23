@@ -4,7 +4,8 @@ Vetinari Comprehensive Benchmark Suite
 Standardized evaluation tasks per agent type.
 
 Tracks quality over time and alerts on regressions after prompt/model changes.
-All benchmarks run offline (no network calls) using mocked agent execution.
+Benchmarks are offline by default and can also load production trace JSONL
+exports for component-level replay without making network calls.
 
 Usage::
 
@@ -31,12 +32,33 @@ from pathlib import Path
 from typing import Any
 
 from vetinari.benchmarks.benchmark_types import BenchmarkCase, BenchmarkResult
+from vetinari.benchmarks.suite_cases import _build_default_cases
 from vetinari.constants import _PROJECT_ROOT
 from vetinari.types import AgentType
+from vetinari.workbench.cost.jsonl_rotator import RotatingJsonlStore
+from vetinari.workbench.cost.token_cost_split import PricingConfigError, load_rotation_settings
 
 logger = logging.getLogger(__name__)
 
+
 _RESULTS_PATH = _PROJECT_ROOT / "vetinari_benchmarks.jsonl"
+_RESULTS_ROTATION_KEY = "benchmarks_jsonl"
+_PLACEHOLDER_STRINGS = {
+    "",
+    "n/a",
+    "na",
+    "none",
+    "no issues",
+    "no issue",
+    "no changes",
+    "no changes needed",
+    "ok",
+    "pass",
+    "passed",
+    "todo",
+    "tbd",
+    "unknown",
+}
 
 
 @dataclass
@@ -76,20 +98,97 @@ class SuiteResult:
         )
 
 
+def compute_velocity_trend(recent_scores: list[float]) -> str:
+    """Classify benchmark run velocity from the last N scores.
+
+    Replaces the previously-hardcoded ``velocity_trend = "flat"`` field. The
+    classifier compares the first and last score in ``recent_scores``: a >2%
+    rise marks ``"improving"``, a >2% fall marks ``"degrading"``, anything
+    else marks ``"flat"``. Fewer than 2 data points fall back to ``"flat"``.
+
+    Args:
+        recent_scores: Ordered list of benchmark suite scores, oldest first.
+
+    Returns:
+        One of ``"improving"``, ``"degrading"``, or ``"flat"``.
+    """
+    if len(recent_scores) < 2:
+        return "flat"
+    first = float(recent_scores[0])
+    last = float(recent_scores[-1])
+    if first <= 0.0:
+        return "improving" if last > first else "flat"
+    ratio = last / first
+    if ratio > 1.02:
+        return "improving"
+    if ratio < 0.98:
+        return "degrading"
+    return "flat"
+
+
+def score_token_f1(expected: str, actual: str) -> float:
+    """Token-F1 overlap between expected and actual strings.
+
+    Replaces the prior ``expected in actual`` substring-containment scorer.
+    Whitespace-split lowercased tokens form the comparison sets; F1 is the
+    harmonic mean over precision and recall on those sets. Identical strings
+    score ``1.0``; disjoint strings score ``0.0``; partial overlaps score
+    proportionally so a single matching token in a long sentence cannot
+    false-green the case.
+
+    Args:
+        expected: Reference text. Empty input returns ``0.0`` (no signal).
+        actual: Candidate text.
+
+    Returns:
+        F1 value in the closed interval ``[0.0, 1.0]``.
+    """
+    expected_tokens = expected.lower().split()
+    actual_tokens = actual.lower().split()
+    if not expected_tokens or not actual_tokens:
+        return 0.0
+    expected_set = set(expected_tokens)
+    actual_set = set(actual_tokens)
+    intersection = expected_set & actual_set
+    if not intersection:
+        return 0.0
+    return (2 * len(intersection)) / (len(expected_set) + len(actual_set))
+
+
 def _score_by_keys(output: Any, required_keys: list[str]) -> float:
-    """Score output based on whether required keys are present."""
+    """Score output based on required keys containing substantive content."""
     if not isinstance(output, dict) and isinstance(output, str):
         try:
             output = json.loads(output)
         except Exception:
-            logger.warning(
-                "Could not parse benchmark output as JSON — scoring as 0.3 (partial credit), required keys check skipped"
-            )
-            return 0.3
+            logger.warning("Could not parse benchmark output as JSON - scoring as 0.0")
+            return 0.0
     if not isinstance(output, dict):
-        return 0.1
-    found = sum(1 for k in required_keys if output.get(k))
+        return 0.0
+    found = sum(1 for k in required_keys if _is_substantive_benchmark_value(output.get(k)))
     return found / max(len(required_keys), 1)
+
+
+def _is_substantive_benchmark_value(value: Any, *, nested: bool = False) -> bool:
+    """Reject key-fill placeholders while accepting concrete benchmark payloads."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | float):
+        return True
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.lower() in _PLACEHOLDER_STRINGS:
+            return False
+        if nested:
+            return bool(stripped)
+        return len(stripped) >= 3
+    if isinstance(value, list):
+        return bool(value) and any(_is_substantive_benchmark_value(item, nested=True) for item in value)
+    if isinstance(value, dict):
+        return bool(value) and any(_is_substantive_benchmark_value(item, nested=True) for item in value.values())
+    return bool(value)
 
 
 class BenchmarkSuite:
@@ -104,120 +203,81 @@ class BenchmarkSuite:
     # Case definitions
     # ------------------------------------------------------------------
 
-    def _build_cases(self) -> list[BenchmarkCase]:
-        """Define benchmark cases for the 3-agent pipeline (FOREMAN, WORKER, INSPECTOR)."""
-        return [
-            # FOREMAN: Task decomposition
+    @staticmethod
+    def _build_cases() -> list[BenchmarkCase]:
+        """Define benchmark cases for the 3-agent pipeline (FOREMAN, WORKER, INSPECTOR).
+
+        Includes both structured-output cases (scored by key presence via
+        ``_score_by_keys``) and a text-output case for INSPECTOR whose expected
+        answer is evaluated via :func:`make_text_evaluator` (token-F1 scorer).
+        """
+        cases = _build_default_cases(_score_by_keys)
+        # Text-output case: expected plain-English answer evaluated via token-F1.
+        # make_text_evaluator is the canonical way to build text evaluators for
+        # BenchmarkCase instances whose output is a plain string rather than a
+        # structured dict.
+        cases.append(
             BenchmarkCase(
-                case_id="planner_decompose_001",
-                agent_type=AgentType.FOREMAN.value,
-                task_type="planning",
-                description="Decompose: build a REST API",
-                input="Build a REST API for a todo list application with authentication",
-                evaluator=lambda o: _score_by_keys(o, ["tasks", "dependencies"]),
-                expected_keys=["tasks", "dependencies"],
-            ),
-            # WORKER: Code generation
-            BenchmarkCase(
-                case_id="builder_scaffold_001",
-                agent_type=AgentType.WORKER.value,
-                task_type="coding",
-                description="Scaffold a Python class",
-                input="Generate a UserRepository class with CRUD operations for SQLite",
-                evaluator=lambda o: _score_by_keys(o, ["scaffold_code", "tests"]),
-                expected_keys=["scaffold_code", "tests"],
-            ),
-            # INSPECTOR: Code review
-            BenchmarkCase(
-                case_id="evaluator_review_001",
-                agent_type=AgentType.INSPECTOR.value,
-                task_type="review",
-                description="Review code with eval/exec",
-                input="Review: def run(code): eval(code)",
-                evaluator=lambda o: _score_by_keys(o, ["issues", "score"]),
-                expected_keys=["issues", "score"],
-            ),
-            # WORKER: Research query
-            BenchmarkCase(
-                case_id="researcher_query_001",
-                agent_type=AgentType.WORKER.value,
-                task_type="research",
-                description="Research exponential backoff",
-                input="Research best practices for implementing exponential backoff in Python",
-                evaluator=lambda o: _score_by_keys(o, ["findings", "recommendations"]),
-                expected_keys=["findings", "recommendations"],
-            ),
-            # INSPECTOR: Security scan
-            BenchmarkCase(
-                case_id="security_audit_001",
+                case_id="inspector_text_quality_001",
                 agent_type=AgentType.INSPECTOR.value,
                 task_type="analysis",
-                description="Audit SQL injection pattern",
-                input="Review: query = f'SELECT * FROM users WHERE id = {user_id}'",
-                evaluator=lambda o: _score_by_keys(o, ["vulnerabilities", "remediation"]),
-                expected_keys=["vulnerabilities", "remediation"],
-            ),
-            # WORKER: Test generation
-            BenchmarkCase(
-                case_id="test_gen_001",
-                agent_type=AgentType.WORKER.value,
-                task_type="testing",
-                description="Generate tests for add function",
-                input="Generate pytest tests for: def add(a, b): return a + b",
-                evaluator=lambda o: _score_by_keys(o, ["test_scripts", "test_files"]),
-                expected_keys=["test_scripts", "test_files"],
-            ),
-            # WORKER: Doc generation
-            BenchmarkCase(
-                case_id="docs_gen_001",
-                agent_type=AgentType.WORKER.value,
-                task_type="documentation",
-                description="Generate API docs",
-                input="Document this API endpoint: POST /api/users (creates a user)",
-                evaluator=lambda o: _score_by_keys(o, ["documentation", "examples"]),
-                expected_keys=["documentation", "examples"],
-            ),
-            # WORKER: Pipeline design
-            BenchmarkCase(
-                case_id="devops_ci_001",
-                agent_type=AgentType.WORKER.value,
-                task_type="coding",
-                description="Design GitHub Actions CI pipeline",
-                input="Design a GitHub Actions CI/CD pipeline for a Python FastAPI application",
-                evaluator=lambda o: _score_by_keys(o, ["pipeline", "stages"]),
-                expected_keys=["pipeline", "stages"],
-            ),
-            # WORKER: Commit message
-            BenchmarkCase(
-                case_id="vc_commit_001",
-                agent_type=AgentType.WORKER.value,
-                task_type="general",
-                description="Generate commit messages",
-                input="Generate conventional commit messages for: added user authentication",
-                evaluator=lambda o: _score_by_keys(o, ["commit_messages", "recommendations"]),
-                expected_keys=["commit_messages", "recommendations"],
-            ),
-            # WORKER: Error analysis
-            BenchmarkCase(
-                case_id="error_recovery_001",
-                agent_type=AgentType.WORKER.value,
-                task_type="analysis",
-                description="Analyse ConnectionRefusedError",
-                input="Error: ConnectionRefusedError: [Errno 111] Connection refused on port 5432",
-                evaluator=lambda o: _score_by_keys(o, ["root_cause", "recovery_strategies"]),
-                expected_keys=["root_cause", "recovery_strategies"],
-            ),
-            # WORKER: Memory consolidation
-            BenchmarkCase(
-                case_id="ctx_mgr_001",
-                agent_type=AgentType.WORKER.value,
-                task_type="general",
-                description="Consolidate session context",
-                input='Consolidate these entries: [\'{"task": "build API", "result": "done"}\']',
-                evaluator=lambda o: _score_by_keys(o, ["summary", "key_facts"]),
-                expected_keys=["summary", "key_facts"],
-            ),
-        ]
+                description="Summarise security risk of eval() usage",
+                input="What is the security risk of using eval() in Python?",
+                evaluator=make_text_evaluator(
+                    "eval executes arbitrary code and is a security risk that allows code injection"
+                ),
+                expected_keys=[],
+            )
+        )
+        return cases
+
+    def load_production_trace_cases(self, trace_path: Path) -> int:
+        """Load production trace replay cases from JSONL.
+
+        Each line must contain ``case_id``, ``agent_type``, ``input``, and
+        ``expected_keys``. Invalid or incomplete rows fail closed with
+        ``ValueError`` so trace replay cannot silently degrade into mocked-only
+        benchmark coverage.
+
+        Args:
+            trace_path: JSONL file containing exported production trace cases.
+
+        Returns:
+            Number of trace replay cases added to the suite.
+
+        Raises:
+            ValueError: If a row is missing required fields, has invalid
+                ``expected_keys``, or the file contains no replayable cases.
+        """
+        loaded: list[BenchmarkCase] = []
+        with trace_path.open(encoding="utf-8") as fh:
+            for lineno, line in enumerate(fh, start=1):
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                required = ("case_id", "agent_type", "input", "expected_keys")
+                missing = [key for key in required if key not in row]
+                if missing:
+                    raise ValueError(f"{trace_path}:{lineno} missing required trace field(s): {', '.join(missing)}")
+                expected_keys = row["expected_keys"]
+                if not isinstance(expected_keys, list) or not all(isinstance(key, str) for key in expected_keys):
+                    raise ValueError(f"{trace_path}:{lineno} expected_keys must be a list of strings")
+                loaded.append(
+                    BenchmarkCase(
+                        case_id=str(row["case_id"]),
+                        agent_type=str(row["agent_type"]),
+                        task_type=str(row.get("task_type", "production_trace")),
+                        description=str(row.get("description", "Production trace replay")),
+                        input=str(row["input"]),
+                        evaluator=lambda output, keys=expected_keys: _score_by_keys(output, keys),
+                        expected_keys=expected_keys,
+                        metadata={"source_trace": str(trace_path), "trace_lineno": lineno},
+                    )
+                )
+        if not loaded:
+            raise ValueError(f"{trace_path} contained no replayable trace cases")
+        self._cases.extend(loaded)
+        return len(loaded)
 
     # ------------------------------------------------------------------
     # Execution
@@ -389,27 +449,63 @@ class BenchmarkSuite:
         try:
             import dataclasses
 
-            with Path(_RESULTS_PATH).open("a", encoding="utf-8") as f:
-                f.write(json.dumps(dataclasses.asdict(result)) + "\n")
+            _benchmark_results_store().append(dataclasses.asdict(result))
         except Exception as e:
             logger.warning("[Benchmark] Persist failed: %s", e)
 
-    def _load_historical(self) -> dict[str, float]:
+    @staticmethod
+    def _load_historical() -> dict[str, float]:
         """Load per-agent average scores from historical results."""
         if not _RESULTS_PATH.exists():
             return {}
         by_agent: dict[str, list[float]] = {}
         try:
-            with Path(_RESULTS_PATH).open(encoding="utf-8") as f:
-                for line in f:
-                    r = json.loads(line.strip())
-                    agent = r.get("agent_type", "")
-                    score = r.get("avg_score", 0.0)
-                    by_agent.setdefault(agent, []).append(score)
+            for row in _benchmark_results_store().read_rows(include_archives=True):
+                agent = row.get("agent_type", "")
+                score = row.get("avg_score", 0.0)
+                by_agent.setdefault(agent, []).append(score)
             return {k: sum(v) / len(v) for k, v in by_agent.items()}
         except Exception:
             logger.warning("Failed to compute agent benchmark averages", exc_info=True)
             return {}
+
+
+def _benchmark_results_store() -> RotatingJsonlStore:
+    """Return the configured rotating benchmark-results JSONL store."""
+    try:
+        rotation = load_rotation_settings(_RESULTS_ROTATION_KEY)
+    except PricingConfigError:
+        logger.warning("Benchmark result rotation config unavailable; using defaults", exc_info=True)
+        return RotatingJsonlStore(_RESULTS_PATH)
+    return RotatingJsonlStore(
+        _RESULTS_PATH,
+        max_bytes=rotation.max_bytes,
+        max_lines=rotation.max_lines,
+        backup_count=rotation.backup_count,
+    )
+
+
+def make_text_evaluator(expected: str) -> Callable[[Any], float]:
+    """Build a token-F1 evaluator for text-output benchmark cases.
+
+    Wraps ``score_token_f1`` so callers get a reusable ``evaluator`` callable
+    for ``BenchmarkCase`` instances whose output is a plain string. Passing
+    ``expected`` at construction time pins the reference text.
+
+    Args:
+        expected: Reference text that the agent output will be compared against.
+
+    Returns:
+        A zero-argument-free callable ``(output: Any) -> float`` that converts
+        ``output`` to a string and returns its token-F1 score against
+        ``expected``.
+    """
+
+    def _evaluator(output: Any) -> float:
+        actual = output if isinstance(output, str) else str(output)
+        return score_token_f1(expected, actual)
+
+    return _evaluator
 
 
 def run_benchmark(agent_types: list[str] | None = None) -> list[BenchmarkResult]:
@@ -429,4 +525,13 @@ def run_benchmark(agent_types: list[str] | None = None) -> list[BenchmarkResult]
     regressions = suite.check_regression(results)
     if regressions:
         logger.warning("[Benchmark] REGRESSIONS DETECTED:\n%s", "\n".join(regressions))
+
+    # Compute velocity trend across the current batch of agent avg_scores so
+    # callers have a quick signal on whether overall quality is improving or
+    # degrading.  A single run produces a one-point sequence → "flat" is
+    # expected; repeated runs from the caller show meaningful trends.
+    recent_scores = [r.avg_score for r in sorted(results, key=lambda r: r.timestamp)]
+    velocity = compute_velocity_trend(recent_scores)
+    logger.info("[Benchmark] velocity_trend=%s (agents=%d)", velocity, len(results))
+
     return results

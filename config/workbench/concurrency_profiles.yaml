@@ -1,0 +1,260 @@
+concurrency_profiles:
+  default_profile_id: active_default
+  profiles:
+    - profile_id: active_default
+      description: Active user profile preserving one interactive GPU decode path.
+      resource_budget:
+        max_vram_gb: 20.0
+        max_ram_gb: 48.0
+        max_cpu_threads: 12
+        max_storage_gb: 250.0
+        max_queue_depth: 3
+        max_context_tokens: 128000
+        max_kv_cache_gb: 8.0
+        interactive_vram_reserve_gb: 2.0
+        interactive_ram_reserve_gb: 4.0
+      caps:
+        - lane: large_gpu_decode
+          label: large GPU decode
+          max_active: 1
+          over_cap_action: queue
+        - lane: medium_gpu_model
+          label: medium GPU model
+          max_active: 1
+          over_cap_action: downgrade
+        - lane: gpu_training
+          label: GPU training/foundry
+          max_active: 0
+          over_cap_action: deny
+        - lane: gpu_embedding_rerank
+          label: GPU embedding/rerank burst
+          max_active: 1
+          burst_active: 2
+          over_cap_action: queue
+        - lane: cpu_specialist
+          label: CPU specialist
+          max_active: 6
+          batch_after: 2
+          over_cap_action: batch
+        - lane: agent_orchestration
+          label: logical agent orchestration
+          max_active: 4
+          over_cap_action: queue
+        - lane: rag_indexing
+          label: RAG indexing
+          max_active: 1
+          over_cap_action: queue
+        - lane: eval_sweep
+          label: eval sweep
+          max_active: 1
+          over_cap_action: approval_required
+          requires_approval: true
+        - lane: download_materialize
+          label: download/materialize
+          max_active: 1
+          over_cap_action: queue
+    - profile_id: heavy_training
+      description: Checkpointable training profile that preempts competing large GPU decode.
+      resource_budget:
+        max_vram_gb: 22.0
+        max_ram_gb: 56.0
+        max_cpu_threads: 12
+        max_storage_gb: 350.0
+        max_queue_depth: 2
+        max_context_tokens: 128000
+        max_kv_cache_gb: 4.0
+        interactive_vram_reserve_gb: 1.0
+        interactive_ram_reserve_gb: 4.0
+      caps:
+        - lane: large_gpu_decode
+          label: large GPU decode
+          max_active: 0
+          over_cap_action: queue
+        - lane: medium_gpu_model
+          label: medium GPU model
+          max_active: 0
+          over_cap_action: downgrade
+        - lane: gpu_training
+          label: GPU training/foundry
+          max_active: 1
+          over_cap_action: queue
+        - lane: gpu_embedding_rerank
+          label: GPU embedding/rerank burst
+          max_active: 0
+          over_cap_action: queue
+        - lane: cpu_specialist
+          label: CPU specialist
+          max_active: 4
+          batch_after: 2
+          over_cap_action: batch
+        - lane: agent_orchestration
+          label: logical agent orchestration
+          max_active: 2
+          over_cap_action: queue
+        - lane: rag_indexing
+          label: RAG indexing
+          max_active: 0
+          over_cap_action: queue
+        - lane: eval_sweep
+          label: eval sweep
+          max_active: 0
+          over_cap_action: approval_required
+          requires_approval: true
+        - lane: download_materialize
+          label: download/materialize
+          max_active: 1
+          over_cap_action: queue
+    - profile_id: agent_batch
+      description: Multi-agent batch mode that raises logical orchestration without raising GPU decode.
+      resource_budget:
+        max_vram_gb: 18.0
+        max_ram_gb: 56.0
+        max_cpu_threads: 14
+        max_storage_gb: 300.0
+        max_queue_depth: 4
+        max_context_tokens: 128000
+        max_kv_cache_gb: 6.0
+        interactive_vram_reserve_gb: 2.0
+        interactive_ram_reserve_gb: 4.0
+      caps:
+        - lane: large_gpu_decode
+          label: large GPU decode
+          max_active: 1
+          over_cap_action: queue
+        - lane: medium_gpu_model
+          label: medium GPU model
+          max_active: 1
+          over_cap_action: downgrade
+        - lane: gpu_training
+          label: GPU training/foundry
+          max_active: 0
+          over_cap_action: deny
+        - lane: gpu_embedding_rerank
+          label: GPU embedding/rerank burst
+          max_active: 1
+          burst_active: 2
+          over_cap_action: queue
+        - lane: cpu_specialist
+          label: CPU specialist
+          max_active: 8
+          batch_after: 3
+          over_cap_action: batch
+        - lane: agent_orchestration
+          label: logical agent orchestration
+          max_active: 8
+          over_cap_action: queue
+        - lane: rag_indexing
+          label: RAG indexing
+          max_active: 1
+          over_cap_action: queue
+        - lane: eval_sweep
+          label: eval sweep
+          max_active: 1
+          over_cap_action: approval_required
+          requires_approval: true
+        - lane: download_materialize
+          label: download/materialize
+          max_active: 1
+          over_cap_action: queue
+    - profile_id: eval_sweep
+      description: Evaluation sweep mode with approval and no competing training.
+      resource_budget:
+        max_vram_gb: 18.0
+        max_ram_gb: 48.0
+        max_cpu_threads: 10
+        max_storage_gb: 300.0
+        max_queue_depth: 2
+        max_context_tokens: 128000
+        max_kv_cache_gb: 6.0
+        interactive_vram_reserve_gb: 2.0
+        interactive_ram_reserve_gb: 4.0
+      caps:
+        - lane: large_gpu_decode
+          label: large GPU decode
+          max_active: 1
+          over_cap_action: queue
+        - lane: medium_gpu_model
+          label: medium GPU model
+          max_active: 0
+          over_cap_action: downgrade
+        - lane: gpu_training
+          label: GPU training/foundry
+          max_active: 0
+          over_cap_action: deny
+        - lane: gpu_embedding_rerank
+          label: GPU embedding/rerank burst
+          max_active: 1
+          over_cap_action: queue
+        - lane: cpu_specialist
+          label: CPU specialist
+          max_active: 4
+          batch_after: 2
+          over_cap_action: batch
+        - lane: agent_orchestration
+          label: logical agent orchestration
+          max_active: 3
+          over_cap_action: queue
+        - lane: rag_indexing
+          label: RAG indexing
+          max_active: 0
+          over_cap_action: queue
+        - lane: eval_sweep
+          label: eval sweep
+          max_active: 1
+          over_cap_action: approval_required
+          requires_approval: true
+        - lane: download_materialize
+          label: download/materialize
+          max_active: 1
+          over_cap_action: queue
+    - profile_id: download_materialize
+      description: Download and materialization mode that avoids extra GPU pressure.
+      resource_budget:
+        max_vram_gb: 16.0
+        max_ram_gb: 48.0
+        max_cpu_threads: 10
+        max_storage_gb: 500.0
+        max_queue_depth: 3
+        max_context_tokens: 96000
+        max_kv_cache_gb: 4.0
+        interactive_vram_reserve_gb: 2.0
+        interactive_ram_reserve_gb: 4.0
+      caps:
+        - lane: large_gpu_decode
+          label: large GPU decode
+          max_active: 1
+          over_cap_action: queue
+        - lane: medium_gpu_model
+          label: medium GPU model
+          max_active: 0
+          over_cap_action: downgrade
+        - lane: gpu_training
+          label: GPU training/foundry
+          max_active: 0
+          over_cap_action: deny
+        - lane: gpu_embedding_rerank
+          label: GPU embedding/rerank burst
+          max_active: 0
+          over_cap_action: queue
+        - lane: cpu_specialist
+          label: CPU specialist
+          max_active: 3
+          batch_after: 2
+          over_cap_action: batch
+        - lane: agent_orchestration
+          label: logical agent orchestration
+          max_active: 2
+          over_cap_action: queue
+        - lane: rag_indexing
+          label: RAG indexing
+          max_active: 0
+          over_cap_action: queue
+        - lane: eval_sweep
+          label: eval sweep
+          max_active: 0
+          over_cap_action: approval_required
+          requires_approval: true
+        - lane: download_materialize
+          label: download/materialize
+          max_active: 2
+          over_cap_action: queue

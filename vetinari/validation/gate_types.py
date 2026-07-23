@@ -42,7 +42,7 @@ class GateResult(Enum):
     WARNING = "warning"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class QualityGateConfig:
     """Configuration for a quality gate.
 

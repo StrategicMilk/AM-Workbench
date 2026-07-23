@@ -1,17 +1,17 @@
-# End-to-End Vetinari Workflow Runbook
+# End-to-End AM Workbench Workflow Runbook
 
-This runbook demonstrates the complete "Golden Path" for Vetinari's orchestration system,
+This runbook demonstrates the "Run" golden path - one of four canonical user journeys (Run / Inspect / Experiment / Promote) - through AM Workbench's workbench layer,
 covering plan generation, approval gating, agent execution, memory logging, and output assembly.
 
 ---
 
 ## Prerequisites
 
-- Vetinari installed: `pip install -e .`
+- AM Workbench installed: `pip install -e .`
 - UnifiedMemoryStore initialized (default — no extra configuration required)
 - Plan mode enabled (default — controlled by `PLAN_MODE_ENABLE`)
 - Admin token configured (`VETINARI_ADMIN_TOKEN`)
-- GGUF model files present in `VETINARI_MODELS_DIR` (or cloud provider credentials configured)
+- At least one inference backend reachable: llama-cpp GGUF files under `VETINARI_MODELS_DIR`, a hosted provider API key (Anthropic/OpenAI/Gemini/Cohere/HuggingFace/Replicate), or another backend declared in `config/backend_pins.yaml`
 
 ### Cloud Provider Credentials (Optional)
 
@@ -35,7 +35,8 @@ cm.set_credential("openai", "sk-...", credential_type="bearer", note="OpenAI GPT
 
 ### Starting the Server
 
-Vetinari runs on Litestar (ASGI) and defaults to port 5000:
+AM Workbench's migrated API-domain surface runs on the native Rust kernel
+server and defaults to port 5000:
 
 ```bash
 python -m vetinari serve
@@ -49,17 +50,19 @@ The server listens on `http://localhost:5000` by default. Override with:
 VETINARI_WEB_PORT=8080 python -m vetinari serve
 ```
 
-New native Litestar routes (approvals, skills, SSE) are also available through the ASGI entry point:
+Protected sibling surfaces such as approvals, skills, SSE, MCP, and training
+may still use retained compatibility modules, but they are not the live host for
+the migrated AM Workbench API domains.
 
 ```bash
-uvicorn vetinari.web.litestar_app:get_app --factory --port 5000
+cargo run -p amw-kernel --bin amw-kernel-server -- --host 127.0.0.1 --port 5000
 ```
 
 ---
 
 ## Core Workflow: Plan, Approve, Execute, Verify
 
-All Vetinari workflows follow this pattern:
+All AM Workbench workflows follow this pattern:
 
 ```
 User Input → Plan (Foreman) → Risk Assessment → Approval → Execution (Worker) → Quality Gate (Inspector) → Output Assembly
@@ -104,10 +107,12 @@ from vetinari.planning.plan_mode import PlanModeEngine
 from vetinari.planning.plan_types import PlanGenerationRequest
 
 engine = PlanModeEngine()
-plan = engine.generate_plan(PlanGenerationRequest(
-    goal="Create a Python calculator module with tests",
-    domain_hint="coding",
-))
+plan = engine.generate_plan(
+    PlanGenerationRequest(
+        goal="Create a Python calculator module with tests",
+        domain_hint="coding",
+    )
+)
 print(f"Plan ID: {plan.plan_id}, risk: {plan.risk_score:.2f}")
 ```
 
@@ -125,7 +130,7 @@ Risk scoring determines approval requirements:
 - **HIGH** (0.5–0.75): Requires human approval
 - **CRITICAL** (0.75–1.0): Requires explicit approval before any execution
 
-Check pending approvals via the Litestar approvals API:
+Check pending approvals via the local approvals API:
 
 ```bash
 curl -X GET http://localhost:5000/api/v1/approvals/pending \
@@ -210,34 +215,40 @@ def main() -> None:
 
     with CorrelationContext():
         # Foreman: decompose goal into a subtask DAG
-        plan = engine.generate_plan(PlanGenerationRequest(
-            goal="Add a health-check endpoint to the demo service",
-            domain_hint="coding",
-        ))
+        plan = engine.generate_plan(
+            PlanGenerationRequest(
+                goal="Add a health-check endpoint to the demo service",
+                domain_hint="coding",
+            )
+        )
         logger.info("Generated plan %s (risk=%.2f)", plan.plan_id, plan.risk_score)
 
         # Low-risk plans can be approved programmatically
         if plan.risk_score < 0.25:
-            plan = engine.approve_plan(PlanApprovalRequest(
-                plan_id=plan.plan_id,
-                approved=True,
-                approver="admin",
-            ))
+            plan = engine.approve_plan(
+                PlanApprovalRequest(
+                    plan_id=plan.plan_id,
+                    approved=True,
+                    approver="admin",
+                )
+            )
 
             # Worker: execute all coding subtasks in the plan
             results = engine.execute_multi_step_coding(plan, plan.subtasks)
 
             for result in results:
                 if result.get("success"):
-                    memory.remember(MemoryEntry(
-                        content=result.get("output", ""),
-                        entry_type=MemoryType.TASK_RESULT,
-                        agent="worker",
-                        metadata={
-                            "subtask_id": result.get("subtask_id"),
-                            "plan_id": plan.plan_id,
-                        },
-                    ))
+                    memory.remember(
+                        MemoryEntry(
+                            content=result.get("output", ""),
+                            entry_type=MemoryType.TASK_RESULT,
+                            agent="worker",
+                            metadata={
+                                "subtask_id": result.get("subtask_id"),
+                                "plan_id": plan.plan_id,
+                            },
+                        )
+                    )
 
         logger.info("Workflow complete — results stored in UnifiedMemoryStore")
 
@@ -433,12 +444,12 @@ All `POST` routes that modify state require an admin token:
 | Problem | Solution |
 |---------|----------|
 | Plan mode disabled | Set `PLAN_MODE_ENABLE=true` and `PLAN_MODE_DEFAULT=true` |
-| No models found | Set `VETINARI_MODELS_DIR` and verify `.gguf` files are present |
+| No models found | If using llama-cpp: set `VETINARI_MODELS_DIR` and verify `.gguf` files are present. For hosted providers: confirm the API key is set. For other backends: confirm the backend is declared in `config/backend_pins.yaml` and its configured endpoint/model resolves. |
 | Memory store not initializing | Check write permissions on `vetinari_memory.db`; inspect logs for `StorageError` |
 | Approval not persisting | Verify `VETINARI_ADMIN_TOKEN` is set and matching |
 | No trace IDs in logs | Wrap execution in `CorrelationContext()` |
 | Secret filtering not working | Check `vetinari/security/__init__.py` for `SecretScanner` patterns |
-| Litestar routes unavailable | Reinstall from project metadata with `python -m pip install -e ".[dev,local,ml,search,notifications]"` — routes degrade gracefully without it |
+| API routes unavailable | Reinstall from project metadata with `python -m pip install -e ".[dev,local,ml,search,notifications]"`, rebuild the Rust kernel with `cargo build -p amw-kernel`, and restart `vetinari serve` |
 | Worker mode not recognized | Check mode name against the 24-mode table above |
 | Inspector security audit slow | 45+ heuristic patterns run synchronously — expected on large files |
 

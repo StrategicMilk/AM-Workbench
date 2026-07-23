@@ -32,6 +32,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 # Maximum number of cached states per model partition (scales with model count)
 MAX_CACHE_ENTRIES_PER_MODEL = 20
 
@@ -43,7 +44,7 @@ MAX_CACHE_AGE_SECONDS = 3600
 
 
 @dataclass
-class _CacheEntry:  # noqa: VET114 — mutable fields (last_used, hit_count) updated for LRU eviction
+class _CacheEntry:
     """A cached KV state with metadata for eviction."""
 
     model_id: str
@@ -91,7 +92,8 @@ class KVStateCache:
         self._hits = 0
         self._misses = 0
 
-    def _key(self, model_id: str, prompt_hash: str) -> tuple[str, str]:
+    @staticmethod
+    def _key(model_id: str, prompt_hash: str) -> tuple[str, str]:
         return (model_id, prompt_hash)
 
     def get(self, model_id: str, prompt_hash: str) -> Any | None:

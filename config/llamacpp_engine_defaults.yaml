@@ -1,0 +1,37 @@
+schema_version: "1"
+# Default llama-cpp-python engine construction parameters.
+# Loaded by vetinari/config/loader.py through the LayeredResolver.
+# Override with VETINARI_LLAMACPP_* environment variables or user/project YAML.
+tuning_metadata:
+  backend_tuning_group: llama_cpp
+  benchmark_required_before_promotion: true
+  candidate_only: true
+  rollback_profile: "llama-cpp-defaults-v1"
+
+context_window:
+  n_ctx: 4096              # Maximum context length in tokens
+  n_batch: 512             # Batch size for prompt evaluation
+  n_ubatch: 512            # Micro-batch size for generation
+
+hardware:
+  n_gpu_layers: 0          # GPU layers to offload (0 = CPU only)
+  main_gpu: 0              # Primary GPU device index
+  tensor_split: []         # Fraction of model per GPU (empty = auto)
+  use_mmap: true           # Memory-map model weights from disk
+  use_mlock: false         # Pin model weights in RAM (prevents swap)
+
+quantization:
+  type_k: "f16"            # Key cache quantization type
+  type_v: "f16"            # Value cache quantization type
+
+generation:
+  seed: -1                 # Random seed (-1 = random per call)
+  f16_kv: true             # Use FP16 for key/value cache
+  logits_all: false        # Return logits for all tokens (expensive)
+  vocab_only: false        # Load vocabulary only, skip weights
+  embedding: false         # Embedding-only mode (no generation)
+
+rope:
+  rope_scaling_type: -1    # RoPE scaling type (-1 = auto)
+  rope_freq_base: 0.0      # RoPE base frequency (0 = model default)
+  rope_freq_scale: 0.0     # RoPE frequency scaling (0 = model default)

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import os
 import re
 import threading
-from pathlib import Path  # noqa: VET123 - barrel export preserves public import compatibility
-from typing import Any, TypeVar  # noqa: VET123 - barrel export preserves public import compatibility
+import time
+from pathlib import Path
+from typing import Any, TypeVar
 
 import yaml
 
@@ -29,16 +31,20 @@ __all__ = [
     "cosine_similarity",
     "dataclass_to_dict",
     "estimate_model_memory_gb",
+    "extract_privacy_envelope",
     "lazy_import",
     "load_config",
     "load_yaml",
     "parse_frontmatter",
     "percentile",
+    "privacy_receipt",
     "require_import",
+    "require_privacy_envelope",
     "setup_logging",
     "stddev",
     "thread_safe_singleton",
     "validate_required_fields",
+    "wrap_privacy_envelope",
 ]
 
 
@@ -81,7 +87,13 @@ class SingletonMeta(type):
             cls._instances.pop(cls, None)
 
 
-def setup_logging(level: int = logging.INFO, log_dir: str = "logs") -> None:
+def setup_logging(
+    level: int = logging.INFO,
+    log_dir: str = "logs",
+    *,
+    max_bytes: int = 10 * 1024 * 1024,
+    backup_count: int = 5,
+) -> None:
     """Configure root logging to write to both a rotating file and stdout.
 
     Creates ``log_dir`` if it does not already exist, then installs a
@@ -92,19 +104,30 @@ def setup_logging(level: int = logging.INFO, log_dir: str = "logs") -> None:
     Args:
         level: Logging level integer (e.g. ``logging.DEBUG``, ``logging.INFO``).
         log_dir: Directory where ``vetinari.log`` will be written.
+        max_bytes: Maximum size of ``vetinari.log`` before rotation.
+        backup_count: Number of rotated log files to retain.
     """
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+        handler.close()
+
     Path(log_dir).mkdir(parents=True, exist_ok=True)
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 
-    file_handler = logging.FileHandler(f"{log_dir}/vetinari.log", mode="a", encoding="utf-8")
+    file_handler = logging.handlers.RotatingFileHandler(
+        f"{log_dir}/vetinari.log",
+        mode="a",
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+        encoding="utf-8",
+    )
     file_handler.setFormatter(fmt)
 
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(fmt)
 
-    root = logging.getLogger()
     root.setLevel(level)
-    root.handlers.clear()
     root.addHandler(file_handler)
     root.addHandler(stream_handler)
 
@@ -155,7 +178,8 @@ def estimate_model_memory_gb(model_id: str) -> int:
     Returns a conservative estimate based on parameter count in the model name.
 
     Returns:
-        The computed value.
+        Estimated GPU memory in gigabytes required to load the model at the
+        assumed Q4 quantization level.
     """
     model_lower = model_id.lower()
 
@@ -167,20 +191,6 @@ def estimate_model_memory_gb(model_id: str) -> int:
         # Add 2 GB overhead for KV cache + activations
         estimated = int(params * 0.55) + 2
         return max(2, estimated)
-
-    # Explicit size keywords as fallback
-    if any(x in model_lower for x in ["70b", "72b", "65b"]):
-        return 40
-    if any(x in model_lower for x in ["34b", "33b", "30b", "32b"]):
-        return 20
-    if any(x in model_lower for x in ["13b", "14b", "15b"]):
-        return 10
-    if any(x in model_lower for x in ["7b", "8b"]):
-        return 6
-    if any(x in model_lower for x in ["3b", "4b"]):
-        return 3
-    if any(x in model_lower for x in ["1b", "2b"]):
-        return 2
 
     return 4  # conservative default for unknown sizes
 
@@ -201,3 +211,125 @@ def validate_required_fields(data: dict, fields: list) -> str | None:
     if missing:
         return f"Missing required fields: {', '.join(missing)}"
     return None
+
+
+PRIVACY_ENVELOPE_KEY = "_privacy_envelope"
+_VALID_PRIVACY_CLASSES = {"public", "operational", "subject_data", "secret"}
+_SENSITIVE_PRIVACY_CLASSES = {"subject_data", "secret"}
+
+
+def _normalise_privacy_class(privacy_class: str) -> str:
+    value = privacy_class.strip().lower()
+    if value not in _VALID_PRIVACY_CLASSES:
+        allowed = ", ".join(sorted(_VALID_PRIVACY_CLASSES))
+        raise ValueError(f"unsupported privacy_class {privacy_class!r}; expected one of: {allowed}")
+    return value
+
+
+def _default_erasure_token(*, source: str, subject_id: str | None) -> str:
+    if subject_id:
+        from vetinari.privacy.erasure_registry import build_erasure_token
+
+        return build_erasure_token(source=source, subject_id=subject_id)
+    return f"{source}:operational"
+
+
+def privacy_receipt(
+    *,
+    privacy_class: str,
+    subject_id: str | None = None,
+    retention_days: int = 30,
+    source: str,
+    erasure_token: str | None = None,
+    redaction_applied: bool = False,
+) -> dict[str, Any]:
+    """Build a fail-closed privacy receipt for persisted or exposed data.
+
+    Returns:
+        Privacy receipt metadata suitable for embedding in a privacy envelope.
+
+    Raises:
+        ValueError: If the privacy class is unsupported, sensitive data lacks a
+            subject ID, the source is blank, or retention is not positive.
+    """
+    normalized = _normalise_privacy_class(privacy_class)
+    if normalized in _SENSITIVE_PRIVACY_CLASSES and not subject_id:
+        raise ValueError(f"{normalized} records require subject_id for erasure binding")
+    if not source or not str(source).strip():
+        raise ValueError("privacy receipt source is required")
+    if retention_days < 1:
+        raise ValueError("retention_days must be positive")
+    token = erasure_token or _default_erasure_token(source=source, subject_id=subject_id)
+    return {
+        "schema_version": "vetinari-privacy-envelope.v1",
+        "privacy_class": normalized,
+        "subject_id": subject_id,
+        "retention_days": int(retention_days),
+        "erasure_token": token,
+        "source": source,
+        "redaction_applied": bool(redaction_applied),
+        "created_at_unix": time.time(),
+    }
+
+
+def wrap_privacy_envelope(
+    payload: Any,
+    *,
+    privacy_class: str,
+    subject_id: str | None = None,
+    retention_days: int = 30,
+    source: str,
+    erasure_token: str | None = None,
+    redaction_applied: bool = False,
+) -> dict[str, Any]:
+    """Return *payload* with a privacy receipt used by persistence boundaries."""
+    return {
+        "payload": payload,
+        PRIVACY_ENVELOPE_KEY: privacy_receipt(
+            privacy_class=privacy_class,
+            subject_id=subject_id,
+            retention_days=retention_days,
+            source=source,
+            erasure_token=erasure_token,
+            redaction_applied=redaction_applied,
+        ),
+    }
+
+
+def extract_privacy_envelope(record: dict[str, Any]) -> dict[str, Any]:
+    """Return the privacy envelope from a wrapped record or raise.
+
+    Returns:
+        The validated privacy receipt stored under ``PRIVACY_ENVELOPE_KEY``.
+
+    Raises:
+        ValueError: If ``record`` is not a dictionary, the envelope is missing,
+            or the embedded receipt is invalid.
+    """
+    if not isinstance(record, dict):
+        raise ValueError("privacy envelope record must be a dict")
+    envelope = record.get(PRIVACY_ENVELOPE_KEY)
+    if not isinstance(envelope, dict):
+        raise ValueError("privacy envelope missing")
+    privacy_receipt(
+        privacy_class=str(envelope.get("privacy_class", "")),
+        subject_id=envelope.get("subject_id"),
+        retention_days=int(envelope.get("retention_days", 0)),
+        source=str(envelope.get("source", "")),
+        erasure_token=envelope.get("erasure_token"),
+        redaction_applied=bool(envelope.get("redaction_applied", False)),
+    )
+    return envelope
+
+
+def require_privacy_envelope(record: dict[str, Any]) -> dict[str, Any]:
+    """Validate that *record* carries a readable fail-closed privacy envelope.
+
+    Returns:
+        The original record after its privacy envelope has been validated.
+
+    Raises:
+        ValueError: If the record has no valid privacy envelope.
+    """
+    extract_privacy_envelope(record)
+    return record

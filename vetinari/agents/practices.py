@@ -16,17 +16,19 @@ active set and :func:`reset_practices_cache` to clear the cache in tests.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 # Default path for the practices YAML config relative to this file's package root.
 _DEFAULT_PRACTICES_YAML: Path = Path(__file__).parent.parent / "config" / "practices.yaml"
 
 # Module-level cache; None means not yet loaded.
-_practices_cache: dict[str, str] | None = None
+_practices_cache: PracticesLoadResult | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +79,51 @@ AGENT_PRACTICES: dict[str, str] = {
 }
 
 
-def load_practices(config_path: Path | str | None = None) -> dict[str, str]:
+@dataclass(frozen=True, slots=True)
+class PracticesLoadResult:
+    """Result of loading agent practices, including partial-load diagnostics."""
+
+    rules: dict[str, str]
+    skipped_count: int
+    partial: bool
+
+    def __getitem__(self, key: str) -> str:
+        return self.rules[key]
+
+    def __iter__(self):
+        return iter(self.rules)
+
+    def __len__(self) -> int:
+        return len(self.rules)
+
+    def __bool__(self) -> bool:
+        return bool(self.rules)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, PracticesLoadResult):
+            return (
+                self.rules == other.rules
+                and self.skipped_count == other.skipped_count
+                and self.partial == other.partial
+            )
+        if isinstance(other, dict):
+            return self.rules == other
+        return NotImplemented
+
+    def keys(self):
+        return self.rules.keys()
+
+    def items(self):
+        return self.rules.items()
+
+    def values(self):
+        return self.rules.values()
+
+    def get(self, key: str, default: str | None = None) -> str | None:
+        return self.rules.get(key, default)
+
+
+def load_practices(config_path: Path | str | None = None) -> PracticesLoadResult:
     """Load agent practices from YAML, falling back to hardcoded defaults.
 
     On first call the result is cached. Subsequent calls return the cached
@@ -100,6 +146,7 @@ def load_practices(config_path: Path | str | None = None) -> dict[str, str]:
     path = Path(config_path) if config_path is not None else _DEFAULT_PRACTICES_YAML
 
     loaded: dict[str, str] | None = None
+    skipped = 0
     if path.is_file():
         try:
             import yaml  # local import — optional dependency
@@ -116,6 +163,7 @@ def load_practices(config_path: Path | str | None = None) -> dict[str, str]:
                     elif isinstance(entry, str):
                         parsed[key] = entry
                     else:
+                        skipped += 1
                         logger.warning(
                             "Skipping malformed practice entry '%s' in %s",
                             key,
@@ -142,7 +190,8 @@ def load_practices(config_path: Path | str | None = None) -> dict[str, str]:
     else:
         logger.debug("practices.yaml not found at %s; using hardcoded defaults", path)
 
-    _practices_cache = loaded if loaded is not None else dict(AGENT_PRACTICES)  # noqa: VET111 - stateful fallback preserves legacy compatibility
+    rules = loaded if loaded is not None else dict(AGENT_PRACTICES)
+    _practices_cache = PracticesLoadResult(rules=rules, skipped_count=skipped, partial=skipped > 0)
     return _practices_cache
 
 
@@ -467,7 +516,7 @@ def get_practices_for_mode(mode: str) -> str:
         mode,
         ["plan_before_act", "verify_before_report"],  # minimal default
     )
-    practices = load_practices()
+    practices = load_practices().rules
     relevant = {k: v for k, v in practices.items() if k in relevant_keys}
     if not relevant:
         return ""

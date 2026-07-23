@@ -1,16 +1,16 @@
-"""Consolidated Operations — vetinari.tools.consolidated_operations.
+"""Consolidated Operations - vetinari.tools.consolidated_operations.
 
 High-level operations that combine multiple tool calls into a single function
 call, reducing round-trips for common preparation and investigation patterns.
 
 This is a convenience layer in the tool pipeline:
-Intake → **Consolidated Ops** → Agent Execution → Quality Gate → Assembly
+Intake -> **Consolidated Ops** -> Agent Execution -> Quality Gate -> Assembly
 
 Two operations are provided:
 
-- ``prepare_model(model_id, task_type)`` — replaces separate model-selection
+- ``prepare_model(model_id, task_type)`` - replaces separate model-selection
   and config-lookup calls with one call that returns ready-to-use parameters.
-- ``investigate_task(description, project_id)`` — replaces separate memory
+- ``investigate_task(description, project_id)`` - replaces separate memory
   recall, skill search, and complexity-assessment calls with one call that
   returns combined context.
 """
@@ -21,6 +21,7 @@ import logging
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Complexity heuristics
@@ -74,8 +75,8 @@ _MULTI_STEP_INDICATORS: tuple[str, ...] = (
     "end-to-end",
 )
 
-_SIMPLE_WORD_THRESHOLD = 8  # word count at or below → "simple"
-_COMPLEX_TERM_THRESHOLD = 3  # technical-term hits at or above → "complex"
+_SIMPLE_WORD_THRESHOLD = 8  # word count at or below -> "simple"
+_COMPLEX_TERM_THRESHOLD = 3  # technical-term hits at or above -> "complex"
 
 
 def _estimate_complexity(description: str) -> str:
@@ -162,7 +163,7 @@ class InvestigateTaskResult:
         matching_skills: Skill IDs whose capabilities overlap with keywords
             found in the description.  Empty when skill registry is
             unavailable.
-        estimated_complexity: Heuristic complexity class — ``"simple"``,
+        estimated_complexity: Heuristic complexity class - ``"simple"``,
             ``"moderate"``, or ``"complex"``.
         context_summary: Single-sentence summary combining the above signals,
             suitable for injecting into an agent system prompt.
@@ -209,7 +210,7 @@ def prepare_model(model_id: str, task_type: str = "general") -> PrepareModelResu
     raises, the result degrades gracefully to safe defaults and
     ``is_ready=False``.
 
-    No actual inference is performed — this is a preparation and configuration
+    No actual inference is performed - this is a preparation and configuration
     step only.
 
     Args:
@@ -250,7 +251,7 @@ def prepare_model(model_id: str, task_type: str = "general") -> PrepareModelResu
     except Exception as exc:
         logger.warning(
             "prepare_model: could not load inference config for model %s task %s"
-            " — using defaults (temperature=%.2f, max_tokens=%d)",
+            " - using defaults (temperature=%.2f, max_tokens=%d)",
             model_id,
             task_type,
             _DEFAULT_TEMPERATURE,
@@ -262,7 +263,7 @@ def prepare_model(model_id: str, task_type: str = "general") -> PrepareModelResu
             recommended_temperature=_DEFAULT_TEMPERATURE,
             recommended_max_tokens=_DEFAULT_MAX_TOKENS,
             is_ready=False,
-            notes=f"Inference config unavailable — {exc}",
+            notes=f"Inference config unavailable - {exc}",
         )
 
 
@@ -289,57 +290,14 @@ def investigate_task(
         description: Free-text description of the task to investigate.
         project_id: Optional project scope for memory search.  When provided,
             passed as agent context to the memory store.  Currently informational
-            only — the memory store does not filter by project_id directly.
+            only - the memory store does not filter by project_id directly.
 
     Returns:
         ``InvestigateTaskResult`` with memories, matching skills, complexity
         estimate, and a context summary string.
     """
-    relevant_memories: list[str] = []
-    matching_skills: list[str] = []
-
-    # -- 1. Memory recall -------------------------------------------------------
-    try:
-        from vetinari.memory import get_unified_memory_store
-
-        memory = get_unified_memory_store()
-        entries = memory.search(query=description, limit=_MEMORY_SEARCH_LIMIT)
-        relevant_memories = [e.content for e in entries if e.content]
-        logger.debug(
-            "investigate_task: memory search returned %d entries for project=%s",
-            len(relevant_memories),
-            project_id,
-        )
-    except Exception:
-        logger.warning(
-            "investigate_task: memory subsystem unavailable — proceeding without prior context for description %r",
-            description[:80],
-        )
-
-    # -- 2. Skill matching -------------------------------------------------------
-    try:
-        from vetinari.skills.skill_registry import get_all_skills
-
-        desc_lower = description.lower()
-        all_skills = get_all_skills()
-        for skill_id, spec in all_skills.items():
-            # Match if any capability keyword appears in the description.
-            if any(cap.lower() in desc_lower for cap in spec.capabilities):
-                matching_skills.append(skill_id)
-                continue
-            # Also match on tags as a secondary signal.
-            if any(tag.lower() in desc_lower for tag in spec.tags):
-                matching_skills.append(skill_id)
-        logger.debug(
-            "investigate_task: %d matching skills for description %r",
-            len(matching_skills),
-            description[:80],
-        )
-    except Exception:
-        logger.warning(
-            "investigate_task: skill registry unavailable — proceeding without skill matches for description %r",
-            description[:80],
-        )
+    relevant_memories = _recall_task_memories(description, project_id)
+    matching_skills = _match_task_skills(description)
 
     # -- 3. Complexity estimation ------------------------------------------------
     estimated_complexity = _estimate_complexity(description)
@@ -356,3 +314,36 @@ def investigate_task(
         estimated_complexity=estimated_complexity,
         context_summary=context_summary,
     )
+
+
+def _recall_task_memories(description: str, project_id: str | None) -> list[str]:
+    """Return relevant memory entries for a task description."""
+    try:
+        from vetinari.memory import get_unified_memory_store
+
+        entries = get_unified_memory_store().search(query=description, limit=_MEMORY_SEARCH_LIMIT)
+        memories = [entry.content for entry in entries if entry.content]
+        logger.debug("investigate_task: memory search returned %d entries for project=%s", len(memories), project_id)
+        return memories
+    except Exception:
+        logger.warning("investigate_task: memory subsystem unavailable for description %r", description[:80])
+        return []
+
+
+def _match_task_skills(description: str) -> list[str]:
+    """Return skill ids whose capabilities or tags match a task description."""
+    try:
+        from vetinari.skills.skill_registry import get_all_skills
+
+        desc_lower = description.lower()
+        matches = []
+        for skill_id, spec in get_all_skills().items():
+            if any(cap.lower() in desc_lower for cap in spec.capabilities) or any(
+                tag.lower() in desc_lower for tag in spec.tags
+            ):
+                matches.append(skill_id)
+        logger.debug("investigate_task: %d matching skills for description %r", len(matches), description[:80])
+        return matches
+    except Exception:
+        logger.warning("investigate_task: skill registry unavailable for description %r", description[:80])
+        return []

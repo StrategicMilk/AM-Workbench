@@ -1,0 +1,33 @@
+schema_version: "1"
+# Default agent routing policy.
+# Loaded by vetinari/config/loader.py through the LayeredResolver.
+# Override with VETINARI_ROUTING_* environment variables or user/project YAML.
+
+selection:
+  strategy: "capability_match"   # How agents are selected: capability_match | round_robin | priority
+  fallback: "foreman"            # Agent type to use when no match found
+  max_retries: 3                 # Maximum routing retry attempts before failing
+
+capability_weights:
+  skill_match: 0.6               # Weight given to skill-set compatibility
+  load_balance: 0.3              # Weight given to current agent load
+  recency: 0.1                   # Weight given to recent success rate
+
+timeouts:
+  routing_decision_ms: 500       # Maximum ms for routing decision
+  agent_response_ms: 30000       # Maximum ms to wait for agent response
+  health_check_ms: 2000          # Maximum ms for agent health probe
+
+circuit_breaker:
+  enabled: true                  # Enable circuit breaker for failing agents
+  failure_threshold: 5           # Failures before opening circuit
+  recovery_timeout_s: 60         # Seconds before attempting recovery
+  half_open_max_calls: 1         # Trial calls in half-open state
+
+escalation:
+  enabled: true                  # Escalate to higher-tier agent on repeated failure
+  trigger_after_failures: 2      # Failures before escalation
+  escalation_chain:              # Ordered escalation path
+    - "worker"
+    - "foreman"
+    - "inspector"

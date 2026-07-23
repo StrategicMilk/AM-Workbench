@@ -5,7 +5,10 @@
    */
   import * as api from '$lib/api.js';
   import * as fmt from '$lib/utils/format.js';
+  import { collectAll } from '$lib/evidence/collectErrors.js';
   import { showToast } from '$lib/stores/toast.svelte.js';
+  import HelpPopover from '$lib/components/help/HelpPopover.svelte';
+  import HelpTooltip from '$lib/components/help/HelpTooltip.svelte';
 
   // -- State -------------------------------------------------------------------
 
@@ -31,6 +34,7 @@
   // Active plan execution state
   let activePlanId = $state(null);
   let planStatus = $state(null);
+  let planStatusError = $state('');
   let planActionPending = $state(false);
 
   // -- Derived -----------------------------------------------------------------
@@ -46,6 +50,8 @@
     planStatus === 'failed' || planStatus === 'cancelled'
   );
 
+  const planBuilderTabIds = ['decompose', 'result', 'dod', 'history'];
+
   let subtasks = $derived(
     decompositionResult?.subtasks ??
     decompositionResult?.tasks ??
@@ -57,22 +63,36 @@
   async function loadAll() {
     loading = true;
     try {
-      const [tmplData, dodData, knobData, histData] = await Promise.all([
-        api.getDecompositionTemplates().catch(() => ({ templates: [] })),
-        api.getDodDor().catch(() => null),
-        api.getDecompositionKnobs().catch(() => ({})),
-        api.getDecompositionHistory().catch(() => ({ history: [] })),
+      const { values, errors } = await collectAll([
+        { key: 'templates', promise: api.getDecompositionTemplates() },
+        { key: 'dodDor', promise: api.getDodDor() },
+        { key: 'knobs', promise: api.getDecompositionKnobs() },
+        { key: 'history', promise: api.getDecompositionHistory() },
       ]);
 
+      if (errors.length > 0) {
+        showToast(`Plan builder load partial: ${errors.map((entry) => entry.key).join(', ')}`, 'warning');
+      }
+
+      const tmplData = values.templates;
+      const dodData = values.dodDor;
+      const knobData = values.knobs;
+      const histData = values.history;
+
       templates = tmplData?.templates ?? (Array.isArray(tmplData) ? tmplData : []);
-      dodDor = dodData;
-      knobs = knobData?.knobs ?? (typeof knobData === 'object' ? knobData : {});
+      dodDor = dodData ?? null;
+      knobs = knobData?.knobs ?? (typeof knobData === 'object' && knobData !== null ? knobData : {});
       history = histData?.history ?? (Array.isArray(histData) ? histData : []);
     } catch (err) {
       showToast(`Failed to load plan builder: ${err.message}`, 'error');
     } finally {
       loading = false;
     }
+  }
+
+  async function refreshPlanBuilder() {
+    await loadAll();
+    await refreshPlanStatus();
   }
 
   $effect(() => { loadAll(); });
@@ -102,6 +122,7 @@
       decompositionResult = result;
       activePlanId = result?.plan_id ?? result?.id ?? null;
       planStatus = result?.status ?? (activePlanId ? 'executing' : null);
+      planStatusError = '';
       showToast(`Decomposed into ${subtasks.length} subtasks`, 'success');
       activeTab = 'result';
       await loadHistory();
@@ -130,25 +151,46 @@
       // Replace optimistic local planStatus with the backend-confirmed value.
       if (data?.status !== undefined) {
         planStatus = data.status;
+        planStatusError = '';
       }
-    } catch {
-      // Non-critical — status display is best-effort; stale display is preferable
-      // to an error toast on every polling tick.
+    } catch (err) {
+      planStatus = null;
+      planStatusError = err?.message ?? 'Plan status unavailable';
     }
   }
 
-  // Poll the backend for live plan status while the plan is active and not
-  // terminal.  This ensures the status badge reflects runtime truth rather than
-  // the optimistic local value set at decomposition time.
-  // Interval: 4 s — low enough to feel responsive, high enough to avoid spam.
+  function tabIsVisible() {
+    return typeof document === 'undefined' || document.visibilityState === 'visible';
+  }
+
+  function refreshPlanStatusWhenActive() {
+    if (tabIsVisible()) {
+      void refreshPlanStatus();
+    }
+  }
+
+  // Refresh live plan status when the view activates and after app-level
+  // refresh signals. The project stream is single-subscriber today, so this
+  // view avoids opening a competing SSE subscription.
   $effect(() => {
     if (!activePlanId || planIsTerminal) return;
 
     // Fetch immediately on activation so the badge is correct right away.
-    refreshPlanStatus();
+    refreshPlanStatusWhenActive();
 
-    const intervalId = setInterval(refreshPlanStatus, 4000);
-    return () => clearInterval(intervalId);
+    const handleVisibilityChange = () => refreshPlanStatusWhenActive();
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', refreshPlanStatusWhenActive);
+    window.addEventListener('pageshow', refreshPlanStatusWhenActive);
+    window.addEventListener('online', refreshPlanStatusWhenActive);
+    window.addEventListener('vetinari:plan-status-refresh', refreshPlanStatusWhenActive);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', refreshPlanStatusWhenActive);
+      window.removeEventListener('pageshow', refreshPlanStatusWhenActive);
+      window.removeEventListener('online', refreshPlanStatusWhenActive);
+      window.removeEventListener('vetinari:plan-status-refresh', refreshPlanStatusWhenActive);
+    };
   });
 
   async function handlePausePlan() {
@@ -157,6 +199,7 @@
     try {
       await api.pausePlan(activePlanId);
       planStatus = 'paused';
+      planStatusError = '';
       showToast('Plan paused', 'info');
     } catch (err) {
       showToast(`Pause failed: ${err.message}`, 'error');
@@ -171,6 +214,7 @@
     try {
       await api.resumePlan(activePlanId);
       planStatus = 'executing';
+      planStatusError = '';
       showToast('Plan resumed', 'success');
     } catch (err) {
       showToast(`Resume failed: ${err.message}`, 'error');
@@ -186,6 +230,7 @@
     try {
       await api.cancelPlan(activePlanId);
       planStatus = 'cancelled';
+      planStatusError = '';
       showToast('Plan cancelled', 'info');
     } catch (err) {
       showToast(`Cancel failed: ${err.message}`, 'error');
@@ -208,27 +253,54 @@
     const map = { completed: 'success', in_progress: 'primary', failed: 'danger', pending: 'warning' };
     return map[status ?? 'pending'] ?? 'muted';
   }
+
+  function movePlanBuilderTabFocus(event, tabId) {
+    const currentIndex = planBuilderTabIds.indexOf(tabId);
+    if (currentIndex === -1) return;
+
+    let nextIndex = currentIndex;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      nextIndex = (currentIndex + 1) % planBuilderTabIds.length;
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      nextIndex = (currentIndex - 1 + planBuilderTabIds.length) % planBuilderTabIds.length;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = planBuilderTabIds.length - 1;
+    } else {
+      return;
+    }
+
+    event.preventDefault();
+    activeTab = planBuilderTabIds[nextIndex];
+    document.getElementById(`tab-${activeTab}`)?.focus();
+  }
 </script>
 
 <div class="plan-builder-view">
   <div class="view-header">
     <h2>
-      <i class="fas fa-project-diagram"></i>
+      <i class="fas fa-project-diagram" aria-hidden="true"></i>
       Plan Builder
     </h2>
+    <HelpPopover
+      title="Plan Builder"
+      body="Visual editor for the Foreman's execution plan. The plan is a directed acyclic graph (DAG) of tasks: each node is a task with an assigned agent type and a description; each edge is a dependency. You can add tasks, edit descriptions, reassign agent types, and draw or delete dependency edges before submitting. Once submitted, the Workbench locks the plan and begins executing tasks in dependency order. Circular dependencies are rejected at submission time."
+      severity="info"
+    />
     <button
       class="btn btn-secondary btn-sm"
-      onclick={loadAll}
+      onclick={refreshPlanBuilder}
       disabled={loading}
       aria-label="Refresh plan builder"
     >
-      <i class="fas fa-sync-alt" class:fa-spin={loading}></i>
+      <i class="fas fa-sync-alt" class:fa-spin={loading} aria-hidden="true"></i>
     </button>
   </div>
 
   {#if loading}
     <div class="loading-state" role="status" aria-live="polite">
-      <i class="fas fa-spinner fa-spin"></i>
+      <i class="fas fa-spinner fa-spin" aria-hidden="true"></i>
       Loading plan builder...
     </div>
   {:else}
@@ -244,12 +316,14 @@
           class="tab"
           class:active={activeTab === tab.id}
           onclick={() => { activeTab = tab.id; }}
+          onkeydown={(event) => movePlanBuilderTabFocus(event, tab.id)}
           role="tab"
           aria-selected={activeTab === tab.id}
           aria-controls="panel-{tab.id}"
           id="tab-{tab.id}"
+          tabindex={activeTab === tab.id ? 0 : -1}
         >
-          <i class="{tab.icon}"></i>
+          <i class="{tab.icon}" aria-hidden="true"></i>
           {tab.label}
           {#if tab.id === 'result' && subtasks.length > 0}
             <span class="badge">{subtasks.length}</span>
@@ -266,7 +340,7 @@
       <div id="panel-decompose" role="tabpanel" aria-labelledby="tab-decompose" class="panel-content">
         <div class="decompose-layout">
           <section class="card decompose-form-card">
-            <h3 class="section-title"><i class="fas fa-bullseye"></i> Goal</h3>
+            <h3 class="section-title"><i class="fas fa-bullseye" aria-hidden="true"></i> Goal</h3>
             <form onsubmit={handleDecompose} class="decompose-form" aria-label="Task decomposition form">
               <label class="form-group">
                 <span class="form-label">Describe the task or goal to decompose</span>
@@ -308,7 +382,7 @@
                   aria-pressed={useAgent}
                   aria-label="Use AI agent for decomposition"
                 >
-                  <i class="fas fa-robot"></i>
+                  <i class="fas fa-robot" aria-hidden="true"></i>
                   {useAgent ? 'Agent mode' : 'Template mode'}
                 </button>
                 <span class="mode-desc">
@@ -323,10 +397,10 @@
                 aria-label="Decompose goal into subtasks"
               >
                 {#if decomposing}
-                  <i class="fas fa-spinner fa-spin"></i>
+                  <i class="fas fa-spinner fa-spin" aria-hidden="true"></i>
                   Decomposing...
                 {:else}
-                  <i class="fas fa-cut"></i>
+                  <i class="fas fa-cut" aria-hidden="true"></i>
                   Decompose
                 {/if}
               </button>
@@ -336,7 +410,7 @@
           <!-- Knobs panel -->
           {#if Object.keys(knobs).length > 0}
             <aside class="card knobs-card" aria-label="Decomposition knobs">
-              <h3 class="section-title"><i class="fas fa-sliders-h"></i> Knobs</h3>
+              <h3 class="section-title"><i class="fas fa-sliders-h" aria-hidden="true"></i> Knobs</h3>
               <div class="knobs-list">
                 {#each Object.entries(knobs) as [key, defaultVal] (key)}
                   <label class="form-group">
@@ -357,7 +431,7 @@
                   onclick={() => { knobOverrides = {}; }}
                   aria-label="Reset knobs to defaults"
                 >
-                  <i class="fas fa-undo"></i> Reset
+                  <i class="fas fa-undo" aria-hidden="true"></i> Reset
                 </button>
               {/if}
             </aside>
@@ -371,7 +445,7 @@
       <div id="panel-result" role="tabpanel" aria-labelledby="tab-result" class="panel-content">
         {#if !decompositionResult}
           <div class="empty-state">
-            <i class="fas fa-sitemap"></i>
+            <i class="fas fa-sitemap" aria-hidden="true"></i>
             <p>No decomposition result yet. Enter a goal and click Decompose.</p>
             <button class="btn btn-primary" onclick={() => { activeTab = 'decompose'; }}>
               Go to Decompose
@@ -380,7 +454,7 @@
         {:else}
           <section class="card result-card" aria-label="Decomposition result">
             <div class="result-header">
-              <h3 class="section-title"><i class="fas fa-sitemap"></i> Plan Tree</h3>
+              <h3 class="section-title"><i class="fas fa-sitemap" aria-hidden="true"></i> Plan Tree</h3>
               <div class="result-meta">
                 {#if decompositionResult.goal ?? goalInput}
                   <span class="result-goal">{decompositionResult.goal ?? goalInput}</span>
@@ -391,20 +465,26 @@
                 {/if}
                 {#if planStatus && !planIsTerminal}
                   <span class="plan-status-badge plan-status-{planIsPaused ? 'paused' : 'running'}">
-                    <i class="fas {planIsPaused ? 'fa-pause' : 'fa-play'}"></i>
+                    <i class="fas {planIsPaused ? 'fa-pause' : 'fa-play'}" aria-hidden="true"></i>
                     {planIsPaused ? 'Paused' : 'Executing'}
                   </span>
                 {/if}
                 {#if planStatus === 'cancelled'}
                   <span class="plan-status-badge plan-status-cancelled">
-                    <i class="fas fa-ban"></i>
+                    <i class="fas fa-ban" aria-hidden="true"></i>
                     Cancelled
                   </span>
                 {/if}
                 {#if planStatus === 'completed' || planStatus === 'complete'}
                   <span class="plan-status-badge plan-status-done">
-                    <i class="fas fa-check"></i>
+                    <i class="fas fa-check" aria-hidden="true"></i>
                     Completed
+                  </span>
+                {/if}
+                {#if planStatusError}
+                  <span class="plan-status-badge plan-status-error" title={planStatusError}>
+                    <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+                    Status unavailable
                   </span>
                 {/if}
               </div>
@@ -420,7 +500,7 @@
                     aria-label="Pause plan execution"
                     title="Pause"
                   >
-                    <i class="fas fa-pause"></i>
+                    <i class="fas fa-pause" aria-hidden="true"></i>
                     Pause
                   </button>
                 {/if}
@@ -432,7 +512,7 @@
                     aria-label="Resume plan execution"
                     title="Resume"
                   >
-                    <i class="fas fa-play"></i>
+                    <i class="fas fa-play" aria-hidden="true"></i>
                     Resume
                   </button>
                 {/if}
@@ -443,7 +523,7 @@
                   aria-label="Cancel plan execution"
                   title="Cancel"
                 >
-                  <i class="fas fa-stop"></i>
+                  <i class="fas fa-stop" aria-hidden="true"></i>
                   Cancel
                 </button>
               </div>
@@ -451,7 +531,7 @@
 
             {#if subtasks.length === 0}
               <div class="empty-state">
-                <i class="fas fa-inbox"></i>
+                <i class="fas fa-inbox" aria-hidden="true"></i>
                 <p>No subtasks generated.</p>
               </div>
             {:else}
@@ -514,7 +594,7 @@
       <div id="panel-dod" role="tabpanel" aria-labelledby="tab-dod" class="panel-content">
         {#if !dodDor}
           <div class="empty-state">
-            <i class="fas fa-check-double"></i>
+            <i class="fas fa-check-double" aria-hidden="true"></i>
             <p>No DoD/DoR templates available.</p>
           </div>
         {:else}
@@ -522,13 +602,13 @@
             {#if dodDor.definition_of_done}
               <section class="card dod-card" aria-label="Definition of Done">
                 <h3 class="section-title">
-                  <i class="fas fa-check-circle text-success"></i>
+                  <i class="fas fa-check-circle text-success" aria-hidden="true"></i>
                   Definition of Done
                 </h3>
                 <ul class="checklist" aria-label="Definition of Done checklist">
                   {#each (Array.isArray(dodDor.definition_of_done) ? dodDor.definition_of_done : [dodDor.definition_of_done]) as item, i (i)}
                     <li class="checklist-item">
-                      <i class="fas fa-circle-check check-icon"></i>
+                      <i class="fas fa-circle-check check-icon" aria-hidden="true"></i>
                       <span>{item}</span>
                     </li>
                   {/each}
@@ -538,13 +618,13 @@
             {#if dodDor.definition_of_ready}
               <section class="card dor-card" aria-label="Definition of Ready">
                 <h3 class="section-title">
-                  <i class="fas fa-play-circle text-primary"></i>
+                  <i class="fas fa-play-circle text-primary" aria-hidden="true"></i>
                   Definition of Ready
                 </h3>
                 <ul class="checklist" aria-label="Definition of Ready checklist">
                   {#each (Array.isArray(dodDor.definition_of_ready) ? dodDor.definition_of_ready : [dodDor.definition_of_ready]) as item, i (i)}
                     <li class="checklist-item">
-                      <i class="fas fa-circle-check check-icon"></i>
+                      <i class="fas fa-circle-check check-icon" aria-hidden="true"></i>
                       <span>{item}</span>
                     </li>
                   {/each}
@@ -561,7 +641,7 @@
       <div id="panel-history" role="tabpanel" aria-labelledby="tab-history" class="panel-content">
         {#if history.length === 0}
           <div class="empty-state">
-            <i class="fas fa-history"></i>
+            <i class="fas fa-history" aria-hidden="true"></i>
             <p>No decomposition history yet.</p>
           </div>
         {:else}
@@ -593,7 +673,7 @@
                         onclick={() => selectHistoryResult(item)}
                         aria-label="Load this decomposition result"
                       >
-                        <i class="fas fa-upload"></i> Load Result
+                        <i class="fas fa-upload" aria-hidden="true"></i> Load Result
                       </button>
                     </div>
                     {#if item.result?.subtasks ?? item.subtasks}
@@ -721,9 +801,14 @@
   }
 
   .input:focus {
-    outline: none;
+    outline: 2px solid transparent;
+    outline-offset: 2px;
     border-color: var(--primary);
     box-shadow: 0 0 0 2px var(--primary-muted);
+  }
+
+  .input:focus-visible {
+    outline-color: var(--primary);
   }
 
   .textarea { resize: vertical; }
@@ -1053,6 +1138,7 @@
   .plan-status-paused  { background: var(--warning-muted); color: var(--warning); }
   .plan-status-cancelled { background: var(--surface-hover); color: var(--text-muted); }
   .plan-status-done    { background: var(--success-muted); color: var(--success); }
+  .plan-status-error   { background: var(--danger-muted); color: var(--danger); }
 
   .btn-danger { background: var(--danger-muted); color: var(--danger); border: 1px solid rgba(240,98,98,0.3); }
   .btn-danger:hover:not(:disabled) { background: rgba(240,98,98,0.2); }

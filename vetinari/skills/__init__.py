@@ -27,7 +27,7 @@ from vetinari.skills.foreman_skill import ForemanSkillTool
 from vetinari.skills.inspector_skill import InspectorSkillTool
 from vetinari.skills.operations_skill import OperationsSkillTool
 from vetinari.skills.quality_skill import QualitySkillTool
-from vetinari.skills.skill_registry import (  # noqa: VET123 — get_skills_by_standard_category has no external callers but removing causes VET120
+from vetinari.skills.skill_registry import (
     get_all_skills,
     get_skill,
     get_skill_for_agent_type,
@@ -37,7 +37,7 @@ from vetinari.skills.skill_registry import (  # noqa: VET123 — get_skills_by_s
     get_skills_by_tag,
     validate_all,
 )
-from vetinari.skills.skill_spec import (  # noqa: VET123 - barrel export preserves public import compatibility
+from vetinari.skills.skill_spec import (
     SkillSpec,
 )
 from vetinari.skills.worker_skill import WorkerSkillTool

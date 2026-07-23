@@ -31,7 +31,7 @@
   class:message-assistant={!isUser && !isThinking}
   class:message-thinking={isThinking}
 >
-  <div class="message-avatar">
+  <div class="message-avatar" aria-hidden="true">
     {#if isUser}
       <i class="fas fa-user"></i>
     {:else if isThinking}

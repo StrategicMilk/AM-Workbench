@@ -11,12 +11,18 @@ are built on top of these policy objects.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from vetinari.lifecycle.store import LifecycleRecord
+
+
+# Closed set of bucket names returned by Policy.surface_buckets across all
+# concrete policies; PolicyFilter.bucket is typed against this so a typo
+# (e.g. "recents") is a static error rather than a silent empty result.
+BucketName = Literal["recent", "cooling", "cold", "active_grace", "expired"]
 
 # Default tier thresholds for ArchivePolicy (also in safety_defaults.yaml).
 _DEFAULT_RECENT_DAYS: int = 7  # Records younger than this are "recent"
@@ -57,7 +63,7 @@ class Policy(Protocol):
             ``"recent"``, ``"cooling"``, ``"cold"``, ``"active_grace"``,
             or ``"expired"``.
         """
-        ...  # noqa: VET032 — Protocol method stub; concrete implementations provide the body
+        ...
 
 
 @dataclass
@@ -107,7 +113,15 @@ class RecyclePolicy:
         return "expired"
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
+class ArchiveEntityThresholds:
+    """Archive view-tier thresholds for one entity type."""
+
+    recent_days: int
+    cooling_days: int
+
+
+@dataclass(frozen=True, slots=True)
 class ArchivePolicy:
     """Policy for the archive store: unbounded retention, view-tiered by age.
 
@@ -123,10 +137,13 @@ class ArchivePolicy:
         recent_days: Records younger than this number of days are ``"recent"``.
         cooling_days: Records younger than this (but older than recent) are
             ``"cooling"``; older records are ``"cold"``.
+        entity_thresholds: Optional per-entity-type overrides keyed by
+            ``LifecycleRecord.entity_type``.
     """
 
     recent_days: int = _DEFAULT_RECENT_DAYS
     cooling_days: int = _DEFAULT_COOLING_DAYS
+    entity_thresholds: dict[str, ArchiveEntityThresholds] = field(default_factory=dict)
 
     # Policy protocol fields
     name: str = "archive"
@@ -135,7 +152,20 @@ class ArchivePolicy:
 
     def __repr__(self) -> str:
         """Show policy name and tier thresholds for debugging."""
-        return f"ArchivePolicy(recent_days={self.recent_days}, cooling_days={self.cooling_days})"
+        return (
+            f"ArchivePolicy(recent_days={self.recent_days}, "
+            f"cooling_days={self.cooling_days}, "
+            f"entity_thresholds={self.entity_thresholds!r})"
+        )
+
+    def _thresholds_for(self, record: LifecycleRecord) -> tuple[int, int]:
+        """Return archive thresholds for the record's entity type."""
+        entity_type = getattr(record, "entity_type", None)
+        if entity_type is not None:
+            override = self.entity_thresholds.get(entity_type)
+            if override is not None:
+                return override.recent_days, override.cooling_days
+        return self.recent_days, self.cooling_days
 
     def surface_buckets(self, record: LifecycleRecord, now: datetime) -> str:
         """Return the view tier for a record based on its age.
@@ -152,14 +182,15 @@ class ArchivePolicy:
         if retired_at.tzinfo is None:
             retired_at = retired_at.replace(tzinfo=timezone.utc)
         age = now - retired_at
-        if age <= timedelta(days=self.recent_days):
+        recent_days, cooling_days = self._thresholds_for(record)
+        if age <= timedelta(days=recent_days):
             return "recent"
-        if age <= timedelta(days=self.cooling_days):
+        if age <= timedelta(days=cooling_days):
             return "cooling"
         return "cold"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PolicyFilter:
     """Optional filter passed to ``LifecycleStore.list()`` to narrow results.
 
@@ -172,13 +203,15 @@ class PolicyFilter:
             ``work_receipt_id`` is returned.
     """
 
-    bucket: str | None = None
+    bucket: BucketName | None = None
     reason_contains: str | None = None
     work_receipt_id: str | None = None
 
 
 __all__ = [
+    "ArchiveEntityThresholds",
     "ArchivePolicy",
+    "BucketName",
     "Policy",
     "PolicyFilter",
     "RecyclePolicy",

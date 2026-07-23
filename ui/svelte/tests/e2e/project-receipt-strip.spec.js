@@ -12,6 +12,9 @@ import { test, expect } from '@playwright/test';
  * ``page.route()`` overrides on the receipts endpoints.
  */
 async function installFallbacks(page) {
+  await page.route('**/health', async (route) => {
+    await route.fulfill({ json: { status: 'ok' } });
+  });
   await page.route('**/api/**', async (route) => {
     const url = route.request().url();
 

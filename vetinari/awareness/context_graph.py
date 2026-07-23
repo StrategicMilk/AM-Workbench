@@ -18,14 +18,17 @@ from datetime import datetime, timezone
 from typing import Any
 
 from vetinari.types import ContextQuadrant
+from vetinari.utils.bounded_collections import BoundedList
 
 logger = logging.getLogger(__name__)
+
+_MAX_CONTEXT_ENTRIES_PER_QUADRANT = 1000
 
 
 # -- Data types ---------------------------------------------------------------
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ContextEntry:
     """A single entry in a context quadrant.
 
@@ -206,7 +209,9 @@ class ContextGraph:
             List of (quadrant, key, age_seconds) tuples for stale entries.
         """
         now = time.time()
-        stale: list[tuple[ContextQuadrant, str, float]] = []
+        stale = BoundedList[tuple[ContextQuadrant, str, float]](
+            len(self._quadrants) * _MAX_CONTEXT_ENTRIES_PER_QUADRANT
+        )
         with self._lock:
             for quadrant, entries in self._quadrants.items():
                 for key, entry in entries.items():
@@ -219,7 +224,7 @@ class ContextGraph:
                             stale.append((quadrant, key, age))
                     except (ValueError, TypeError):
                         stale.append((quadrant, key, float("inf")))
-        return stale
+        return list(stale)
 
     def _set(self, quadrant: ContextQuadrant, key: str, value: Any, source: str, confidence: float) -> None:
         """Internal: set or update an entry in the specified quadrant.
@@ -238,7 +243,11 @@ class ContextGraph:
             confidence=max(0.0, min(1.0, confidence)),
         )
         with self._lock:
-            self._quadrants[quadrant][key] = entry
+            entries = self._quadrants[quadrant]
+            entries[key] = entry
+            while len(entries) > _MAX_CONTEXT_ENTRIES_PER_QUADRANT:
+                oldest_key = min(entries, key=lambda item: entries[item].updated_at)
+                del entries[oldest_key]
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "Context graph updated: %s.%s = %r (confidence=%.2f, source=%s)",

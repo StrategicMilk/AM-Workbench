@@ -63,6 +63,10 @@ class AgentCapabilityEnforcer:
                 available_capabilities=capabilities,
             )
 
+        from vetinari.envs import tier_for_capability
+
+        tier_for_capability(required_capability)
+
         logger.debug(
             "Capability check passed for %s: %r is available",
             agent_type.value,

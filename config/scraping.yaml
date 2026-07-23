@@ -1,0 +1,22 @@
+# User-Agent used when a request does not provide one.
+user_agent: "Vetinari-Scraper/1.0 (+https://github.com/StrategicMilk/AM-Workbench; polite-by-default)"
+
+# Default request timeout in seconds.
+timeout_s: 15.0
+
+# Maximum response body size read by static scraping.
+max_bytes: 5_000_000
+
+# Per-host token bucket defaults for polite scraping.
+rate_limit:
+  requests_per_second: 1.0
+  burst: 1
+
+# Robots.txt cache and fetch timeout.
+robots:
+  cache_ttl_s: 3600
+  fetch_timeout_s: 5.0
+
+# Dynamic backend hydration wait after network idle.
+dynamic:
+  hydration_extra_ms: 500

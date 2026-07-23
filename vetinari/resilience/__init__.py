@@ -23,6 +23,11 @@ from vetinari.resilience.retry_intelligence import (
     get_retry_analyzer,
     reset_retry_analyzer,
 )
+from vetinari.resilience.retry_policy import (
+    RetryBudget,
+    RetryPolicy,
+    is_retryable_transport_error,
+)
 from vetinari.resilience.wiring import (
     call_with_breaker,
     check_breaker_health,
@@ -41,6 +46,8 @@ __all__ = [
     "DegradationManager",
     "ResilienceCircuitState",
     "RetryAnalyzer",
+    "RetryBudget",
+    "RetryPolicy",
     "RetryStrategy",
     "call_with_breaker",
     "check_breaker_health",
@@ -48,6 +55,7 @@ __all__ = [
     "get_circuit_breaker_registry",
     "get_inference_breaker",
     "get_retry_analyzer",
+    "is_retryable_transport_error",
     "reset_circuit_breaker_registry",
     "reset_degradation_manager",
     "reset_retry_analyzer",

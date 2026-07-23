@@ -29,6 +29,7 @@ from vetinari.config_paths import resolve_config_path
 
 logger = logging.getLogger(__name__)
 
+
 # Default path uses the source-tree config when present, then the packaged fallback.
 _DEFAULT_CONFIG_PATH = resolve_config_path("mcp_servers.yaml")
 
@@ -109,7 +110,7 @@ def validate_mcp_launch_command(command: list[str]) -> None:
         raise ValueError("MCP server command uses unpinned remote package execution")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MCPServerConfig:
     """Configuration for a single external MCP server.
 
@@ -239,7 +240,7 @@ def _load_from_path(path: Path) -> list[MCPServerConfig]:
         import yaml  # pyyaml — optional dep in [mcp] extras
     except ImportError:
         logger.warning(
-            "pyyaml is not installed — cannot load MCP server config from %s; install with: pip install pyyaml",  # noqa: VET301 — user guidance string
+            "pyyaml is not installed — cannot load MCP server config from %s; install with: pip install pyyaml",
             path,
         )
         return []

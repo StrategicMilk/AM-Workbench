@@ -15,12 +15,13 @@ import logging
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from vetinari.exceptions import StorageError
 
 logger = logging.getLogger(__name__)
+
 
 # Maximum entries before LRU eviction kicks in (overridable per-instance).
 _DEFAULT_SESSION_MAX_ENTRIES = 100  # matches VETINARI_SESSION_MAX_ENTRIES default
@@ -29,8 +30,8 @@ _DEFAULT_SESSION_MAX_ENTRIES = 100  # matches VETINARI_SESSION_MAX_ENTRIES defau
 # ── SessionEntry ───────────────────────────────────────────────────────────
 
 
-@dataclass
-class SessionEntry:  # noqa: VET114 — value and quality_score mutated by SessionContext.set() for LRU updates
+@dataclass(frozen=True, slots=True)
+class SessionEntry:
     """A single entry in short-term session memory."""
 
     key: str
@@ -136,9 +137,7 @@ class SessionContext:
             if key in self._store:
                 self._store.move_to_end(key)
                 entry = self._store[key]
-                entry.value = value
-                entry.timestamp = time.time()
-                entry.quality_score = quality_score
+                self._store[key] = replace(entry, value=value, timestamp=time.time(), quality_score=quality_score)
             else:
                 self._store[key] = SessionEntry(key=key, value=value, quality_score=quality_score)
             # Evict oldest entry if over limit
@@ -159,7 +158,7 @@ class SessionContext:
             entry = self._store.get(key)
             if entry is None:
                 return default
-            entry.access_count += 1
+            self._store[key] = replace(entry, access_count=entry.access_count + 1)
             self._store.move_to_end(key)
             return entry.value
 

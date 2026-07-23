@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_semantic_layer.schema.json",
+  "title": "Workbench Semantic Layer",
+  "description": "Grounded knowledge graph for Workbench domain, lineage, compliance, retrieval, and impact analysis questions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["graph_id", "entities", "relations", "metrics", "ontologies"],
+  "properties": {
+    "graph_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entities": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/entity" }
+    },
+    "relations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/relation" }
+    },
+    "metrics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/metric" }
+    },
+    "ontologies": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ontology" }
+    }
+  },
+  "$defs": {
+    "provenance_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref_id", "ref_type", "evidence"],
+      "properties": {
+        "ref_id": { "type": "string", "minLength": 1 },
+        "ref_type": {
+          "type": "string",
+          "enum": ["SourceCard", "AssetCard", "DocumentExtraction", "TraceSpan", "DatasetRevision", "ToolOutput", "Policy", "Manual"]
+        },
+        "evidence": { "type": "string", "minLength": 1 }
+      }
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_id", "kind", "label", "aliases", "properties", "provenance_refs"],
+      "properties": {
+        "entity_id": { "type": "string", "minLength": 1 },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "source",
+            "document",
+            "code",
+            "trace",
+            "dataset",
+            "tool_output",
+            "prompt",
+            "model",
+            "policy",
+            "deployment",
+            "metric",
+            "domain_term"
+          ]
+        },
+        "label": { "type": "string", "minLength": 1 },
+        "aliases": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "properties": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "provenance_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/provenance_ref" }
+        }
+      }
+    },
+    "relation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relation_id",
+        "kind",
+        "source_entity_id",
+        "target_entity_id",
+        "confidence",
+        "properties",
+        "provenance_refs"
+      ],
+      "properties": {
+        "relation_id": { "type": "string", "minLength": 1 },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "derived_from",
+            "extracted_from",
+            "produces",
+            "consumes",
+            "defines",
+            "depends_on",
+            "implements",
+            "governed_by",
+            "violates",
+            "deployed_as",
+            "evidences",
+            "semantically_related"
+          ]
+        },
+        "source_entity_id": { "type": "string", "minLength": 1 },
+        "target_entity_id": { "type": "string", "minLength": 1 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "properties": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "provenance_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/provenance_ref" }
+        }
+      }
+    },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric_id", "name", "expression", "entity_refs", "owner", "unit", "provenance_refs"],
+      "properties": {
+        "metric_id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "expression": { "type": "string", "minLength": 1 },
+        "entity_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "owner": { "type": "string" },
+        "unit": { "type": "string" },
+        "provenance_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/provenance_ref" }
+        }
+      }
+    },
+    "ontology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ontology_id", "name", "terms", "provenance_refs"],
+      "properties": {
+        "ontology_id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "terms": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "provenance_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/provenance_ref" }
+        }
+      }
+    }
+  }
+}

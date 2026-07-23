@@ -8,17 +8,50 @@
    * @prop {(modelId: string) => void} [onselect] - Called when a model is selected.
    */
   let { recommendations = [], onselect } = $props();
+  const modalities = ['text', 'vision', 'audio', 'image_generation', 'video_generation', 'embedding', 'three_d'];
+  let activeModality = $state('text');
+
+  function recommendationModalities(rec) {
+    const values = [
+      rec?.modality,
+      rec?.primary_modality,
+      ...(Array.isArray(rec?.modalities) ? rec.modalities : []),
+      ...(Array.isArray(rec?.capabilities) ? rec.capabilities : []),
+      ...(Array.isArray(rec?.recommended_for) ? rec.recommended_for : []),
+    ];
+    return values.map((value) => String(value ?? '').toLowerCase()).filter(Boolean);
+  }
+
+  function matchesActiveModality(rec) {
+    const values = recommendationModalities(rec);
+    if (values.length === 0) return activeModality === 'text';
+    return values.some((value) => value === activeModality || value.includes(activeModality));
+  }
+
+  let filteredRecommendations = $derived(recommendations.filter(matchesActiveModality));
 </script>
 
 {#if recommendations.length > 0}
   <div class="recommendations-panel">
+    <div class="modality-tabs" role="tablist" aria-label="Model modality">
+      {#each modalities as modality}
+        <button
+          role="tab"
+          aria-selected={activeModality === modality}
+          class:active={activeModality === modality}
+          onclick={() => (activeModality = modality)}
+        >
+          {modality.replace('_', ' ')}
+        </button>
+      {/each}
+    </div>
     <h3 class="rec-title">
       <i class="fas fa-star"></i>
       Recommended Models
     </h3>
 
     <div class="rec-list">
-      {#each recommendations.slice(0, 5) as rec}
+      {#each filteredRecommendations.slice(0, 5) as rec}
         <button class="rec-item" onclick={() => onselect?.(rec.id ?? rec.name)}>
           <div class="rec-name">{rec.name ?? rec.id}</div>
           <div class="rec-meta">
@@ -32,6 +65,8 @@
             {/if}
           </div>
         </button>
+      {:else}
+        <div class="rec-empty" role="status">No {activeModality.replace('_', ' ')} recommendations.</div>
       {/each}
     </div>
   </div>
@@ -61,6 +96,25 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+  }
+
+  .modality-tabs {
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    margin-bottom: 12px;
+  }
+
+  .modality-tabs button {
+    min-height: 32px;
+    border: 1px solid var(--border-default);
+    background: transparent;
+    color: var(--text-muted);
+  }
+
+  .modality-tabs button.active {
+    color: var(--text-primary);
+    border-color: var(--accent);
   }
 
   .rec-item {
@@ -98,5 +152,11 @@
   .rec-size {
     color: var(--text-muted);
     font-weight: 400;
+  }
+
+  .rec-empty {
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+    padding: 8px 0;
   }
 </style>

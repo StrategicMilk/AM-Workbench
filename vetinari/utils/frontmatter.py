@@ -15,6 +15,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
+
 # Frontmatter regex: captures content between opening and closing --- delimiters
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 

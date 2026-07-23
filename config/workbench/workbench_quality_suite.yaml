@@ -1,0 +1,403 @@
+schema_version: 1
+suite_id: workbench-quality-index-v1
+description: 'Product-quality scorecard for deciding whether AM Workbench improves
+  real AI work versus a baseline agent/chat/editor loop.
+
+  '
+readiness_levels:
+  beta:
+    minimum_score: 70
+  pro:
+    minimum_score: 80
+  team:
+    minimum_score: 88
+  enterprise_signal:
+    minimum_score: 92
+categories:
+  outcome_quality:
+    weight: 0.25
+    claim: Workbench produces correct, useful work rather than only activity.
+    metrics:
+      task_success_rate:
+        weight: 0.3
+        direction: gte
+        zero_score_at: 0.4
+        target: 0.8
+        excellent: 0.92
+        unit: ratio
+        claim: Representative tasks reach verified completion.
+        false_green_risk: Passing tests can miss wrong scope, weak assertions, or
+          incomplete wiring.
+      verified_success_lift_pp:
+        weight: 0.25
+        direction: gte
+        zero_score_at: -5.0
+        target: 10.0
+        excellent: 20.0
+        unit: percentage_points
+        claim: Workbench beats the same user and model budget without Workbench.
+        false_green_risk: Baseline task mix can be easier or less current than Workbench
+          task mix.
+      false_green_escape_rate:
+        weight: 0.2
+        direction: lte
+        zero_score_at: 0.25
+        target: 0.05
+        excellent: 0.02
+        unit: ratio
+        gate: pro
+        claim: Workbench does not mark bad or incomplete work as done.
+        false_green_risk: Human reviewers can miss latent defects unless sampling
+          includes adversarial checks.
+      human_rework_reduction:
+        weight: 0.15
+        direction: gte
+        zero_score_at: 0.0
+        target: 0.3
+        excellent: 0.5
+        unit: ratio
+        claim: Workbench reduces manual repair effort.
+        false_green_risk: Self-reported time savings can hide shifted work into review
+          or setup.
+      critical_defect_escape_count:
+        weight: 0.1
+        direction: lte
+        zero_score_at: 3.0
+        target: 0.0
+        excellent: 0.0
+        unit: count
+        gate: beta
+        claim: Security, data-loss, and irreversible-work defects do not escape.
+        false_green_risk: Criticality labels can be too narrow.
+  evidence_auditability:
+    weight: 0.18
+    claim: Workbench leaves enough proof to inspect, reproduce, and challenge outcomes.
+    metrics:
+      evidence_package_completeness:
+        weight: 0.3
+        direction: gte
+        zero_score_at: 0.6
+        target: 0.95
+        excellent: 0.99
+        unit: ratio
+        gate: pro
+        claim: Runs have complete trace, receipt, evidence, and outcome records.
+        false_green_risk: Presence of files can be mistaken for substantive evidence.
+      claims_with_proof_rate:
+        weight: 0.25
+        direction: gte
+        zero_score_at: 0.5
+        target: 0.95
+        excellent: 0.99
+        unit: ratio
+        claim: Product claims and run claims link to proof instead of narration.
+        false_green_risk: Links can point to stale or unrelated artifacts.
+      reproducible_rerun_rate:
+        weight: 0.2
+        direction: gte
+        zero_score_at: 0.4
+        target: 0.85
+        excellent: 0.95
+        unit: ratio
+        claim: Stored state can replay or reconstruct the run.
+        false_green_risk: Replays may pass only on the author's machine or with hidden
+          state.
+      unknown_state_label_accuracy:
+        weight: 0.15
+        direction: gte
+        zero_score_at: 0.8
+        target: 0.99
+        excellent: 1.0
+        unit: ratio
+        gate: beta
+        claim: Missing, skipped, stale, blocked, and unknown states are not reported
+          as success.
+        false_green_risk: Dashboards can collapse unknown into pass.
+      promotion_evidence_completeness:
+        weight: 0.1
+        direction: gte
+        zero_score_at: 0.8
+        target: 1.0
+        excellent: 1.0
+        unit: ratio
+        gate: pro
+        claim: Every promotion has before/after evidence and rollback context.
+        false_green_risk: Promotion records can omit held-out regression proof.
+  self_improvement:
+    weight: 0.14
+    claim: Workbench learns from work and promotes safer, better artifacts.
+    metrics:
+      useful_proposal_acceptance_rate:
+        weight: 0.2
+        direction: gte
+        zero_score_at: 0.25
+        target: 0.6
+        excellent: 0.75
+        unit: ratio
+        claim: Proposed improvements are actually useful to reviewers.
+        false_green_risk: Easy reviewer approval can reward plausible but shallow
+          proposals.
+      heldout_eval_improvement_rate:
+        weight: 0.25
+        direction: gte
+        zero_score_at: 0.35
+        target: 0.8
+        excellent: 0.9
+        unit: ratio
+        gate: pro
+        claim: Promoted changes improve held-out evals, not just their source case.
+        false_green_risk: Held-out suites can be too similar to the triggering trace.
+      promotion_regression_rate:
+        weight: 0.2
+        direction: lte
+        zero_score_at: 0.2
+        target: 0.05
+        excellent: 0.02
+        unit: ratio
+        gate: pro
+        claim: Promoted changes rarely degrade other workflows.
+        false_green_risk: Regression windows can be too short.
+      rollback_success_rate:
+        weight: 0.15
+        direction: gte
+        zero_score_at: 0.7
+        target: 1.0
+        excellent: 1.0
+        unit: ratio
+        gate: beta
+        claim: Failed promotions can be reversed cleanly.
+        false_green_risk: Rollback tests can skip data migrations or long-lived state.
+      silent_high_risk_self_modification_count:
+        weight: 0.2
+        direction: lte
+        zero_score_at: 1.0
+        target: 0.0
+        excellent: 0.0
+        unit: count
+        gate: beta
+        claim: Risky executable, sandbox, tool-policy, or model-promotion changes
+          are never silent.
+        false_green_risk: Mutations outside the watched artifact set can be missed.
+  cost_time_efficiency:
+    weight: 0.13
+    claim: Workbench saves time or tokens without reducing quality.
+    metrics:
+      token_cost_reduction_equal_quality:
+        weight: 0.3
+        direction: gte
+        zero_score_at: 0.0
+        target: 0.2
+        excellent: 0.35
+        unit: ratio
+        claim: Workbench lowers model spend at equal or better verified quality.
+        false_green_risk: Cheaper runs can shift cost into user review.
+      verified_completion_time_reduction:
+        weight: 0.3
+        direction: gte
+        zero_score_at: 0.0
+        target: 0.25
+        excellent: 0.4
+        unit: ratio
+        claim: Time to verified done is lower than baseline.
+        false_green_risk: Stopwatch can stop before review or rework is complete.
+      failed_run_reduction:
+        weight: 0.2
+        direction: gte
+        zero_score_at: 0.0
+        target: 0.3
+        excellent: 0.5
+        unit: ratio
+        claim: Workbench reduces abandoned, stuck, and unrecoverable runs.
+        false_green_risk: Runs can be split into smaller attempts that hide failure
+          rate.
+      hardware_routing_correctness:
+        weight: 0.2
+        direction: gte
+        zero_score_at: 0.7
+        target: 0.95
+        excellent: 0.99
+        unit: ratio
+        claim: Hardware-aware routing avoids obvious bad local/cloud/runtime choices.
+        false_green_risk: Synthetic hardware profiles can miss real driver and network
+          behavior.
+  safety_governance:
+    weight: 0.1
+    claim: Workbench prevents unsafe agent behavior and keeps private boundaries intact.
+    metrics:
+      high_risk_tool_call_logging_rate:
+        weight: 0.2
+        direction: gte
+        zero_score_at: 0.8
+        target: 1.0
+        excellent: 1.0
+        unit: ratio
+        gate: beta
+        claim: High-risk tool calls are recorded.
+        false_green_risk: Risk classifier can under-label tool calls.
+      approval_policy_recall:
+        weight: 0.25
+        direction: gte
+        zero_score_at: 0.8
+        target: 0.99
+        excellent: 1.0
+        unit: ratio
+        gate: beta
+        claim: Approval is required when policy says approval is required.
+        false_green_risk: Test cases can miss rare command forms or plugin pathways.
+      unauthorized_access_incident_count:
+        weight: 0.25
+        direction: lte
+        zero_score_at: 1.0
+        target: 0.0
+        excellent: 0.0
+        unit: count
+        gate: beta
+        claim: Agents do not access unauthorized files, network, secrets, or projects.
+        false_green_risk: Incidents can be undetected without filesystem and tool-call
+          monitoring.
+      cross_project_contamination_count:
+        weight: 0.2
+        direction: lte
+        zero_score_at: 1.0
+        target: 0.0
+        excellent: 0.0
+        unit: count
+        gate: beta
+        claim: Memory, traces, and learned state do not bleed across project boundaries.
+        false_green_risk: Long-running memory tests can miss delayed leakage.
+      audit_export_completeness:
+        weight: 0.1
+        direction: gte
+        zero_score_at: 0.7
+        target: 0.95
+        excellent: 1.0
+        unit: ratio
+        gate: team
+        claim: Team and enterprise exports contain complete audit evidence.
+        false_green_risk: Export shape can be valid while omitting sensitive decision
+          history.
+  capability_output_quality:
+    weight: 0.1
+    claim: Workbench improves outputs from training, retrieval, data, document, and
+      artifact workflows.
+    metrics:
+      trained_model_heldout_lift:
+        weight: 0.2
+        direction: gte
+        zero_score_at: 0.0
+        target: 0.05
+        excellent: 0.12
+        unit: ratio
+        claim: Trained or adapted model candidates improve held-out task quality.
+        false_green_risk: Training can overfit narrow evals or reward style over correctness.
+      training_recipe_reproducibility_rate:
+        weight: 0.15
+        direction: gte
+        zero_score_at: 0.7
+        target: 0.95
+        excellent: 1.0
+        unit: ratio
+        gate: pro
+        claim: Training recipes reproduce comparable results across reruns or machines.
+        false_green_risk: Reproducibility can hide dependency, seed, or hardware-specific
+          drift.
+      tuned_model_regression_rate:
+        weight: 0.15
+        direction: lte
+        zero_score_at: 0.2
+        target: 0.05
+        excellent: 0.02
+        unit: ratio
+        gate: pro
+        claim: Tuned or promoted model artifacts do not degrade unrelated workflows.
+        false_green_risk: Regression suites can omit uncommon but important task classes.
+      retrieval_grounded_answer_rate:
+        weight: 0.15
+        direction: gte
+        zero_score_at: 0.6
+        target: 0.9
+        excellent: 0.97
+        unit: ratio
+        claim: Retrieval-backed outputs are grounded in cited, current source material.
+        false_green_risk: Citation presence can be mistaken for citation support.
+      non_agent_workflow_quality_lift_pp:
+        weight: 0.15
+        direction: gte
+        zero_score_at: -5.0
+        target: 10.0
+        excellent: 20.0
+        unit: percentage_points
+        claim: Non-agent workflows such as documents, research, media, and data work
+          improve output quality.
+        false_green_risk: Judges may prefer polished output without checking factual
+          or task correctness.
+      artifact_acceptance_rate:
+        weight: 0.1
+        direction: gte
+        zero_score_at: 0.4
+        target: 0.8
+        excellent: 0.92
+        unit: ratio
+        claim: Generated artifacts are accepted after review without major repair.
+        false_green_risk: Acceptance can reflect low standards or insufficient review.
+      data_quality_gate_pass_rate:
+        weight: 0.1
+        direction: gte
+        zero_score_at: 0.7
+        target: 0.95
+        excellent: 0.99
+        unit: ratio
+        claim: Imported, generated, or transformed data passes schema, lineage, and
+          quality gates.
+        false_green_risk: Schema validity can miss semantic corruption.
+  adoption_trust:
+    weight: 0.1
+    claim: Real users can install, use, trust, and pay for Workbench.
+    metrics:
+      first_useful_run_minutes:
+        weight: 0.2
+        direction: lte
+        zero_score_at: 60.0
+        target: 15.0
+        excellent: 8.0
+        unit: minutes
+        claim: New users reach useful output quickly.
+        false_green_risk: Guided demos can be easier than first real projects.
+      week_one_activation_rate:
+        weight: 0.2
+        direction: gte
+        zero_score_at: 0.1
+        target: 0.4
+        excellent: 0.6
+        unit: ratio
+        claim: Installers complete meaningful first-week work.
+        false_green_risk: Activation events can count toy runs.
+      d30_serious_user_retention:
+        weight: 0.2
+        direction: gte
+        zero_score_at: 0.05
+        target: 0.25
+        excellent: 0.45
+        unit: ratio
+        claim: Serious users keep coming back.
+        false_green_risk: Retention can be inflated by debugging or support sessions.
+      active_user_paid_conversion:
+        weight: 0.2
+        direction: gte
+        zero_score_at: 0.0
+        target: 0.05
+        excellent: 0.12
+        unit: ratio
+        claim: Active users show willingness to pay.
+        false_green_risk: Discounts, personal relationships, or services can mask
+          product value.
+      would_be_upset_loss_rate:
+        weight: 0.2
+        direction: gte
+        zero_score_at: 0.1
+        target: 0.4
+        excellent: 0.6
+        unit: ratio
+        claim: Users would be upset if Workbench disappeared.
+        false_green_risk: Survey respondents can be unrepresentative enthusiasts.
+external_benchmark_sources_path: config/workbench/workbench_quality_benchmark_sources.yaml

@@ -98,7 +98,7 @@ class AgentMonitor:
         agent_id: str,
         timeout_seconds: float = 300.0,
         max_steps: int = 50,
-    ) -> None:
+    ) -> bool:
         """Register an agent for health monitoring.
 
         Args:
@@ -107,6 +107,10 @@ class AgentMonitor:
                 agent is considered stuck. Defaults to 300.
             max_steps: Maximum number of steps allowed before
                 ``StepLimitExceeded`` is raised. Defaults to 50.
+
+        Returns:
+            True when this call created the monitor entry; False when the agent
+            was already registered and the duplicate registration was ignored.
 
         Raises:
             ValueError: If ``timeout_seconds`` or ``max_steps`` are not
@@ -127,7 +131,7 @@ class AgentMonitor:
                     "call reset_agent() to intentionally reset step counter",
                     agent_id,
                 )
-                return
+                return False
             self._agents[agent_id] = _AgentState(
                 agent_id=agent_id,
                 timeout_seconds=timeout_seconds,
@@ -139,6 +143,7 @@ class AgentMonitor:
             timeout_seconds,
             max_steps,
         )
+        return True
 
     # ------------------------------------------------------------------
     # Heartbeat

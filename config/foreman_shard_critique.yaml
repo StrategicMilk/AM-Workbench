@@ -1,0 +1,66 @@
+standard:
+  adr_required: false
+  required_fields_hint:
+    - kind
+    - files_in_scope
+    - acceptance
+    - anti_goals
+  checks:
+    - acceptance_runnable
+    - files_in_scope_closed
+    - references_resolve
+    - anti_goals_named
+    - adr_citation_if_required
+
+discovery:
+  adr_required: false
+  required_fields_hint:
+    - kind
+    - finding_doc_path
+    - acceptance
+    - anti_goals
+  checks:
+    - acceptance_runnable
+    - finding_doc_path
+    - anti_goals_named
+
+spike:
+  adr_required: false
+  required_fields_hint:
+    - kind
+    - hypothesis
+    - deletion_or_promotion_artifact
+    - anti_goals
+  checks:
+    - hypothesis_stated
+    - outcome_artifact
+    - anti_goals_named
+
+refactor:
+  adr_required: optional
+  required_fields_hint:
+    - kind
+    - invariant
+    - regression_tests
+    - acceptance
+    - anti_goals
+  checks:
+    - invariant_named
+    - regression_tests_declared
+    - acceptance_runnable
+    - anti_goals_named
+
+migration:
+  adr_required: true
+  required_fields_hint:
+    - kind
+    - coexistence_strategy
+    - cutover_criterion
+    - acceptance
+    - anti_goals
+  checks:
+    - coexistence_stated
+    - cutover_criterion_stated
+    - acceptance_runnable
+    - anti_goals_named
+    - adr_citation_if_required

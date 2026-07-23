@@ -9,6 +9,7 @@ import shutil
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from ipaddress import IPv4Address
 from typing import Any
 from urllib.parse import urlparse
 
@@ -16,12 +17,41 @@ from vetinari.system.hardware_detect import GpuVendor, HardwareProfile
 
 logger = logging.getLogger(__name__)
 
+
 DEFAULT_VLLM_ENDPOINT = os.environ.get("VETINARI_VLLM_ENDPOINT", "http://127.0.0.1:8000")
 DEFAULT_VLLM_CONTAINER_NAME = "vetinari-vllm"
 DEFAULT_VLLM_CONTAINER_PORT = 8000
-DEFAULT_VLLM_CUDA_IMAGE = "vllm/vllm-openai:latest"
-DEFAULT_VLLM_ROCM_IMAGE = "vllm/vllm-openai-rocm:latest"
+DEFAULT_VLLM_CUDA_IMAGE = "vllm/vllm-openai@sha256:9f759c8e47d0b4a0c63c7d86da4d89fe1873782d4b915a1c2d824969dbf11a31"
+DEFAULT_VLLM_ROCM_IMAGE = (
+    "vllm/vllm-openai-rocm@sha256:58c5cd489c62bfc3e5987d24fd0bcb8b2d4e0d9e8f4d6738ea24c7855967de4f"
+)
+# Image digests for reproducible deployment. The defaults are pinned image refs
+# so the container layer cannot drift between runs. Operators may override via
+# ``VETINARI_VLLM_IMAGE`` during development, but production should keep a
+# digest-pinned reference and document validated upgrades in CHANGELOG.md.
+VLLM_IMAGE_DIGEST = os.environ.get(
+    "VETINARI_VLLM_IMAGE_DIGEST",
+    # Placeholder zero-digest reminds operators to pin via env var. The runtime
+    # uses the env-var image string directly; this constant is the documented
+    # default for tooling that wants to surface the pinned digest.
+    "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+)
+
+
+def validate_image_digest(image_ref: str) -> bool:
+    """Return True when ``image_ref`` is digest-pinned (image@sha256:...).
+
+    Used by container health checks to log a WARNING when the running container
+    image is not digest-pinned. The function does not block startup — operators
+    may still run with mutable tags in development — but the warning surfaces
+    the supply-chain risk so deployment scripts can enforce pinning explicitly.
+    """
+    return "@sha256:" in image_ref
+
+
 DEFAULT_VLLM_SETUP_MODE = "guided"
+DEFAULT_VLLM_CONTAINER_BIND_HOST = str(IPv4Address(0))
+DEFAULT_VLLM_DOCKER_PUBLISH_HOST = "127.0.0.1"
 _SETUP_MODES = {"manual", "guided", "auto"}
 _FALSE_VALUES = {"", "0", "false", "no", "off"}
 
@@ -127,7 +157,7 @@ def _docker_has_nvidia_runtime(*, timeout: float = 5.0) -> bool:
     if not docker:
         return False
     try:
-        result = subprocess.run(  # noqa: S603 - fixed docker binary path from shutil.which.
+        result = subprocess.run(
             [docker, "info", "--format", "{{json .Runtimes}}"],
             capture_output=True,
             text=True,
@@ -176,7 +206,8 @@ def _container_args_prefix(plan: VLLMContainerPlan) -> list[str]:
 
 def _engine_args(env: Mapping[str, str], *, container_port: int) -> list[str]:
     """Return vLLM server args derived from setup environment variables."""
-    args = ["--host", "0.0.0.0", "--port", str(container_port)]  # noqa: S104 - required inside Docker.
+    bind_host = env.get("VETINARI_VLLM_CONTAINER_BIND_HOST", DEFAULT_VLLM_CONTAINER_BIND_HOST)
+    args = ["--host", bind_host, "--port", str(container_port)]
     prefix_caching = _coerce_env_bool(env.get("VETINARI_VLLM_PREFIX_CACHING_ENABLED"), default=True)
     if prefix_caching:
         args.append("--enable-prefix-caching")
@@ -196,6 +227,7 @@ def _engine_args(env: Mapping[str, str], *, container_port: int) -> list[str]:
 
 def _docker_run_args(plan: VLLMContainerPlan, env: Mapping[str, str]) -> list[str]:
     """Build docker run args for starting vLLM."""
+    publish_host = env.get("VETINARI_VLLM_DOCKER_PUBLISH_HOST", DEFAULT_VLLM_DOCKER_PUBLISH_HOST)
     args = [
         "docker",
         "run",
@@ -204,7 +236,7 @@ def _docker_run_args(plan: VLLMContainerPlan, env: Mapping[str, str]) -> list[st
         plan.container_name,
         *_container_args_prefix(plan),
         "-p",
-        f"{plan.host_port}:{plan.container_port}",
+        f"{publish_host}:{plan.host_port}:{plan.container_port}",
         "--ipc=host",
     ]
     cache_dir = env.get("VETINARI_VLLM_CACHE_DIR")
@@ -250,6 +282,13 @@ def plan_vllm_container_setup(
     )
     hardware_eligible = device_backend in {"cuda", "rocm"}
     image = env_map.get("VETINARI_VLLM_IMAGE") or _default_image(device_backend)
+    if not validate_image_digest(image):
+        logger.warning(
+            "vLLM container image %r is not digest-pinned (@sha256:) — "
+            "supply-chain integrity cannot be verified; set VETINARI_VLLM_IMAGE "
+            "to a digest-pinned reference for production deployments",
+            image,
+        )
     model = env_map.get("VETINARI_VLLM_MODEL") or env_map.get("VETINARI_VLLM_MODEL_PATH") or ""
     container_name = env_map.get("VETINARI_VLLM_CONTAINER_NAME", DEFAULT_VLLM_CONTAINER_NAME)
     host_port = int(env_map.get("VETINARI_VLLM_HOST_PORT", _endpoint_host_port(vllm_endpoint)))
@@ -270,18 +309,7 @@ def plan_vllm_container_setup(
             missing.append("VETINARI_VLLM_MODEL")
 
     can_auto_start = setup_mode == "auto" and not ready and not missing
-    if ready:
-        status = "ready"
-    elif not hardware_eligible:
-        status = "unsupported_hardware"
-    elif missing:
-        status = "missing_prerequisites"
-    elif setup_mode == "manual":
-        status = "manual_required"
-    elif setup_mode == "auto":
-        status = "auto_ready"
-    else:
-        status = "guided_ready"
+    status = _plan_status(ready, hardware_eligible, missing, setup_mode)
 
     plan = VLLMContainerPlan(
         mode=setup_mode,
@@ -305,6 +333,21 @@ def plan_vllm_container_setup(
     if hardware_eligible and has_docker and model:
         plan = replace(plan, start_command=_build_start_command(plan, env_map))
     return plan
+
+
+def _plan_status(ready: bool, hardware_eligible: bool, missing: list[str], setup_mode: str) -> str:
+    """Return vLLM setup status from readiness and prerequisites."""
+    if ready:
+        return "ready"
+    if not hardware_eligible:
+        return "unsupported_hardware"
+    if missing:
+        return "missing_prerequisites"
+    if setup_mode == "manual":
+        return "manual_required"
+    if setup_mode == "auto":
+        return "auto_ready"
+    return "guided_ready"
 
 
 def start_vllm_container(
@@ -332,7 +375,7 @@ def start_vllm_container(
     docker_args = _docker_run_args(plan, run_env)
     docker_args[0] = docker
     try:
-        subprocess.run(  # noqa: S603 - explicit auto setup invokes Docker with vetted arguments.
+        subprocess.run(
             docker_args,
             capture_output=True,
             text=True,

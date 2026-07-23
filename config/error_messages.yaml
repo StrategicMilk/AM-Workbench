@@ -7,7 +7,7 @@ exception_types:
   TimeoutError: "The model took too long to respond (>30s). Try a smaller model or simpler task."
   TimeoutExpired: "The model took too long to respond (>30s). Try a smaller model or simpler task."
   subprocess.TimeoutExpired: "The model took too long to respond (>30s). Try a smaller model or simpler task."
-  ConnectionRefusedError: "Could not connect to the model server. Is LM Studio/Ollama running?"
+  ConnectionRefusedError: "Could not connect to the model server. Is LM Studio or the configured OpenAI-compatible server running?"
   ConnectionError: "Could not connect to the model server. Check that the inference backend is running."
   MemoryError: "Not enough memory to complete this operation. Try a smaller model or simpler task."
   FileNotFoundError: "A required file was not found. Check server configuration."
@@ -22,8 +22,67 @@ message_patterns:
   "model not found": "The requested model was not found. Check available models in the Models panel."
   "context length exceeded": "The input is too long for this model. Try a shorter prompt or a model with a larger context window."
   "rate limit": "Too many requests. Please wait a moment and try again."
-  "connection refused": "Could not connect to the model server. Is LM Studio/Ollama running?"
+  "connection refused": "Could not connect to the model server. Is LM Studio or the configured OpenAI-compatible server running?"
   "timed out": "The operation timed out. Try a simpler task or check server load."
 
 # Default message when no pattern matches
 default: "An unexpected error occurred. Check server logs for details."
+
+# ML/GenAI-specific error messages - owned by PACK-HUMANIZE-ERROR (Wave 1).
+# PACK-USER-SUPPORT (Wave 5) extends this file with recovery_* keys only.
+# Each entry names what failed, the user impact, and a next-step suggestion.
+training_crash: >-
+  Training run failed unexpectedly. The adapter was not saved. Check the
+  Training panel for the error detail, then retry with a smaller batch size,
+  gradient checkpointing enabled, or a validated dataset file.
+
+gguf_load_fail: >-
+  Could not load the GGUF model file. Inference is unavailable until the model
+  loads. Verify the file exists in your models directory, re-download it if it
+  may be corrupted, and check that the GPU has enough free memory for the
+  model quant size.
+
+rag_index_missing: >-
+  The RAG index for this collection does not exist yet. Queries cannot run
+  until the index is built. Open the RAG Debugger, select the document
+  collection, and build the index to generate embeddings.
+
+mcp_unavailable: >-
+  The MCP server is not available. Tool calls and context extensions will not
+  work until it is enabled. Open config/mcp_servers.yaml, enable the needed
+  server entry, then restart Vetinari.
+
+promotion_gate_fail: >-
+  This model or adapter did not pass the promotion gate. It has not been
+  promoted to the active catalog. Review the gate blockers in the Promotion
+  Inbox, address each requirement, then re-submit for promotion.
+
+# Recovery guidance used by user-supportability surfaces.
+recovery_oom: >-
+  The model ran out of GPU memory. Retry with a smaller quantized model,
+  reduce the context length, lower GPU layers, or switch to CPU fallback before
+  running the goal again.
+
+recovery_admin_token: >-
+  Admin access is required for project and workbench actions. Set
+  VETINARI_ADMIN_TOKEN before starting the server, then retry the request with
+  the matching Authorization header.
+
+recovery_hf_token: >-
+  Hugging Face rejected the model download. For private or gated models, set
+  HF_TOKEN with access to the model repository, accept the model license, then
+  rerun the download.
+
+recovery_missing_task_output: >-
+  The task output is not available yet. Run or retry the task, then open the
+  project review or task output screen after the task status is completed.
+
+recovery_frontend_navigation: >-
+  The frontend uses src/views and explicit navigation registration instead of a
+  SvelteKit src/routes directory. Add new pages through the view registry and
+  navigation drawer wiring, then verify the route in the running app.
+
+recovery_install_to_first_action: >-
+  After install, start the API server, open http://127.0.0.1:5000, set the
+  required admin token when prompted, and run the first goal from the CLI or
+  project API.

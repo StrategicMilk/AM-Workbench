@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from vetinari.exceptions import CircularDependencyError
+from vetinari.security.fail_closed import SchemaOpenError, assert_closed_schema, sanitize_untrusted_text
 from vetinari.types import PlanStatus, StatusEnum
 from vetinari.utils.serialization import dataclass_to_dict
 
@@ -70,19 +72,40 @@ class ExecutionTaskNode:
 
         Returns:
             A new ExecutionTaskNode instance populated from the dictionary values.
+
+        Raises:
+            ValueError: If the payload cannot be parsed into a task node.
         """
         try:
-            _status = StatusEnum(data.get("status", StatusEnum.PENDING.value))
-        except ValueError:
-            logger.warning(
-                "Invalid task status %r in graph data, defaulting to PENDING",
-                data.get("status"),
+            assert_closed_schema(
+                data,
+                allowed_keys=(
+                    "id",
+                    "description",
+                    "task_type",
+                    "depends_on",
+                    "depended_by",
+                    "status",
+                    "assigned_model",
+                    "input_data",
+                    "output_data",
+                    "error",
+                    "created_at",
+                    "started_at",
+                    "completed_at",
+                    "retry_count",
+                    "max_retries",
+                    "checkpoint_id",
+                ),
+                required_keys=("id", "description"),
             )
-            _status = StatusEnum.PENDING
+            _status = StatusEnum(data.get("status", StatusEnum.PENDING.value))
+        except (SchemaOpenError, ValueError) as exc:
+            raise ValueError(f"ExecutionTaskNode payload is unsafe: {exc}") from exc
         return cls(
-            id=data["id"],
-            description=data["description"],
-            task_type=data.get("task_type", "general"),
+            id=sanitize_untrusted_text(data["id"], max_length=160),
+            description=sanitize_untrusted_text(data["description"], max_length=2000),
+            task_type=sanitize_untrusted_text(data.get("task_type", "general"), max_length=120),
             depends_on=data.get("depends_on", []),
             depended_by=data.get("depended_by", []),
             status=_status,
@@ -119,6 +142,7 @@ class ExecutionGraph:
     # Graph metadata
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    topology_metadata: dict[str, Any] = field(default_factory=dict)
 
     # Execution state
     status: PlanStatus = PlanStatus.DRAFT
@@ -150,8 +174,8 @@ class ExecutionGraph:
             id=task_id,
             description=description,
             task_type=task_type,
-            depends_on=depends_on or [],  # noqa: VET112 - empty fallback preserves optional request metadata contract
-            input_data=input_data or {},  # noqa: VET112 - empty fallback preserves optional request metadata contract
+            depends_on=depends_on or [],
+            input_data=input_data or {},
         )
 
         # Update dependency links
@@ -217,10 +241,19 @@ class ExecutionGraph:
 
         Returns:
             List of results.
+
+        Raises:
+            CircularDependencyError: If pending tasks cannot be scheduled due
+                to blocked tasks or unsatisfied dependencies.
         """
         layers: list[list[ExecutionTaskNode]] = []
         simulated_completed: set[str] = {nid for nid, n in self.nodes.items() if n.status == StatusEnum.COMPLETED}
-        remaining = {nid: n for nid, n in self.nodes.items() if n.status in (StatusEnum.PENDING, StatusEnum.BLOCKED)}
+        blocked = {nid: n for nid, n in self.nodes.items() if n.status == StatusEnum.BLOCKED}
+        remaining = {nid: n for nid, n in self.nodes.items() if n.status == StatusEnum.PENDING}
+
+        if blocked and not remaining:
+            blocked_ids = ", ".join(sorted(blocked))
+            raise CircularDependencyError(f"execution graph has no schedulable tasks; blocked tasks: {blocked_ids}")
 
         while remaining:
             current_layer: list[ExecutionTaskNode] = []
@@ -233,8 +266,15 @@ class ExecutionGraph:
                     to_remove.append(task_id)
 
             if not current_layer:
-                logger.warning("get_next_layer: no tasks available — possible circular dependency or all blocked")
-                break
+                remaining_ids = ", ".join(sorted(remaining))
+                missing_deps = sorted({
+                    dep_id for node in remaining.values() for dep_id in node.depends_on if dep_id not in self.nodes
+                })
+                detail = f"remaining tasks: {remaining_ids}"
+                if missing_deps:
+                    detail += f"; missing dependencies: {', '.join(missing_deps)}"
+                logger.warning("get_next_layer: no tasks available - %s", detail)
+                raise CircularDependencyError(f"execution graph cannot be scheduled ({detail})")
 
             layers.append(current_layer)
             for task_id in to_remove:

@@ -1,0 +1,21 @@
+{
+  "schema_version": "workbench-suite-runner.v1",
+  "default_runner": "codex",
+  "max_legs": 60,
+  "leg_timeout_seconds": 21600,
+  "stale_leg_seconds": 7200,
+  "stall_legs": 2,
+  "runners": {
+    "codex": {
+      "binary": "codex",
+      "command": ["codex", "exec", "--cd", "{repo_root}", "{prompt}"]
+    },
+    "claude": {
+      "binary": "claude",
+      "command": ["claude", "-p", "--dangerously-skip-permissions", "--model", "{model}", "--max-budget-usd", "100", "{prompt}"],
+      "disabled": true,
+      "disabled_reason": "2026-06-15: claude -p draws from separate Agent SDK credit pool after billing change; use in-session lane-auditor subagents instead. Codex runner is unaffected."
+    }
+  },
+  "rationale": "Deterministic run driver for start-and-walk-away suite runs. It spawns ONE fresh headless model session per budget-leg, so each leg pays the per-turn harness tax once instead of one marathon session paying it hundreds of times. Legs resume from durable state, so context is cleared automatically between legs. BILLING: default_runner is 'codex' so legs run via `codex exec` (OpenAI billing) and never require ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN. The 'claude' runner is disabled because `claude -p` draws from a separate Agent SDK credit pool after the billing change. VERIFY BEFORE A REAL RUN: the command templates are starting points -- for an UNATTENDED runner leg you may need to confirm exact non-interactive permission flags against your installed CLI version. {repo_root}, {model}, and {prompt} are substituted at spawn time. {model} is resolved from the run's SONNET-STATE file (normal->sonnet, exhausted->opus)."
+}

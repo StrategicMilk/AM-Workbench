@@ -1,0 +1,65 @@
+schema_version: "1"
+backends:
+  vllm:
+    allowed_knobs:
+      - max_num_batched_tokens
+      - enable_prefix_caching
+      - prefix_cache_salt
+    required_metrics: &required_metrics
+      - quality_score
+      - latency_ms
+      - throughput_tokens_s
+      - cost_usd
+      - memory_mb
+      - error_rate
+      - fallback_rate
+    rollback_window_hours: 24
+    promotion_thresholds: &default_thresholds
+      min_representative_tasks: 5
+      max_noise_coefficient: 0.12
+      min_quality_delta: 0.02
+      min_latency_improvement_ratio: 0.08
+      min_throughput_improvement_ratio: 0.05
+      max_cost_regression_ratio: 0.02
+      max_memory_regression_ratio: 0.05
+      max_error_regression_ratio: 0.0
+      max_fallback_regression_ratio: 0.0
+  llama_cpp:
+    allowed_knobs:
+      - n_gpu_layers
+      - n_batch
+      - n_ctx
+      - type_k
+      - type_v
+      - prompt_cache
+    required_metrics: *required_metrics
+    rollback_window_hours: 24
+    promotion_thresholds: *default_thresholds
+  retry_policy:
+    allowed_knobs:
+      - max_attempts
+      - base_delay_ms
+      - max_delay_ms
+    required_metrics: *required_metrics
+    rollback_window_hours: 12
+    promotion_thresholds: *default_thresholds
+  http:
+    allowed_knobs:
+      - pool_max_connections
+      - timeout_s
+    required_metrics: *required_metrics
+    rollback_window_hours: 12
+    promotion_thresholds: *default_thresholds
+  search:
+    allowed_knobs:
+      - fallback_order
+      - timeout_s
+    required_metrics: *required_metrics
+    rollback_window_hours: 12
+    promotion_thresholds: *default_thresholds
+  scheduler:
+    allowed_knobs:
+      - lane_budgets
+    required_metrics: *required_metrics
+    rollback_window_hours: 12
+    promotion_thresholds: *default_thresholds

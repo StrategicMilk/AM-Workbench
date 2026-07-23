@@ -14,22 +14,17 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 
-from vetinari.constants import _PROJECT_ROOT  # noqa: VET123 - barrel export preserves public import compatibility
+import vetinari.constants as _constants
 
-logger = logging.getLogger(__name__)
-
-PLAN_MEMORY_DB_PATH = os.environ.get("PLAN_MEMORY_DB_PATH", str(_PROJECT_ROOT / "vetinari_memory.db"))
-PLAN_RETENTION_DAYS = int(os.environ.get("PLAN_RETENTION_DAYS", "90"))
-PLAN_ADMIN_TOKEN = os.environ.get("PLAN_ADMIN_TOKEN", "")
-
-from .intent_parser import (  # noqa: E402 - late import is required after bootstrap setup
+from .intent_parser import (
     IntentParser,
     ParsedQuery,
     QueryIntent,
     get_intent_parser,
 )
-from .interfaces import (  # noqa: E402, VET123 — DUAL_MEMORY_AVAILABLE imported from vetinari.memory in plan_api.py
+from .interfaces import (
     DUAL_MEMORY_AVAILABLE,
     ApprovalDetails,
     MemoryEntry,
@@ -37,19 +32,63 @@ from .interfaces import (  # noqa: E402, VET123 — DUAL_MEMORY_AVAILABLE import
     MemoryType,
     content_hash,
 )
-from .plan_tracking import (  # noqa: E402, VET123 — init_memory_store has no external callers but removing causes VET120
+from .plan_tracking import (
     MemoryStore,
     get_memory_store,
     init_memory_store,
 )
-from .shared import SharedMemory, get_shared_memory  # noqa: E402 - late import is required after bootstrap setup
-from .unified import (  # noqa: E402 - late import is required after bootstrap setup
+from .shared import SharedMemory, get_shared_memory
+from .unified import (
     RecordedEpisode,
     SessionContext,
     UnifiedMemoryStore,
     get_unified_memory_store,
     init_unified_memory_store,
 )
+
+logger = logging.getLogger(__name__)
+
+
+PLAN_MEMORY_DB_PATH = "vetinari_memory.db"
+PLAN_RETENTION_DAYS = 90
+PLAN_ADMIN_TOKEN = ""
+
+
+def get_plan_memory_db_path() -> str:
+    """Return the plan-memory database path from the runtime environment."""
+    return os.environ.get("PLAN_MEMORY_DB_PATH", str(_constants._PROJECT_ROOT / "vetinari_memory.db"))
+
+
+def get_plan_retention_days() -> int:
+    """Return the runtime plan retention window, failing closed for bad values.
+
+    Returns:
+        Retention window in days from PLAN_RETENTION_DAYS, or the package
+        default when the environment variable is unset or empty.
+
+    Raises:
+        ValueError: If PLAN_RETENTION_DAYS is set to a non-integer value.
+    """
+    raw = os.environ.get("PLAN_RETENTION_DAYS")
+    if raw is None or raw == "":
+        return PLAN_RETENTION_DAYS
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError("PLAN_RETENTION_DAYS must be an integer") from exc
+
+
+def get_plan_admin_token() -> str:
+    """Return the legacy plan admin token from the runtime environment."""
+    return os.environ.get("PLAN_ADMIN_TOKEN", "")
+
+
+def get_plan_memory_db_file() -> Path:
+    """Return the runtime plan-memory database path as a Path."""
+    return Path(get_plan_memory_db_path())
+
+
+Episode = RecordedEpisode
 
 __all__ = [
     "DUAL_MEMORY_AVAILABLE",
@@ -72,6 +111,10 @@ __all__ = [
     "content_hash",
     "get_intent_parser",
     "get_memory_store",
+    "get_plan_admin_token",
+    "get_plan_memory_db_file",
+    "get_plan_memory_db_path",
+    "get_plan_retention_days",
     "get_shared_memory",
     "get_unified_memory_store",
     "init_memory_store",

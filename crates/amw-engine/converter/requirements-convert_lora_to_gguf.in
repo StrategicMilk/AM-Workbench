@@ -1,0 +1,12 @@
+# Direct runtime inputs for the bundled llama.cpp LoRA converter.
+# Compile this file into requirements-convert_lora_to_gguf.txt with the pinned
+# uv command recorded in docs/reference/engine.md; do not install it directly.
+--index-url https://pypi.org/simple
+
+numpy==1.26.4
+peft==0.19.1
+protobuf==4.25.8
+sentencepiece==0.2.1
+torch @ https://download-r2.pytorch.org/whl/cpu/torch-2.11.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=f82e2ae20c1545bb03997d1cc3143d94e14b800038669ee1aca45808a9acc338 ; sys_platform == "linux"
+torch @ https://download-r2.pytorch.org/whl/cpu/torch-2.11.0%2Bcpu-cp312-cp312-win_amd64.whl#sha256=1abeaa46fa7532ed35ed79146f4de5d7a9d4b30462c98052ea4ddfe781ea3eca ; sys_platform == "win32"
+transformers==4.57.6

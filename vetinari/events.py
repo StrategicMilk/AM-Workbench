@@ -16,10 +16,11 @@ import threading
 import uuid
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any
 
+from vetinari.concurrency import submit_with_context
 from vetinari.constants import (
     EVENTBUS_ASYNC_QUEUE_SIZE,
     EVENTBUS_HISTORY_MAX_LENGTH,
@@ -27,205 +28,67 @@ from vetinari.constants import (
     THREAD_JOIN_TIMEOUT,
     THREAD_JOIN_TIMEOUT_SHORT,
 )
+from vetinari.events_payloads import (
+    AnomalyDetected,
+    ClarificationRequested,
+    CpuTierRouteStatusChanged,
+    CpuTierStatusChanged,
+    Event,
+    HumanApprovalNeeded,
+    KaizenImprovementActive,
+    KaizenImprovementConfirmed,
+    KaizenImprovementProposed,
+    KaizenImprovementReverted,
+    KaizenLintFinding,
+    QualityDriftDetected,
+    QualityGateResult,
+    ResourceRequest,
+    RetrainingRecommended,
+    TaskCompleted,
+    TaskStarted,
+    TaskTimingRecord,
+    TelemetryAlertEvent,
+    clarification_requested,
+)
+
+__all__ = [
+    "AnomalyDetected",
+    "ClarificationRequested",
+    "CpuTierRouteStatusChanged",
+    "CpuTierStatusChanged",
+    "Event",
+    "EventBus",
+    "HumanApprovalNeeded",
+    "KaizenImprovementActive",
+    "KaizenImprovementConfirmed",
+    "KaizenImprovementProposed",
+    "KaizenImprovementReverted",
+    "KaizenLintFinding",
+    "QualityDriftDetected",
+    "QualityGateResult",
+    "ResourceRequest",
+    "RetrainingRecommended",
+    "TaskCompleted",
+    "TaskStarted",
+    "TaskTimingRecord",
+    "TelemetryAlertEvent",
+    "TimingEvent",
+    "clarification_requested",
+    "get_event_bus",
+    "reset_event_bus",
+]
 
 logger = logging.getLogger(__name__)
 
+
 _HISTORY_MAX_LENGTH = EVENTBUS_HISTORY_MAX_LENGTH  # Maximum number of events retained in the history ring buffer
+_HANDLER_TIMEOUT_SECONDS = 5.0
+_HANDLER_MAX_WORKERS = 4
 
 
 # ---------------------------------------------------------------------------
-# Event dataclasses
+# Event payloads live in vetinari.events_payloads.
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class Event:
-    """Base class for all events in the Vetinari event bus.
-
-    Args:
-        event_type: Discriminator string identifying the event kind.
-        timestamp: Wall-clock time (``time.time()``) when the event was created.
-    """
-
-    event_type: str
-    timestamp: float
-
-    def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(event_type={self.event_type!r}, timestamp={self.timestamp!r})"
-
-
-@dataclass(frozen=True, slots=True)
-class TaskStarted(Event):
-    """Published when a task begins execution.
-
-    Args:
-        task_id: Unique identifier of the task.
-        agent_type: The ``AgentType.value`` string of the executing agent.
-        timestamp: Wall-clock time when the event was created.
-    """
-
-    task_id: str = ""
-    agent_type: str = ""
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "event_type", "TaskStarted")
-
-    def __repr__(self) -> str:
-        return f"TaskStarted(task_id={self.task_id!r}, agent_type={self.agent_type!r})"
-
-
-@dataclass(frozen=True, slots=True)
-class TaskCompleted(Event):
-    """Published when a task finishes execution.
-
-    Args:
-        task_id: Unique identifier of the task.
-        agent_type: The ``AgentType.value`` string of the executing agent.
-        success: Whether the task succeeded.
-        duration_ms: Elapsed wall-clock time in milliseconds.
-        timestamp: Wall-clock time when the event was created.
-    """
-
-    task_id: str = ""
-    agent_type: str = ""
-    success: bool = False
-    duration_ms: float = 0.0
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "event_type", "TaskCompleted")
-
-    def __repr__(self) -> str:
-        return (
-            f"TaskCompleted(task_id={self.task_id!r}, agent_type={self.agent_type!r}, "
-            f"success={self.success!r}, duration_ms={self.duration_ms!r})"
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class QualityGateResult(Event):
-    """Published after a quality review completes.
-
-    Args:
-        task_id: Unique identifier of the reviewed task.
-        passed: Whether the quality gate passed.
-        score: Numeric quality score in the range ``[0.0, 1.0]``.
-        issues: List of human-readable issue descriptions.
-        timestamp: Wall-clock time when the event was created.
-    """
-
-    task_id: str = ""
-    passed: bool = False
-    score: float = 0.0
-    issues: list[str] = field(default_factory=list)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "event_type", "QualityGateResult")
-
-    def __repr__(self) -> str:
-        return (
-            f"QualityGateResult(task_id={self.task_id!r}, passed={self.passed!r}, "
-            f"score={self.score!r}, issues={len(self.issues)})"
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class ResourceRequest(Event):
-    """Published when an agent requests an external resource.
-
-    Args:
-        agent_type: The ``AgentType.value`` string of the requesting agent.
-        resource_type: Category of resource being requested (e.g. ``"model"``, ``"tool"``).
-        details: Arbitrary metadata describing the request.
-        timestamp: Wall-clock time when the event was created.
-    """
-
-    agent_type: str = ""
-    resource_type: str = ""
-    details: dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "event_type", "ResourceRequest")
-
-    def __repr__(self) -> str:
-        return f"ResourceRequest(agent_type={self.agent_type!r}, resource_type={self.resource_type!r})"
-
-
-@dataclass(frozen=True, slots=True)
-class HumanApprovalNeeded(Event):
-    """Published when a task requires human approval to proceed.
-
-    Args:
-        task_id: Unique identifier of the task requiring approval.
-        reason: Human-readable explanation of why approval is needed.
-        context: Arbitrary metadata providing additional context for the approver.
-        timestamp: Wall-clock time when the event was created.
-    """
-
-    task_id: str = ""
-    reason: str = ""
-    context: dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "event_type", "HumanApprovalNeeded")
-
-    def __repr__(self) -> str:
-        return f"HumanApprovalNeeded(task_id={self.task_id!r}, reason={self.reason!r})"
-
-
-@dataclass(frozen=True, slots=True)
-class AnomalyDetected(Event):
-    """Published when an ensemble anomaly detector confirms an anomaly.
-
-    Args:
-        agent_type: The agent type where the anomaly was detected.
-        anomaly_type: The type of anomaly (e.g., "ensemble").
-        triggered_detectors: List of detector names that triggered.
-        score: Anomaly severity score.
-        timestamp: Wall-clock time when the event was created.
-    """
-
-    agent_type: str = ""
-    anomaly_type: str = ""
-    triggered_detectors: list[str] = field(default_factory=list)
-    score: float = 0.0
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "event_type", "AnomalyDetected")
-
-    def __repr__(self) -> str:
-        return (
-            f"AnomalyDetected(agent_type={self.agent_type!r}, anomaly_type={self.anomaly_type!r}, score={self.score!r})"
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class RetrainingRecommended(Event):
-    """Published when forecasting predicts quality dropping below SLA threshold.
-
-    Args:
-        metric: The quality metric being forecast.
-        predicted_quality: The predicted quality value at breach point.
-        days_until_breach: Estimated days until SLA breach.
-        confidence_interval: The confidence interval width at breach point.
-        forecast_method_used: Which forecast method produced this prediction.
-        timestamp: Wall-clock time when the event was created.
-    """
-
-    metric: str = ""
-    predicted_quality: float = 0.0
-    days_until_breach: int = 0
-    confidence_interval: float = 0.0
-    forecast_method_used: str = ""
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "event_type", "RetrainingRecommended")
-
-    def __repr__(self) -> str:
-        return (
-            f"RetrainingRecommended(metric={self.metric!r}, "
-            f"predicted_quality={self.predicted_quality!r}, "
-            f"days_until_breach={self.days_until_breach!r})"
-        )
 
 
 class TimingEvent(Enum):
@@ -239,224 +102,12 @@ class TimingEvent(Enum):
     TASK_SKIPPED = "task_skipped"
 
 
-@dataclass(frozen=True, slots=True)
-class TaskTimingRecord(Event):
-    """Timing record for value stream analysis.
-
-    Captures when each stage transition happens for a task, enabling
-    computation of queue time, processing time, and waste.
-
-    Args:
-        task_id: Unique identifier of the task.
-        execution_id: ID of the overall execution this task belongs to.
-        agent_type: The agent type processing this task.
-        timing_event: Which stage transition occurred.
-        metadata: Additional context (queue_depth_at_time, model_used, etc.).
-        timestamp: Wall-clock time when the event was created.
-    """
-
-    task_id: str = ""
-    execution_id: str = ""
-    agent_type: str = ""
-    timing_event: str = ""  # TimingEvent.value
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "event_type", "TaskTimingRecord")
-
-    def __repr__(self) -> str:
-        return (
-            f"TaskTimingRecord(task_id={self.task_id!r}, execution_id={self.execution_id!r}, "
-            f"timing_event={self.timing_event!r})"
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class KaizenImprovementProposed(Event):
-    """Published when a new kaizen improvement is proposed.
-
-    Args:
-        improvement_id: Unique identifier of the proposed improvement.
-        hypothesis: What the improvement is expected to achieve.
-        metric: Which metric is being improved.
-        applied_by: Which subsystem proposed this improvement.
-        timestamp: Wall-clock time when the event was created.
-    """
-
-    improvement_id: str = ""
-    hypothesis: str = ""
-    metric: str = ""
-    applied_by: str = ""
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "event_type", "KaizenImprovementProposed")
-
-    def __repr__(self) -> str:
-        return (
-            f"KaizenImprovementProposed(improvement_id={self.improvement_id!r}, "
-            f"metric={self.metric!r}, applied_by={self.applied_by!r})"
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class KaizenImprovementConfirmed(Event):
-    """Published when a kaizen improvement is confirmed (met its target).
-
-    Args:
-        improvement_id: Unique identifier of the confirmed improvement.
-        metric: Which metric was improved.
-        baseline_value: Metric value before improvement.
-        actual_value: Measured metric value after observation.
-        applied_by: Which subsystem applied this improvement.
-        timestamp: Wall-clock time when the event was created.
-    """
-
-    improvement_id: str = ""
-    metric: str = ""
-    baseline_value: float = 0.0
-    actual_value: float = 0.0
-    applied_by: str = ""
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "event_type", "KaizenImprovementConfirmed")
-
-    def __repr__(self) -> str:
-        return (
-            f"KaizenImprovementConfirmed(improvement_id={self.improvement_id!r}, "
-            f"metric={self.metric!r}, baseline_value={self.baseline_value!r}, "
-            f"actual_value={self.actual_value!r})"
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class KaizenImprovementActive(Event):
-    """Published when a kaizen improvement moves from PROPOSED to ACTIVE.
-
-    Args:
-        improvement_id: Unique identifier of the improvement now under trial.
-        metric: Which metric the improvement targets.
-        applied_by: Which subsystem activated this improvement.
-        timestamp: Wall-clock time when the event was created.
-    """
-
-    improvement_id: str = ""
-    metric: str = ""
-    applied_by: str = ""
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "event_type", "KaizenImprovementActive")
-
-    def __repr__(self) -> str:
-        return (
-            f"KaizenImprovementActive(improvement_id={self.improvement_id!r}, "
-            f"metric={self.metric!r}, applied_by={self.applied_by!r})"
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class KaizenImprovementReverted(Event):
-    """Published when a kaizen improvement is reverted due to regression.
-
-    Args:
-        improvement_id: Unique identifier of the reverted improvement.
-        metric: Which metric regressed.
-        reason: Why the improvement was reverted.
-        timestamp: Wall-clock time when the event was created.
-    """
-
-    improvement_id: str = ""
-    metric: str = ""
-    reason: str = ""
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "event_type", "KaizenImprovementReverted")
-
-    def __repr__(self) -> str:
-        return (
-            f"KaizenImprovementReverted(improvement_id={self.improvement_id!r}, "
-            f"metric={self.metric!r}, reason={self.reason!r})"
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class KaizenLintFinding(Event):
-    """Published when knowledge lint detects an issue (stale, contradiction, orphan, drift).
-
-    Args:
-        finding_id: Unique identifier for the lint finding.
-        category: Lint category (contradiction, stale, orphaned, vocabulary_drift).
-        description: Human-readable description of the finding.
-        severity: Finding severity (info, warning, error).
-    """
-
-    finding_id: str = ""
-    category: str = ""
-    description: str = ""
-    severity: str = "warning"
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "event_type", "KaizenLintFinding")
-
-    def __repr__(self) -> str:
-        return f"KaizenLintFinding(finding_id={self.finding_id!r}, category={self.category!r})"
-
-
-@dataclass(frozen=True, slots=True)
-class QualityDriftDetected(Event):
-    """Published when ensemble drift detectors confirm a quality shift.
-
-    Fired by :class:`~vetinari.analytics.quality_drift.QualityDriftDetector`
-    when 2+ of 3 detectors (CUSUM, Page-Hinkley, ADWIN) agree on drift.
-
-    Args:
-        task_type: The task type experiencing drift (empty string if unknown).
-        triggered_detectors: Names of detectors that triggered (e.g. ``["cusum", "adwin"]``).
-        observation_count: Total observations processed at time of detection.
-        timestamp: Wall-clock time when the event was created.
-    """
-
-    task_type: str = ""
-    triggered_detectors: list[str] = field(default_factory=list)
-    observation_count: int = 0
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "event_type", "QUALITY_DRIFT")
-
-    def __repr__(self) -> str:
-        return f"QualityDriftDetected(task_type={self.task_type!r}, triggered_detectors={self.triggered_detectors!r})"
-
-
-@dataclass(frozen=True, slots=True)
-class TelemetryAlertEvent(Event):
-    """Published when a telemetry threshold breach is detected.
-
-    Fired by :meth:`~vetinari.analytics.telemetry_persistence.TelemetryPersistence._emit_alert_event`
-    when error rate or p95 latency exceeds configured thresholds.
-
-    Args:
-        alert_type: Short identifier for the breach (e.g. ``"high_error_rate"``,
-            ``"high_p95_latency"``).
-        message: Human-readable description of what breached and by how much.
-        metadata: Numeric context for the alert (rates, thresholds, counts).
-    """
-
-    alert_type: str = ""
-    message: str = ""
-    metadata: dict = field(default_factory=dict)  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "event_type", "TELEMETRY_ALERT")
-
-    def __repr__(self) -> str:
-        return f"TelemetryAlertEvent(alert_type={self.alert_type!r}, message={self.message!r})"
-
-
 # ---------------------------------------------------------------------------
 # Subscription record
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class _Subscription:
     """Internal record for a single event subscription."""
 
@@ -486,14 +137,34 @@ class EventBus:
         self._subscriptions: dict[str, _Subscription] = {}
         self._history: deque[Event] = deque(maxlen=_HISTORY_MAX_LENGTH)
         self._eviction_count: int = 0  # Total events evicted from history ring buffer
-        self._async_queue: queue.Queue = queue.Queue(maxsize=EVENTBUS_ASYNC_QUEUE_SIZE)
+        self._async_queue: queue.Queue[tuple[Event, list[_Subscription]] | None] = queue.Queue(
+            maxsize=EVENTBUS_ASYNC_QUEUE_SIZE
+        )
         self._async_worker: threading.Thread | None = None
+        self._handler_executor: ThreadPoolExecutor | None = ThreadPoolExecutor(
+            max_workers=_HANDLER_MAX_WORKERS,
+            thread_name_prefix="eventbus-handler",
+        )
+        self._handler_futures: set[Future[None]] = set()
+        self._handler_futures_lock = threading.Lock()
         self._shutdown = threading.Event()
 
     @property
     def eviction_count(self) -> int:
         """Total number of events evicted from the history ring buffer."""
         return self._eviction_count
+
+    @property
+    def pending_handler_count(self) -> int:
+        """Return the number of subscriber handler callbacks still running.
+
+        Returns:
+            Count of accepted synchronous subscriber callbacks that have not
+            completed yet.
+        """
+        with self._handler_futures_lock:
+            self._prune_done_handler_futures_locked()
+            return len(self._handler_futures)
 
     # -- public API --------------------------------------------------------
 
@@ -538,14 +209,20 @@ class EventBus:
         logger.debug("Unsubscribed %s", subscription_id)
 
     def publish(self, event: Event) -> None:
-        """Publish an event, invoking all matching subscribers synchronously.
+        """Publish an event and schedule matching subscribers for delivery.
 
-        Subscriber exceptions are caught and logged so that a single bad
-        subscriber cannot crash the publisher.
+        Matching callbacks run on the tracked handler executor so a slow
+        subscriber does not block the publisher thread. Subscriber exceptions
+        are caught and logged when the handler future completes.
 
         Args:
             event: The event instance to publish.
+
+        Raises:
+            RuntimeError: If the bus has already been shut down.
         """
+        if self._shutdown.is_set():
+            raise RuntimeError("EventBus is shut down")
         # Deep-copy the event before storing so that subscribers mutating
         # mutable payload fields (e.g. metadata dicts) cannot corrupt the
         # history ring buffer.
@@ -565,50 +242,75 @@ class EventBus:
         for sub in matching:
             self._invoke_handler(sub, event)
 
-    def _invoke_handler(self, sub: Any, event: Event) -> None:
-        """Run a subscriber callback in a background thread with a timeout.
+    def drain_handlers(self, timeout: float | None = None) -> int:
+        """Wait for accepted synchronous subscriber callbacks to finish.
 
-        Prevents I/O-bound handlers from blocking the publisher thread.
+        Args:
+            timeout: Maximum seconds to wait for the current pending handler
+                set. ``None`` waits until every currently pending callback
+                completes.
+
+        Returns:
+            Number of handler callbacks still pending after the wait.
         """
-        _HANDLER_TIMEOUT = 5.0  # seconds before logging a slow handler warning
+        with self._handler_futures_lock:
+            self._prune_done_handler_futures_locked()
+            pending = set(self._handler_futures)
 
-        result_holder: list[Exception | None] = [None]
+        if pending:
+            wait(pending, timeout=timeout)
 
-        def _run() -> None:
-            try:
-                sub.callback(event)
-            except Exception as exc:
-                result_holder[0] = exc
+        return self.pending_handler_count
 
-        handler_thread = threading.Thread(
-            target=_run,
-            name=f"eventbus-handler-{sub.subscription_id}",
-            daemon=True,
-        )
-        handler_thread.start()
-        handler_thread.join(timeout=_HANDLER_TIMEOUT)
+    def _invoke_handler(self, sub: _Subscription, event: Event) -> None:
+        """Run a subscriber callback through the tracked handler executor."""
+        executor = self._ensure_handler_executor()
+        future = submit_with_context(executor, sub.callback, event, require_correlation=False)
+        with self._handler_futures_lock:
+            self._handler_futures.add(future)
+        future.add_done_callback(lambda done: self._handle_handler_done(done, sub, event))
 
-        if handler_thread.is_alive():
+    def _ensure_handler_executor(self) -> ThreadPoolExecutor:
+        """Return a live handler executor, recreating it after shutdown."""
+        with self._handler_futures_lock:
+            if self._handler_executor is None:
+                self._handler_executor = ThreadPoolExecutor(
+                    max_workers=_HANDLER_MAX_WORKERS,
+                    thread_name_prefix="eventbus-handler",
+                )
+            return self._handler_executor
+
+    def _handle_handler_done(self, future: Future[None], sub: _Subscription, event: Event) -> None:
+        """Remove a completed handler future and log callback failures."""
+        with self._handler_futures_lock:
+            self._handler_futures.discard(future)
+        try:
+            future.result()
+        except CancelledError:
             logger.warning(
-                "EventBus handler %s exceeded %.1fs timeout for event %s — handler is still running in background",
-                sub.subscription_id,
-                _HANDLER_TIMEOUT,
-                event.event_type,
-            )
-        elif result_holder[0] is not None:
-            logger.error(
-                "Subscriber %s raised an exception for event %s: %s",
+                "Subscriber %s handler cancelled for event %s during EventBus shutdown",
                 sub.subscription_id,
                 event.event_type,
-                result_holder[0],
-                exc_info=result_holder[0],
             )
+        except Exception:
+            logger.exception(
+                "Subscriber %s raised an exception for event %s",
+                sub.subscription_id,
+                event.event_type,
+            )
+
+    def _prune_done_handler_futures_locked(self) -> None:
+        """Drop completed handler futures while the futures lock is held."""
+        self._handler_futures = {future for future in self._handler_futures if not future.done()}
 
     def _ensure_async_worker(self) -> None:
-        """Start the single async dispatch worker thread if not running."""
+        """Start the single async dispatch worker thread if not running.
+
+        MUST be called while ``self._lock`` is held. The caller is responsible
+        for holding the lock before invoking this method.
+        """
         if self._async_worker is not None and self._async_worker.is_alive():
             return
-        self._shutdown.clear()
         self._async_worker = threading.Thread(
             target=self._async_dispatch_loop,
             daemon=True,
@@ -618,7 +320,7 @@ class EventBus:
 
     def _async_dispatch_loop(self) -> None:
         """Single worker thread that drains the async event queue."""
-        while not self._shutdown.is_set():
+        while True:
             timed_out = False
             item = None
             try:
@@ -627,8 +329,12 @@ class EventBus:
                 # Normal poll timeout — no event to dispatch; loop and check shutdown flag.
                 timed_out = True
             if timed_out:
+                if self._shutdown.is_set():
+                    return
                 continue
             if item is None:
+                with contextlib.suppress(ValueError):
+                    self._async_queue.task_done()
                 # Sentinel — shutdown() was called; exit immediately.
                 return
             event, matching = item
@@ -641,6 +347,8 @@ class EventBus:
                         sub.subscription_id,
                         event.event_type,
                     )
+            with contextlib.suppress(ValueError):
+                self._async_queue.task_done()
 
     def shutdown(self) -> None:
         """Signal the async worker thread to stop and wait for it to exit.
@@ -653,10 +361,16 @@ class EventBus:
         # Put a sentinel so the worker unblocks immediately instead of waiting
         # for the 1-second queue.get() timeout.
         with contextlib.suppress(queue.Full):
-            self._async_queue.put_nowait(None)  # type: ignore[arg-type]
+            self._async_queue.put(None, timeout=QUEUE_TIMEOUT)
         if self._async_worker is not None and self._async_worker.is_alive():
             self._async_worker.join(timeout=THREAD_JOIN_TIMEOUT)
         self._async_worker = None
+        self.drain_handlers(timeout=THREAD_JOIN_TIMEOUT_SHORT)
+        with self._handler_futures_lock:
+            executor = self._handler_executor
+            self._handler_executor = None
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=False)
 
     def publish_async(self, event: Event) -> None:
         """Publish an event, invoking all matching subscribers in a background thread.
@@ -668,7 +382,12 @@ class EventBus:
 
         Args:
             event: The event instance to publish.
+
+        Raises:
+            RuntimeError: If the bus has already been shut down.
         """
+        if self._shutdown.is_set():
+            raise RuntimeError("EventBus is shut down")
         # Deep-copy before storing in history — same reason as publish().
         stored_event = copy.deepcopy(event)
         with self._lock:
@@ -683,17 +402,17 @@ class EventBus:
             self._history.append(stored_event)
             matching = [sub for sub in self._subscriptions.values() if isinstance(event, sub.event_type)]
 
-        if matching:
-            try:
-                self._async_queue.put((event, matching), timeout=QUEUE_TIMEOUT)
-            except queue.Full:
-                logger.warning(
-                    "EventBus async queue full (size=%d) — dropping dispatch for event type '%s'",
-                    EVENTBUS_ASYNC_QUEUE_SIZE,
-                    event.event_type,
-                )
-                return
-            self._ensure_async_worker()
+            if matching:
+                try:
+                    self._async_queue.put((event, matching), timeout=QUEUE_TIMEOUT)
+                except queue.Full:
+                    logger.warning(
+                        "EventBus async queue full (size=%d) — dropping dispatch for event type '%s'",
+                        EVENTBUS_ASYNC_QUEUE_SIZE,
+                        event.event_type,
+                    )
+                    return
+                self._ensure_async_worker()
 
     def clear(self) -> None:
         """Remove all subscriptions and history, stop async worker.
@@ -702,13 +421,24 @@ class EventBus:
         Resets the shutdown event so the bus can be reused after clearing.
         """
         self._shutdown.set()
+        with contextlib.suppress(queue.Full):
+            self._async_queue.put(None, timeout=QUEUE_TIMEOUT)
         if self._async_worker is not None and self._async_worker.is_alive():
             self._async_worker.join(timeout=THREAD_JOIN_TIMEOUT_SHORT)
         self._async_worker = None
+        self.drain_handlers(timeout=THREAD_JOIN_TIMEOUT_SHORT)
+        with self._handler_futures_lock:
+            executor = self._handler_executor
+            self._handler_executor = None
+            self._handler_futures.clear()
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)  # noqa: leak-rule-3 -- handlers were drained above via drain_handlers(); cancel_futures signals stop. wait=False keeps EventBus shutdown from hanging on a stuck handler.
         # Drain any remaining items from the queue
         while not self._async_queue.empty():
             try:
                 self._async_queue.get_nowait()
+                with contextlib.suppress(ValueError):
+                    self._async_queue.task_done()
             except queue.Empty:
                 break
         with self._lock:
@@ -719,7 +449,6 @@ class EventBus:
         # Without this, the next publish_async call would find _shutdown already
         # set and the worker thread would exit immediately on start.
         self._shutdown.clear()
-        logger.debug("EventBus cleared")
 
     def get_history(
         self,

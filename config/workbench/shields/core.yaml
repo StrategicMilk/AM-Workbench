@@ -1,0 +1,403 @@
+schema_version: "1.0"
+packs:
+  - schema_version: "1.0"
+    pack_id: shield-dlp-core
+    version: "1.0.0"
+    risk_domain: dlp
+    protected_surfaces:
+      - surface_id: dlp.egress.text
+        surface_kind: content_egress
+        authority_refs: ["policy-verdict:memory_scope"]
+        description: Blocks sensitive data exfiltration from text outputs.
+        tool_surface_id: connector.public-export
+    default_mode: strict
+    selectable_scopes: [project, automation, governance]
+    owner: workbench-safety
+    rollout_state: active
+    policy_version: "2026-05-02-node9-action-governance"
+    reason_codes: [allowed, dlp_sensitive_exfiltration]
+    rules:
+      - rule_id: dlp-sensitive-egress
+        reason_code: dlp_sensitive_exfiltration
+        description: Prevents raw sensitive content from leaving the project boundary.
+        protected_surface_refs: [dlp.egress.text]
+        good_fixture_refs: [dlp-good-redacted-summary]
+        bad_fixture_refs: [dlp-bad-sensitive-exfiltration]
+        block_patterns: ["ssn", "credit card", "sensitive data exfiltration"]
+    fixtures:
+      - fixture_id: dlp-good-redacted-summary
+        kind: known_good
+        summary: Redacted project summary without raw sensitive fields.
+        action_type: content_export
+        expected_decision: allow
+        match_patterns: ["redacted project summary"]
+        evidence_refs: ["fixture:dlp:good"]
+      - fixture_id: dlp-bad-sensitive-exfiltration
+        kind: known_bad
+        summary: Send SSN and credit card data to an external paste.
+        action_type: content_export
+        expected_decision: block
+        match_patterns: ["ssn", "credit card"]
+        evidence_refs: ["fixture:dlp:bad"]
+
+  - schema_version: "1.0"
+    pack_id: shield-shell-safety-core
+    version: "1.0.0"
+    risk_domain: shell_safety
+    protected_surfaces:
+      - surface_id: shell.command.execution
+        surface_kind: shell_command
+        authority_refs: ["policy-verdict:shell", "tool-surface:shell.local"]
+        description: Blocks destructive or obfuscated shell commands.
+        tool_surface_id: shell.local
+    default_mode: strict
+    selectable_scopes: [project, automation, governance]
+    owner: workbench-safety
+    rollout_state: active
+    policy_version: "2026-05-02-node9-action-governance"
+    reason_codes: [allowed, shell_destructive_command]
+    rules:
+      - rule_id: shell-destructive-command
+        reason_code: shell_destructive_command
+        description: Prevents destructive shell commands and pipe-chain installers.
+        protected_surface_refs: [shell.command.execution]
+        good_fixture_refs: [shell-good-readonly]
+        bad_fixture_refs: [shell-bad-destructive]
+        block_patterns: ["rm -rf", "curl | sh", "encodedcommand"]
+    fixtures:
+      - fixture_id: shell-good-readonly
+        kind: known_good
+        summary: Run git status and list files read-only.
+        action_type: shell_command
+        expected_decision: allow
+        match_patterns: ["git status", "dir"]
+        evidence_refs: ["fixture:shell:good"]
+      - fixture_id: shell-bad-destructive
+        kind: known_bad
+        summary: Run rm -rf through an encoded command.
+        action_type: shell_command
+        expected_decision: block
+        match_patterns: ["rm -rf", "encodedcommand"]
+        evidence_refs: ["fixture:shell:bad"]
+
+  - schema_version: "1.0"
+    pack_id: shield-git-release-safety-core
+    version: "1.0.0"
+    risk_domain: git_release_safety
+    protected_surfaces:
+      - surface_id: git.release.publish
+        surface_kind: git_release
+        authority_refs: ["policy-verdict:approval"]
+        description: Blocks release and publish actions without verifier evidence.
+    default_mode: strict
+    selectable_scopes: [project, automation, governance]
+    owner: workbench-release
+    rollout_state: active
+    policy_version: "2026-05-02-node9-action-governance"
+    reason_codes: [allowed, release_missing_verifier]
+    rules:
+      - rule_id: release-requires-verifier-evidence
+        reason_code: release_missing_verifier
+        description: Requires verifier evidence before release publishing.
+        protected_surface_refs: [git.release.publish]
+        good_fixture_refs: [git-good-status-diff]
+        bad_fixture_refs: [git-bad-publish-without-verifier]
+        block_patterns: ["publish release", "without verifier", "no verifier"]
+    fixtures:
+      - fixture_id: git-good-status-diff
+        kind: known_good
+        summary: Inspect git status and diff before review.
+        action_type: git_read
+        expected_decision: allow
+        match_patterns: ["git status", "git diff"]
+        evidence_refs: ["fixture:git:good"]
+      - fixture_id: git-bad-publish-without-verifier
+        kind: known_bad
+        summary: Publish release without verifier evidence.
+        action_type: git_release
+        expected_decision: escalate
+        match_patterns: ["publish release", "without verifier"]
+        evidence_refs: ["fixture:git:bad"]
+
+  - schema_version: "1.0"
+    pack_id: shield-browser-network-egress-core
+    version: "1.0.0"
+    risk_domain: browser_network_egress
+    protected_surfaces:
+      - surface_id: browser.network.egress
+        surface_kind: browser_network
+        authority_refs: ["policy-verdict:network", "tool-surface:browser.local"]
+        description: Blocks unapproved browser or network egress.
+        tool_surface_id: browser.local
+    default_mode: strict
+    selectable_scopes: [project, automation, governance]
+    owner: workbench-safety
+    rollout_state: active
+    policy_version: "2026-05-02-node9-action-governance"
+    reason_codes: [allowed, unapproved_network_egress]
+    rules:
+      - rule_id: browser-egress-allowlist
+        reason_code: unapproved_network_egress
+        description: Allows localhost or approved hosts and blocks unapproved external egress.
+        protected_surface_refs: [browser.network.egress]
+        good_fixture_refs: [browser-good-localhost]
+        bad_fixture_refs: [browser-bad-unapproved-egress]
+        block_patterns: ["unapproved external", "unknown host", "curl | sh"]
+    fixtures:
+      - fixture_id: browser-good-localhost
+        kind: known_good
+        summary: Open localhost workbench route.
+        action_type: browser_navigation
+        expected_decision: allow
+        match_patterns: ["localhost", "127.0.0.1"]
+        evidence_refs: ["fixture:browser:good"]
+      - fixture_id: browser-bad-unapproved-egress
+        kind: known_bad
+        summary: Send payload to unapproved external host.
+        action_type: browser_navigation
+        expected_decision: block
+        match_patterns: ["unapproved external", "unknown host"]
+        evidence_refs: ["fixture:browser:bad"]
+
+  - schema_version: "1.0"
+    pack_id: shield-package-install-core
+    version: "1.0.0"
+    risk_domain: package_install
+    protected_surfaces:
+      - surface_id: package.install.execution
+        surface_kind: package_install
+        authority_refs: ["policy-verdict:tool_invocation", "tool-surface:package.manager"]
+        description: Blocks untrusted install and postinstall execution.
+        tool_surface_id: package.manager
+    default_mode: strict
+    selectable_scopes: [project, automation, governance]
+    owner: workbench-supply-chain
+    rollout_state: active
+    policy_version: "2026-05-02-node9-action-governance"
+    reason_codes: [allowed, untrusted_package_install]
+    capability_pack_refs: [workbench-trace-eval]
+    rules:
+      - rule_id: package-install-trust-required
+        reason_code: untrusted_package_install
+        description: Requires pinned package metadata before install authority is inherited.
+        protected_surface_refs: [package.install.execution]
+        good_fixture_refs: [package-good-pinned]
+        bad_fixture_refs: [package-bad-postinstall]
+        block_patterns: ["postinstall", "untrusted install", "curl | sh"]
+        capability_pack_refs: [workbench-trace-eval]
+    fixtures:
+      - fixture_id: package-good-pinned
+        kind: known_good
+        summary: Review pinned package metadata without installing.
+        action_type: package_review
+        expected_decision: allow
+        match_patterns: ["pinned package metadata"]
+        evidence_refs: ["fixture:package:good"]
+      - fixture_id: package-bad-postinstall
+        kind: known_bad
+        summary: Run untrusted install with postinstall execution.
+        action_type: package_install
+        expected_decision: block
+        match_patterns: ["untrusted install", "postinstall"]
+        evidence_refs: ["fixture:package:bad"]
+
+  - schema_version: "1.0"
+    pack_id: shield-secrets-core
+    version: "1.0.0"
+    risk_domain: secrets
+    protected_surfaces:
+      - surface_id: secrets.exposure
+        surface_kind: secret_material
+        authority_refs: ["policy-verdict:memory_scope"]
+        description: Blocks credential exposure while allowing redacted references.
+    default_mode: strict
+    selectable_scopes: [project, automation, governance]
+    owner: workbench-security
+    rollout_state: active
+    policy_version: "2026-05-02-node9-action-governance"
+    reason_codes: [allowed, credential_exposure]
+    rules:
+      - rule_id: secrets-redaction-required
+        reason_code: credential_exposure
+        description: Requires secrets to remain redacted in logs and exports.
+        protected_surface_refs: [secrets.exposure]
+        good_fixture_refs: [secrets-good-redacted]
+        bad_fixture_refs: [secrets-bad-raw-token]
+        block_patterns: ["api_key=", "raw token", "credential exposure"]
+    fixtures:
+      - fixture_id: secrets-good-redacted
+        kind: known_good
+        summary: Reference a redacted credential alias.
+        action_type: secret_reference
+        expected_decision: allow
+        match_patterns: ["redacted credential"]
+        evidence_refs: ["fixture:secrets:good"]
+      - fixture_id: secrets-bad-raw-token
+        kind: known_bad
+        summary: Print api_key=raw-token to the output.
+        action_type: secret_export
+        expected_decision: block
+        match_patterns: ["api_key=", "raw token"]
+        evidence_refs: ["fixture:secrets:bad"]
+
+  - schema_version: "1.0"
+    pack_id: shield-destructive-filesystem-core
+    version: "1.0.0"
+    risk_domain: destructive_filesystem
+    protected_surfaces:
+      - surface_id: filesystem.destructive.write
+        surface_kind: filesystem
+        authority_refs: ["policy-verdict:file_system", "tool-surface:filesystem.local"]
+        description: Blocks irreversible filesystem edits outside protected roots.
+        tool_surface_id: filesystem.local
+    default_mode: strict
+    selectable_scopes: [project, automation, governance]
+    owner: workbench-safety
+    rollout_state: active
+    policy_version: "2026-05-02-node9-action-governance"
+    reason_codes: [allowed, destructive_filesystem_edit]
+    rules:
+      - rule_id: filesystem-destructive-boundary
+        reason_code: destructive_filesystem_edit
+        description: Allows staged edits and blocks irreversible deletes outside protected roots.
+        protected_surface_refs: [filesystem.destructive.write]
+        good_fixture_refs: [filesystem-good-staged-edit]
+        bad_fixture_refs: [filesystem-bad-recursive-delete]
+        block_patterns: ["remove-item -recurse", "rm -rf", "outside protected roots"]
+    fixtures:
+      - fixture_id: filesystem-good-staged-edit
+        kind: known_good
+        summary: Apply a staged file edit inside owned scope.
+        action_type: file_edit
+        expected_decision: allow
+        match_patterns: ["staged file edit"]
+        evidence_refs: ["fixture:filesystem:good"]
+      - fixture_id: filesystem-bad-recursive-delete
+        kind: known_bad
+        summary: Run Remove-Item -Recurse outside protected roots.
+        action_type: file_delete
+        expected_decision: block
+        match_patterns: ["remove-item -recurse", "outside protected roots"]
+        evidence_refs: ["fixture:filesystem:bad"]
+
+  - schema_version: "1.0"
+    pack_id: shield-mcp-prompt-injection-core
+    version: "1.0.0"
+    risk_domain: mcp_prompt_injection
+    protected_surfaces:
+      - surface_id: mcp.tool.authority
+        surface_kind: mcp_tool
+        authority_refs: ["policy-verdict:tool_invocation", "tool-surface:mcp.local"]
+        description: Blocks prompt-sourced tool authority changes.
+        tool_surface_id: mcp.local
+    default_mode: strict
+    selectable_scopes: [project, automation, governance]
+    owner: workbench-security
+    rollout_state: active
+    policy_version: "2026-05-02-node9-action-governance"
+    reason_codes: [allowed, prompt_sourced_tool_authority]
+    rules:
+      - rule_id: mcp-authority-must-be-pinned
+        reason_code: prompt_sourced_tool_authority
+        description: Requires MCP tool authority to come from pinned config, not prompts.
+        protected_surface_refs: [mcp.tool.authority]
+        good_fixture_refs: [mcp-good-pinned-tool]
+        bad_fixture_refs: [mcp-bad-prompt-authority-change]
+        block_patterns: ["prompt-sourced", "untrusted mcp", "change tool authority"]
+    fixtures:
+      - fixture_id: mcp-good-pinned-tool
+        kind: known_good
+        summary: Use pinned trusted MCP tool.
+        action_type: tool_invocation
+        expected_decision: allow
+        match_patterns: ["pinned trusted mcp"]
+        evidence_refs: ["fixture:mcp:good"]
+      - fixture_id: mcp-bad-prompt-authority-change
+        kind: known_bad
+        summary: Accept prompt-sourced MCP authority change.
+        action_type: tool_invocation
+        expected_decision: block
+        match_patterns: ["prompt-sourced", "change tool authority"]
+        evidence_refs: ["fixture:mcp:bad"]
+
+  - schema_version: "1.0"
+    pack_id: shield-public-export-boundary-core
+    version: "1.0.0"
+    risk_domain: public_export_boundary
+    protected_surfaces:
+      - surface_id: public.export.boundary
+        surface_kind: publication
+        authority_refs: ["policy-verdict:permission"]
+        description: Blocks private path or internal metadata leakage into public exports.
+    default_mode: strict
+    selectable_scopes: [project, automation, governance]
+    owner: workbench-publication
+    rollout_state: active
+    policy_version: "2026-05-02-node9-action-governance"
+    reason_codes: [allowed, private_path_leak]
+    rules:
+      - rule_id: public-export-no-private-paths
+        reason_code: private_path_leak
+        description: Keeps private checkout paths and internal evidence out of public export artifacts.
+        protected_surface_refs: [public.export.boundary]
+        good_fixture_refs: [public-export-good-safe-artifact]
+        bad_fixture_refs: [public-export-bad-private-path]
+        block_patterns: ["c:\\dev\\vetinari", ".ai-codex", "private-path leakage"]
+    fixtures:
+      - fixture_id: public-export-good-safe-artifact
+        kind: known_good
+        summary: Publish export-safe artifact without private paths.
+        action_type: public_export
+        expected_decision: allow
+        match_patterns: ["export-safe artifact"]
+        evidence_refs: ["fixture:public-export:good"]
+      - fixture_id: public-export-bad-private-path
+        kind: known_bad
+        summary: Include C:\dev\Vetinari and .ai-codex private paths in public export.
+        action_type: public_export
+        expected_decision: block
+        match_patterns: ["c:\\dev\\vetinari", ".ai-codex"]
+        evidence_refs: ["fixture:public-export:bad"]
+
+  - schema_version: "1.0"
+    pack_id: shield-mobile-remote-control-core
+    version: "1.0.0"
+    risk_domain: mobile_remote_control
+    protected_surfaces:
+      - surface_id: mobile.remote.intent
+        surface_kind: remote_control
+        authority_refs: ["policy-verdict:remote_control"]
+        description: Blocks unverified mobile remote-control intent.
+    default_mode: strict
+    selectable_scopes: [project, automation, governance]
+    owner: workbench-mobile
+    rollout_state: active
+    policy_version: "2026-05-02-node9-action-governance"
+    reason_codes: [allowed, remote_intent_unverified]
+    rules:
+      - rule_id: mobile-remote-intent-verification
+        reason_code: remote_intent_unverified
+        description: Requires verified approved remote intent before mobile control.
+        protected_surface_refs: [mobile.remote.intent]
+        good_fixture_refs: [mobile-good-verified-intent]
+        bad_fixture_refs: [mobile-bad-unverified-intent]
+        block_patterns: ["unverified remote", "remote takeover", "unapproved mobile"]
+    fixtures:
+      - fixture_id: mobile-good-verified-intent
+        kind: known_good
+        summary: Execute verified approved mobile intent.
+        action_type: remote_control
+        expected_decision: allow
+        match_patterns: ["verified approved mobile intent"]
+        evidence_refs: ["fixture:mobile:good"]
+        metadata:
+          remote_intent_verified: true
+      - fixture_id: mobile-bad-unverified-intent
+        kind: known_bad
+        summary: Execute unverified remote mobile intent.
+        action_type: remote_control
+        expected_decision: block
+        match_patterns: ["unverified remote"]
+        evidence_refs: ["fixture:mobile:bad"]
+        metadata:
+          remote_intent_verified: false

@@ -20,8 +20,12 @@ when the backing stores or LLM adapters are unavailable.
 from __future__ import annotations
 
 import logging
+import re
+import sys
+from importlib.util import find_spec
 from typing import Any
 
+from vetinari.adapters.adapter_cache import get_local_inference_adapter
 from vetinari.training.synthetic_generators import (
     MagpieGenerator,
     StrategyDistiller,
@@ -30,25 +34,206 @@ from vetinari.training.synthetic_generators import (
 
 logger = logging.getLogger(__name__)
 
+
+def _module_is_available(module_name: str) -> bool:
+    """Return True when a synthetic-data source dependency is discoverable."""
+    if module_name in sys.modules:
+        return sys.modules[module_name] is not None
+    try:
+        return find_spec(module_name) is not None
+    except (ModuleNotFoundError, ValueError):
+        logger.warning("Exception handled by  module is available fallback", exc_info=True)
+        return False
+
+
 # Minimum instruction length accepted by MagpieGenerator quality filter
 _MIN_INSTRUCTION_LEN = 10
 # Maximum instruction length accepted by MagpieGenerator quality filter
 _MAX_INSTRUCTION_LEN = 500
 # Minimum score gap required to form a DPO preference pair
 _MIN_DPO_SCORE_GAP = 0.2
+_MIN_REASONING_FINAL_ANSWER_OVERLAP = 0.2
+_REASONING_VERIFY_STOP_WORDS = {
+    "a",
+    "an",
+    "and",
+    "in",
+    "it",
+    "of",
+    "the",
+    "to",
+    "use",
+    "with",
+}
 # Magpie over-generates by this multiplier then filters down to the target count
 _MAGPIE_OVERSAMPLE_FACTOR = 2
+_SELF_PLAY_DOMAINS = ("coding", "reasoning", "analysis", "summarisation", "debugging", "refactoring", "documentation")
+_SELF_PLAY_DIFFICULTIES = ("easy", "medium", "hard")
+_SELF_PLAY_TEMPLATES: dict[str, list[str]] = {
+    "coding": [
+        "Implement a function that {verb} {noun} in Python.",
+        "Write a class that manages {noun} with thread safety.",
+        "Create a utility to {verb} {noun} using only the standard library.",
+    ],
+    "reasoning": [
+        "Given {noun}, determine the most efficient approach to {verb} it.",
+        "Explain the trade-offs between {noun_a} and {noun_b}.",
+    ],
+    "analysis": ["Analyse the time and space complexity of {noun}.", "Identify potential failure modes in {noun}."],
+    "summarisation": ["Summarise the key design decisions behind {noun}."],
+    "debugging": ["Find and fix the bug in a function that should {verb} {noun}."],
+    "refactoring": ["Refactor {noun} to improve readability without changing behaviour."],
+    "documentation": ["Write a Google-style docstring for a function that {verb} {noun}."],
+}
+_SELF_PLAY_NOUNS = (
+    "a binary search tree",
+    "an LRU cache",
+    "a rate limiter",
+    "a connection pool",
+    "a priority queue",
+    "a Bloom filter",
+    "a DAG scheduler",
+    "a token bucket",
+)
+_SELF_PLAY_NOUN_PAIRS = (
+    ("polling", "webhooks"),
+    ("SQL", "NoSQL"),
+    ("sync", "async"),
+    ("eager loading", "lazy loading"),
+)
+_SELF_PLAY_VERBS = ("serialise", "validate", "parse", "transform", "traverse", "index", "compress", "batch")
 
 __all__ = [
     "MagpieGenerator",
     "StrategyDistiller",
     "SyntheticDataGenerator",
-    "_normalize",
     "generate_reasoning_chains",
 ]
 
 
 # ── SyntheticDataGenerator ───────────────────────────────────────────────────
+
+
+def _get_episode_memory_or_none(label: str) -> Any | None:
+    try:
+        if not _module_is_available("vetinari.learning.episode_memory"):
+            raise ModuleNotFoundError("vetinari.learning.episode_memory")
+        from vetinari.learning.episode_memory import get_episode_memory
+    except ModuleNotFoundError:
+        logger.warning("[SyntheticDataGenerator] episode_memory unavailable; returning empty %s", label)
+        return None
+    try:
+        return get_episode_memory()
+    except Exception as exc:
+        logger.warning("[SyntheticDataGenerator] Could not access episode memory for %s: %s", label, exc)
+        return None
+
+
+def _coding_challenge_from_episode(ep: Any, adapter: Any | None) -> dict[str, Any] | None:
+    if adapter is None:
+        instruction = f"Implement a variation of: {ep.task_summary}"
+    else:
+        instruction = _generate_coding_variation(ep, adapter)
+    if not instruction:
+        return None
+    return {"instruction": instruction, "input": "", "output": ep.output_summary, "source_episode": ep.episode_id}
+
+
+def _generate_coding_variation(ep: Any, adapter: Any) -> str:
+    prompt = (
+        "You are creating training data for an AI coding assistant.\n\n"
+        f"Here is a past coding task:\n{ep.task_summary}\n\n"
+        "Generate a VARIATION of this task that is structurally similar "
+        "but tests a different implementation detail or edge case. "
+        "Output only the new task description, nothing else."
+    )
+    try:
+        result = adapter.chat(
+            model_id="default", system_prompt="You are a coding challenge generator.", input_text=prompt
+        )
+        return result.get("output", "").strip()
+    except Exception as exc:
+        logger.warning("[SyntheticDataGenerator] LLM call failed for episode %s: %s", ep.episode_id, exc)
+        return ""
+
+
+def _reasoning_chain_from_episode(ep: Any, adapter: Any | None) -> dict[str, Any] | None:
+    if ep.quality_score < 0.80:
+        return None
+    rationale = _generate_rationale(ep.task_summary, adapter)
+    if not rationale:
+        rationale = f"<thinking>\n{ep.output_summary}\n</thinking>\n\nAnswer: see above"
+    if not _verify_reasoning_chain(ep, rationale):
+        logger.debug(
+            "[SyntheticDataGenerator] rejected unverifiable reasoning chain for episode %s",
+            getattr(ep, "episode_id", "<unknown>"),
+        )
+        return None
+    return {"instruction": ep.task_summary, "output": rationale}
+
+
+def _token_set(text: object) -> set[str]:
+    return {
+        token for token in re.findall(r"[a-z0-9_]+", _normalize(str(text))) if token not in _REASONING_VERIFY_STOP_WORDS
+    }
+
+
+def _extract_reasoning_parts(rationale: str) -> tuple[str, str] | None:
+    match = re.search(r"<thinking>\s*(?P<thinking>.*?)\s*</thinking>\s*Answer:\s*(?P<answer>.+)", rationale, re.DOTALL)
+    if not match:
+        return None
+    thinking = match.group("thinking").strip()
+    answer = match.group("answer").strip()
+    if not thinking or not answer:
+        return None
+    return thinking, answer
+
+
+def _verify_reasoning_chain(ep: Any, rationale: str) -> bool:
+    """Return whether a generated V-STaR rationale is grounded in the source episode."""
+    if not rationale:
+        return False
+    parts = _extract_reasoning_parts(rationale)
+    if parts is None:
+        return False
+    thinking, answer = parts
+    if len(_token_set(thinking)) < 3:
+        return False
+    expected_tokens = _token_set(getattr(ep, "output_summary", ""))
+    answer_tokens = _token_set(answer)
+    if not expected_tokens or not answer_tokens:
+        return False
+    overlap = len(expected_tokens & answer_tokens) / min(len(expected_tokens), len(answer_tokens))
+    return overlap >= _MIN_REASONING_FINAL_ANSWER_OVERLAP
+
+
+def _generate_rationale(problem_statement: str, adapter: Any | None) -> str:
+    if adapter is None:
+        return ""
+    prompt = (
+        "Think step-by-step through the following problem and provide "
+        "a detailed reasoning chain before giving your final answer.\n\n"
+        f"Problem: {problem_statement}\n\n"
+        "Format:\n<thinking>\n[your step-by-step reasoning]\n</thinking>\n\nAnswer: [final answer]"
+    )
+    try:
+        result = adapter.chat(model_id="default", system_prompt="You are a careful problem solver.", input_text=prompt)
+        return result.get("output", "").strip()
+    except Exception as exc:
+        logger.warning("[SyntheticDataGenerator] Rationale generation failed: %s", exc)
+        return ""
+
+
+def _self_play_instruction(domain: str, rng: Any) -> str:
+    template = rng.choice(_SELF_PLAY_TEMPLATES.get(domain, _SELF_PLAY_TEMPLATES["coding"]))
+    noun_pair = rng.choice(_SELF_PLAY_NOUN_PAIRS)
+    return (
+        template
+        .replace("{noun}", rng.choice(_SELF_PLAY_NOUNS))
+        .replace("{verb}", rng.choice(_SELF_PLAY_VERBS))
+        .replace("{noun_a}", noun_pair[0])
+        .replace("{noun_b}", noun_pair[1])
+    )
 
 
 class SyntheticDataGenerator:
@@ -69,6 +254,8 @@ class SyntheticDataGenerator:
 
         All vetinari module imports are deferred to method bodies.
         """
+        self._adapter: Any | None = None
+        self._adapter_checked = False
 
     def generate_coding_challenges(self, count: int = 50) -> list[dict[str, Any]]:
         """Generate coding challenge variations from past successful episodes.
@@ -87,16 +274,8 @@ class SyntheticDataGenerator:
             List of ``{"instruction", "input", "output", "source_episode"}``
             dicts.  Empty list if episode memory is unavailable.
         """
-        try:
-            from vetinari.learning.episode_memory import get_episode_memory
-        except ImportError:
-            logger.warning("[SyntheticDataGenerator] episode_memory unavailable — returning empty coding challenges")
-            return []
-
-        try:
-            mem = get_episode_memory()
-        except Exception as exc:
-            logger.warning("[SyntheticDataGenerator] Could not access episode memory: %s", exc)
+        mem = _get_episode_memory_or_none("coding challenges")
+        if mem is None:
             return []
 
         episodes = mem.recall(
@@ -119,45 +298,9 @@ class SyntheticDataGenerator:
             if len(challenges) >= count:
                 break
 
-            variation_prompt = (
-                "You are creating training data for an AI coding assistant.\n\n"
-                f"Here is a past coding task:\n{ep.task_summary}\n\n"
-                "Generate a VARIATION of this task that is structurally similar "
-                "but tests a different implementation detail or edge case. "
-                "Output only the new task description, nothing else."
-            )
-
-            if adapter is not None:
-                try:
-                    result = adapter.chat(
-                        model_id="default",
-                        system_prompt="You are a coding challenge generator.",
-                        input_text=variation_prompt,
-                    )
-                    instruction = result.get("output", "").strip()
-                    if not instruction:
-                        continue
-                    challenges.append({
-                        "instruction": instruction,
-                        "input": "",
-                        "output": ep.output_summary,
-                        "source_episode": ep.episode_id,
-                    })
-                except Exception as exc:
-                    logger.warning(
-                        "[SyntheticDataGenerator] LLM call failed for episode %s: %s",
-                        ep.episode_id,
-                        exc,
-                    )
-            else:
-                # No adapter — synthesise a templated variation without LLM
-                instruction = f"Implement a variation of: {ep.task_summary}"
-                challenges.append({
-                    "instruction": instruction,
-                    "input": "",
-                    "output": ep.output_summary,
-                    "source_episode": ep.episode_id,
-                })
+            challenge = _coding_challenge_from_episode(ep, adapter)
+            if challenge:
+                challenges.append(challenge)
 
         logger.info("[SyntheticDataGenerator] Generated %d coding challenges", len(challenges))
         return challenges
@@ -182,19 +325,8 @@ class SyntheticDataGenerator:
             List of ``{"instruction", "output"}`` dicts where ``output``
             contains the accepted reasoning chain followed by the answer.
         """
-        try:
-            from vetinari.learning.episode_memory import get_episode_memory
-        except ImportError:
-            logger.warning("[SyntheticDataGenerator] episode_memory unavailable — returning empty reasoning chains")
-            return []
-
-        try:
-            mem = get_episode_memory()
-        except Exception as exc:
-            logger.warning(
-                "[SyntheticDataGenerator] Could not access episode memory for reasoning chains: %s",
-                exc,
-            )
+        mem = _get_episode_memory_or_none("reasoning chains")
+        if mem is None:
             return []
 
         # Pull high-quality episodes across all task types to seed problems
@@ -211,42 +343,9 @@ class SyntheticDataGenerator:
             if len(chains) >= count:
                 break
 
-            problem_statement = ep.task_summary
-            rationale_prompt = (
-                "Think step-by-step through the following problem and provide "
-                "a detailed reasoning chain before giving your final answer.\n\n"
-                f"Problem: {problem_statement}\n\n"
-                "Format:\n"
-                "<thinking>\n[your step-by-step reasoning]\n</thinking>\n\n"
-                "Answer: [final answer]"
-            )
-
-            rationale = ""
-            if adapter is not None:
-                try:
-                    result = adapter.chat(
-                        model_id="default",
-                        system_prompt="You are a careful problem solver.",
-                        input_text=rationale_prompt,
-                    )
-                    rationale = result.get("output", "").strip()
-                except Exception as exc:
-                    logger.warning("[SyntheticDataGenerator] Rationale generation failed: %s", exc)
-
-            if not rationale:
-                # Use the episode's own output as the accepted chain
-                rationale = f"<thinking>\n{ep.output_summary}\n</thinking>\n\nAnswer: see above"
-
-            # Verification: use the episode quality_score as the RLVR signal.
-            # Episodes with score >= 0.8 are treated as verified correct.
-            # This avoids running a separate verifier model — the DAPO reward
-            # tiers (test execution + Quality agent) already captured
-            # correctness at record time.
-            if ep.quality_score >= 0.80:
-                chains.append({
-                    "instruction": problem_statement,
-                    "output": rationale,
-                })
+            chain = _reasoning_chain_from_episode(ep, adapter)
+            if chain:
+                chains.append(chain)
 
         logger.info("[SyntheticDataGenerator] Generated %d reasoning chains", len(chains))
         return chains
@@ -260,16 +359,21 @@ class SyntheticDataGenerator:
         the preference signal is meaningful.
 
         Args:
-            count: Maximum number of DPO pairs to return.
+        count: Maximum number of DPO pairs to return.
 
         Returns:
-            List of dicts with keys ``prompt``, ``chosen``, ``rejected``,
-            ``chosen_score``, ``rejected_score``.  Empty list if training
-            data is unavailable or no qualifying pairs exist.
+        List of dicts with keys ``prompt``, ``chosen``, ``rejected``,
+        ``chosen_score``, ``rejected_score``.  Empty list if training
+        data is unavailable or no qualifying pairs exist.
+
+        Raises:
+            ModuleNotFoundError: Propagated when validation, persistence, or execution fails.
         """
         try:
+            if not _module_is_available("vetinari.learning.training_data"):
+                raise ModuleNotFoundError("vetinari.learning.training_data")
             from vetinari.learning.training_data import get_training_collector
-        except ImportError:
+        except ModuleNotFoundError:
             logger.warning("[SyntheticDataGenerator] training_data unavailable — returning empty DPO pairs")
             return []
 
@@ -316,96 +420,19 @@ class SyntheticDataGenerator:
             List of dicts with keys ``instruction``, ``domain``,
             ``difficulty``.
         """
-        _domains = [
-            "coding",
-            "reasoning",
-            "analysis",
-            "summarisation",
-            "debugging",
-            "refactoring",
-            "documentation",
-        ]
-        _difficulties = ["easy", "medium", "hard"]
-        _templates: dict[str, list[str]] = {
-            "coding": [
-                "Implement a function that {verb} {noun} in Python.",
-                "Write a class that manages {noun} with thread safety.",
-                "Create a utility to {verb} {noun} using only the standard library.",
-            ],
-            "reasoning": [
-                "Given {noun}, determine the most efficient approach to {verb} it.",
-                "Explain the trade-offs between {noun_a} and {noun_b}.",
-            ],
-            "analysis": [
-                "Analyse the time and space complexity of {noun}.",
-                "Identify potential failure modes in {noun}.",
-            ],
-            "summarisation": [
-                "Summarise the key design decisions behind {noun}.",
-            ],
-            "debugging": [
-                "Find and fix the bug in a function that should {verb} {noun}.",
-            ],
-            "refactoring": [
-                "Refactor {noun} to improve readability without changing behaviour.",
-            ],
-            "documentation": [
-                "Write a Google-style docstring for a function that {verb} {noun}.",
-            ],
-        }
-        _nouns = [
-            "a binary search tree",
-            "an LRU cache",
-            "a rate limiter",
-            "a connection pool",
-            "a priority queue",
-            "a Bloom filter",
-            "a DAG scheduler",
-            "a token bucket",
-        ]
-        _noun_pairs = [
-            ("polling", "webhooks"),
-            ("SQL", "NoSQL"),
-            ("sync", "async"),
-            ("eager loading", "lazy loading"),
-        ]
-        _verbs = [
-            "serialise",
-            "validate",
-            "parse",
-            "transform",
-            "traverse",
-            "index",
-            "compress",
-            "batch",
-        ]
-
         import itertools
         import random
 
-        rng = random.Random(42)  # noqa: S311 — deterministic seed for reproducibility, not cryptographic
+        rng = random.Random(42)
         tasks: list[dict[str, Any]] = []
 
-        domain_cycle = itertools.cycle(_domains)
-        difficulty_cycle = itertools.cycle(_difficulties)
+        domain_cycle = itertools.cycle(_SELF_PLAY_DOMAINS)
+        difficulty_cycle = itertools.cycle(_SELF_PLAY_DIFFICULTIES)
 
         for _ in range(count):
             domain = next(domain_cycle)
             difficulty = next(difficulty_cycle)
-            templates = _templates.get(domain, _templates["coding"])
-            template = rng.choice(templates)
-
-            noun = rng.choice(_nouns)
-            verb = rng.choice(_verbs)
-            noun_pair = rng.choice(_noun_pairs)
-
-            instruction = (
-                template
-                .replace("{noun}", noun)
-                .replace("{verb}", verb)
-                .replace("{noun_a}", noun_pair[0])
-                .replace("{noun_b}", noun_pair[1])
-            )
+            instruction = _self_play_instruction(domain, rng)
 
             tasks.append({
                 "instruction": instruction,
@@ -471,9 +498,10 @@ class SyntheticDataGenerator:
             ``LocalInferenceAdapter`` instance or ``None``.
         """
         try:
-            from vetinari.adapters.llama_cpp_local_adapter import LocalInferenceAdapter
-
-            return LocalInferenceAdapter()
+            if not self._adapter_checked:
+                self._adapter = get_local_inference_adapter()
+                self._adapter_checked = True
+            return self._adapter
         except Exception as exc:
             logger.warning("[SyntheticDataGenerator] Adapter unavailable: %s", exc)
             return None

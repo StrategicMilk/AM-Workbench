@@ -16,10 +16,15 @@ Usage::
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, TypeVar
 
 import structlog
+
+logger = structlog.get_logger(__name__)
+T = TypeVar("T")
+
 
 # ── Context Variables for Distributed Tracing ─────────────────────────────
 
@@ -99,10 +104,6 @@ class CorrelationContext:
         outer structlog context), then unbind the remainder (keys that had no
         outer value) so structlog stays in sync with the restored ContextVars.
         """
-        import logging
-
-        logger = logging.getLogger(__name__)
-
         # Map bound-key name → its ContextVar so we can read restored values.
         _key_to_var: dict[str, ContextVar[str | None]] = {
             "trace_id": _trace_id_var,
@@ -179,7 +180,82 @@ def get_request_id() -> str | None:
     return _request_id_var.get()
 
 
-def set_request_id(request_id: str) -> Any:
+def get_plan_id() -> str | None:
+    """Read the plan ID bound to the current async task or thread via contextvars."""
+    return _plan_id_var.get()
+
+
+def get_correlation_ids() -> dict[str, str | None]:
+    """Return the current trace/span/request/plan correlation IDs."""
+    return {
+        "trace_id": get_trace_id(),
+        "span_id": get_span_id(),
+        "request_id": get_request_id(),
+        "plan_id": get_plan_id(),
+    }
+
+
+def set_trace_id(trace_id: str | None) -> Any:
+    """Bind a trace ID to the current async task or thread via contextvars.
+
+    Returns:
+        Token that can restore the previous trace ID.
+    """
+    token = _trace_id_var.set(trace_id)
+    if trace_id is not None:
+        structlog.contextvars.bind_contextvars(trace_id=trace_id)
+    else:
+        structlog.contextvars.unbind_contextvars("trace_id")
+    return token
+
+
+def clear_trace_id(token: Any | None = None) -> None:
+    """Clear or restore the trace ID bound by :func:`set_trace_id`."""
+    if token is not None:
+        try:
+            _trace_id_var.reset(token)
+        except Exception:
+            logger.warning("Failed to reset trace_id ContextVar token", exc_info=True)
+    else:
+        _trace_id_var.set(None)
+    outer = _trace_id_var.get()
+    if outer is not None:
+        structlog.contextvars.bind_contextvars(trace_id=outer)
+    else:
+        structlog.contextvars.unbind_contextvars("trace_id")
+
+
+def set_span_id(span_id: str | None) -> Any:
+    """Bind a span ID to the current async task or thread via contextvars.
+
+    Returns:
+        Token that can restore the previous span ID.
+    """
+    token = _span_id_var.set(span_id)
+    if span_id is not None:
+        structlog.contextvars.bind_contextvars(span_id=span_id)
+    else:
+        structlog.contextvars.unbind_contextvars("span_id")
+    return token
+
+
+def clear_span_id(token: Any | None = None) -> None:
+    """Clear or restore the span ID bound by :func:`set_span_id`."""
+    if token is not None:
+        try:
+            _span_id_var.reset(token)
+        except Exception:
+            logger.warning("Failed to reset span_id ContextVar token", exc_info=True)
+    else:
+        _span_id_var.set(None)
+    outer = _span_id_var.get()
+    if outer is not None:
+        structlog.contextvars.bind_contextvars(span_id=outer)
+    else:
+        structlog.contextvars.unbind_contextvars("span_id")
+
+
+def set_request_id(request_id: str | None) -> Any:
     """Bind a request ID to the current async task or thread via contextvars.
 
     Intended for use in request middleware where a full ``CorrelationContext``
@@ -199,11 +275,14 @@ def set_request_id(request_id: str) -> Any:
         previous request ID (or ``None`` if there was none).
     """
     token = _request_id_var.set(request_id)
-    structlog.contextvars.bind_contextvars(request_id=request_id)
+    if request_id is not None:
+        structlog.contextvars.bind_contextvars(request_id=request_id)
+    else:
+        structlog.contextvars.unbind_contextvars("request_id")
     return token
 
 
-def clear_request_id(token: Any) -> None:
+def clear_request_id(token: Any | None = None) -> None:
     """Restore the request ID that existed before the paired :func:`set_request_id` call.
 
     Resets both the ``ContextVar`` and structlog's context so no stale request
@@ -212,17 +291,16 @@ def clear_request_id(token: Any) -> None:
     Args:
         token: The token returned by :func:`set_request_id`.
     """
-    import logging
-
-    logger = logging.getLogger(__name__)
-
-    try:
-        _request_id_var.reset(token)
-    except Exception:
-        logger.warning(
-            "Failed to reset request_id ContextVar token — request ID may persist in logs",
-            exc_info=True,
-        )
+    if token is not None:
+        try:
+            _request_id_var.reset(token)
+        except Exception:
+            logger.warning(
+                "Failed to reset request_id ContextVar token — request ID may persist in logs",
+                exc_info=True,
+            )
+    else:
+        _request_id_var.set(None)
     outer = _request_id_var.get()
     if outer is not None:
         structlog.contextvars.bind_contextvars(request_id=outer)
@@ -230,6 +308,68 @@ def clear_request_id(token: Any) -> None:
         structlog.contextvars.unbind_contextvars("request_id")
 
 
-def get_plan_id() -> str | None:
-    """Read the plan ID bound to the current async task or thread via contextvars."""
-    return _plan_id_var.get()
+def set_plan_id(plan_id: str | None) -> Any:
+    """Bind a plan ID to the current async task or thread via contextvars.
+
+    Returns:
+        Token that can restore the previous plan ID.
+    """
+    token = _plan_id_var.set(plan_id)
+    if plan_id is not None:
+        structlog.contextvars.bind_contextvars(plan_id=plan_id)
+    else:
+        structlog.contextvars.unbind_contextvars("plan_id")
+    return token
+
+
+def clear_plan_id(token: Any | None = None) -> None:
+    """Clear or restore the plan ID bound by :func:`set_plan_id`."""
+    if token is not None:
+        try:
+            _plan_id_var.reset(token)
+        except Exception:
+            logger.warning("Failed to reset plan_id ContextVar token", exc_info=True)
+    else:
+        _plan_id_var.set(None)
+    outer = _plan_id_var.get()
+    if outer is not None:
+        structlog.contextvars.bind_contextvars(plan_id=outer)
+    else:
+        structlog.contextvars.unbind_contextvars("plan_id")
+
+
+def run_with_correlation_ids(
+    correlation_ids: dict[str, str | None],
+    fn: Callable[..., T],
+    *args: Any,
+    **kwargs: Any,
+) -> T:
+    """Run ``fn`` with only Vetinari correlation ContextVars rebound.
+
+    Args:
+        correlation_ids: Correlation IDs to bind while ``fn`` runs.
+        fn: Callable to execute.
+        *args: Positional arguments for ``fn``.
+        **kwargs: Keyword arguments for ``fn``.
+
+    Returns:
+        The value returned by ``fn``.
+    """
+    tokens = [
+        ("trace_id", set_trace_id(correlation_ids.get("trace_id"))),
+        ("span_id", set_span_id(correlation_ids.get("span_id"))),
+        ("request_id", set_request_id(correlation_ids.get("request_id"))),
+        ("plan_id", set_plan_id(correlation_ids.get("plan_id"))),
+    ]
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        for name, token in reversed(tokens):
+            if name == "trace_id":
+                clear_trace_id(token)
+            elif name == "span_id":
+                clear_span_id(token)
+            elif name == "request_id":
+                clear_request_id(token)
+            else:
+                clear_plan_id(token)

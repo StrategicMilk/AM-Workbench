@@ -19,7 +19,10 @@ import logging
 import re
 from typing import Any
 
+from vetinari.adapters.adapter_cache import get_local_inference_adapter
+
 logger = logging.getLogger(__name__)
+
 
 # Minimum instruction length accepted by quality filter
 _MIN_INSTRUCTION_LEN = 10
@@ -27,6 +30,8 @@ _MIN_INSTRUCTION_LEN = 10
 _MAX_INSTRUCTION_LEN = 500
 # Magpie over-generates by this multiplier then filters down to the target count
 _MAGPIE_OVERSAMPLE_FACTOR = 2
+_MAGPIE_INSTRUCTION_TEMPERATURE = 0.9
+_MAGPIE_RESPONSE_TEMPERATURE = 0.7
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +81,8 @@ class MagpieGenerator:
                 general-purpose generation.
         """
         self._system_prompt = system_prompt
+        self._adapter: Any | None = None
+        self._adapter_checked = False
 
     def generate_instructions(
         self,
@@ -122,56 +129,16 @@ class MagpieGenerator:
             if len(results) >= target:
                 break
 
-            preamble = self._build_preamble(self._system_prompt, domain)
-
-            # Step 1: Generate instruction by feeding only the preamble.
-            # We send it as the user turn so the model completes an
-            # instruction-like utterance.
-            try:
-                # Step 1b: temperature=0.9 for diverse instruction auto-completion (Magpie paradigm)
-                # VET129 allowlist: synthetic data generation requires high temperature for instruction diversity
-                instr_result = adapter.chat(
-                    model_id="default",
-                    system_prompt=(
-                        self._system_prompt or "You are a helpful assistant. Generate a single user instruction."
-                    ),
-                    input_text=preamble,
-                    temperature=0.9,  # noqa: VET129 - non-default generation setting is intentional for synthetic data
-                )
-                instruction = instr_result.get("output", "").strip()
-            except Exception as exc:
-                logger.warning("[MagpieGenerator] Instruction generation failed: %s", exc)
-                continue
-
-            # Step 2: Quality filter
+            instruction = self._generate_instruction(adapter, domain)
+            instruction = self._normalise_instruction_length(instruction)
             if not instruction:
                 continue
-            if len(instruction) < _MIN_INSTRUCTION_LEN:
-                continue
-            if len(instruction) > _MAX_INSTRUCTION_LEN:
-                # Truncate long instructions at the last sentence boundary
-                instruction = instruction[:_MAX_INSTRUCTION_LEN].rsplit(".", 1)[0] + "."
-                if len(instruction) < _MIN_INSTRUCTION_LEN:
-                    continue
 
             # Step 3: Deduplication
             if self._is_duplicate(instruction, results):
                 continue
 
-            # Step 4: Generate response at temperature 0.7 (creative but coherent)
-            # VET129 allowlist: synthetic data generation requires moderate temperature for coherence
-            try:
-                resp_result = adapter.chat(
-                    model_id="default",
-                    system_prompt=self._system_prompt or "You are a helpful assistant.",
-                    input_text=instruction,
-                    temperature=0.7,  # noqa: VET129 - non-default generation setting is intentional for synthetic data
-                )
-                response = resp_result.get("output", "").strip()
-            except Exception as exc:
-                logger.warning("[MagpieGenerator] Response generation failed: %s", exc)
-                continue
-
+            response = self._generate_response(adapter, instruction)
             if not response:
                 continue
 
@@ -190,7 +157,43 @@ class MagpieGenerator:
         )
         return results[:target]
 
-    def _build_preamble(self, system_prompt: str, domain: str | None) -> str:
+    def _generate_instruction(self, adapter: Any, domain: str | None) -> str:
+        try:
+            instr_result = adapter.chat(
+                model_id="default",
+                system_prompt=self._system_prompt or "You are a helpful assistant. Generate a single user instruction.",
+                input_text=self._build_preamble(self._system_prompt, domain),
+                temperature=_MAGPIE_INSTRUCTION_TEMPERATURE,
+            )
+            return instr_result.get("output", "").strip()
+        except Exception as exc:
+            logger.warning("[MagpieGenerator] Instruction generation failed: %s", exc)
+            return ""
+
+    @staticmethod
+    def _normalise_instruction_length(instruction: str) -> str:
+        if len(instruction) < _MIN_INSTRUCTION_LEN:
+            return ""
+        if len(instruction) <= _MAX_INSTRUCTION_LEN:
+            return instruction
+        truncated = instruction[:_MAX_INSTRUCTION_LEN].rsplit(".", 1)[0] + "."
+        return truncated if len(truncated) >= _MIN_INSTRUCTION_LEN else ""
+
+    def _generate_response(self, adapter: Any, instruction: str) -> str:
+        try:
+            resp_result = adapter.chat(
+                model_id="default",
+                system_prompt=self._system_prompt or "You are a helpful assistant.",
+                input_text=instruction,
+                temperature=_MAGPIE_RESPONSE_TEMPERATURE,
+            )
+            return resp_result.get("output", "").strip()
+        except Exception as exc:
+            logger.warning("[MagpieGenerator] Response generation failed: %s", exc)
+            return ""
+
+    @staticmethod
+    def _build_preamble(system_prompt: str, domain: str | None) -> str:
         """Build the chat-template prefix used to elicit instructions.
 
         The preamble is fed as the user turn so the model auto-regressively
@@ -211,7 +214,8 @@ class MagpieGenerator:
         parts.append("as a single clear instruction.")
         return " ".join(parts)
 
-    def _is_duplicate(self, instruction: str, existing: list[dict[str, Any]]) -> bool:
+    @staticmethod
+    def _is_duplicate(instruction: str, existing: list[dict[str, Any]]) -> bool:
         """Return True if instruction is already in existing (normalised compare).
 
         Args:
@@ -240,9 +244,10 @@ class MagpieGenerator:
             ``LocalInferenceAdapter`` instance or ``None``.
         """
         try:
-            from vetinari.adapters.llama_cpp_local_adapter import LocalInferenceAdapter
-
-            return LocalInferenceAdapter()
+            if not self._adapter_checked:
+                self._adapter = get_local_inference_adapter()
+                self._adapter_checked = True
+            return self._adapter
         except Exception as exc:
             logger.warning("[MagpieGenerator] Adapter import failed: %s", exc)
             return None
@@ -270,6 +275,8 @@ class StrategyDistiller:
 
         All vetinari module imports are deferred to method bodies.
         """
+        self._adapter: Any | None = None
+        self._adapter_checked = False
 
     def distill_strategies(
         self,
@@ -324,43 +331,7 @@ class StrategyDistiller:
         seen_principles: list[str] = []
 
         for ep in episodes:
-            distillation_prompt = (
-                "Analyse this successful task execution and extract ONE reusable "
-                "principle or strategy.\n\n"
-                f"Task: {ep.task_summary}\n"
-                f"Approach: {ep.output_summary}\n"
-                f"Quality score: {ep.quality_score:.2f}\n\n"
-                "Respond in this exact format:\n"
-                "Principle: <one sentence principle>\n"
-                "When to apply: <brief description of contexts>\n"
-            )
-
-            principle = ""
-            when_to_apply = ""
-
-            if adapter is not None:
-                try:
-                    result = adapter.chat(
-                        model_id="default",
-                        system_prompt=(
-                            "You are an expert at extracting reusable software "
-                            "engineering principles from execution traces."
-                        ),
-                        input_text=distillation_prompt,
-                    )
-                    raw = result.get("output", "")
-                    principle, when_to_apply = self._parse_distillation(raw)
-                except Exception as exc:
-                    logger.warning(
-                        "[StrategyDistiller] LLM distillation failed for %s: %s",
-                        ep.episode_id,
-                        exc,
-                    )
-
-            if not principle:
-                # Heuristic fallback: derive principle from task/output summaries
-                principle = f"For {ep.task_type} tasks: apply the approach shown in '{ep.task_summary[:60]}'"
-                when_to_apply = f"When handling {ep.task_type} tasks with quality >= {min_score:.1f}"
+            principle, when_to_apply = self._distill_episode_strategy(ep, adapter, min_score)
 
             # Dedup by normalised principle text
             if _normalize(principle) in [_normalize(p) for p in seen_principles]:
@@ -380,6 +351,41 @@ class StrategyDistiller:
             len(episodes),
         )
         return strategies
+
+    def _distill_episode_strategy(self, ep: Any, adapter: Any | None, min_score: float) -> tuple[str, str]:
+        principle = ""
+        when_to_apply = ""
+        if adapter is not None:
+            try:
+                result = adapter.chat(
+                    model_id="default",
+                    system_prompt=(
+                        "You are an expert at extracting reusable software "
+                        "engineering principles from execution traces."
+                    ),
+                    input_text=self._distillation_prompt(ep),
+                )
+                principle, when_to_apply = self._parse_distillation(result.get("output", ""))
+            except Exception as exc:
+                logger.warning("[StrategyDistiller] LLM distillation failed for %s: %s", ep.episode_id, exc)
+        if principle:
+            return principle, when_to_apply
+        return (
+            f"For {ep.task_type} tasks: apply the approach shown in '{ep.task_summary[:60]}'",
+            f"When handling {ep.task_type} tasks with quality >= {min_score:.1f}",
+        )
+
+    @staticmethod
+    def _distillation_prompt(ep: Any) -> str:
+        return (
+            "Analyse this successful task execution and extract ONE reusable principle or strategy.\n\n"
+            f"Task: {ep.task_summary}\n"
+            f"Approach: {ep.output_summary}\n"
+            f"Quality score: {ep.quality_score:.2f}\n\n"
+            "Respond in this exact format:\n"
+            "Principle: <one sentence principle>\n"
+            "When to apply: <brief description of contexts>\n"
+        )
 
     def store_strategies(self, strategies: list[dict[str, Any]]) -> int:
         """Store distilled strategies as episodes in episodic memory.
@@ -439,7 +445,8 @@ class StrategyDistiller:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _parse_distillation(self, raw: str) -> tuple[str, str]:
+    @staticmethod
+    def _parse_distillation(raw: str) -> tuple[str, str]:
         """Parse the structured distillation response from the LLM.
 
         Expects the format:
@@ -471,9 +478,10 @@ class StrategyDistiller:
             ``LocalInferenceAdapter`` instance or ``None``.
         """
         try:
-            from vetinari.adapters.llama_cpp_local_adapter import LocalInferenceAdapter
-
-            return LocalInferenceAdapter()
+            if not self._adapter_checked:
+                self._adapter = get_local_inference_adapter()
+                self._adapter_checked = True
+            return self._adapter
         except Exception as exc:
             logger.warning("[StrategyDistiller] Adapter import failed: %s", exc)
             return None

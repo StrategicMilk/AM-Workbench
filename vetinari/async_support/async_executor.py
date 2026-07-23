@@ -24,7 +24,21 @@ from vetinari.types import AgentType, StatusEnum
 
 logger = logging.getLogger(__name__)
 
+
 _DEFAULT_TASK_TIMEOUT = 300  # seconds
+
+
+class AsyncTaskContractError(ValueError):
+    """Raised when an async task descriptor is missing required routing data."""
+
+
+def _require_task_agent_type(task: dict[str, Any]) -> str:
+    """Return the explicit agent type for a task or fail closed."""
+    agent_type = task.get("agent_type")
+    if not isinstance(agent_type, str) or not agent_type.strip():
+        task_id = task.get("id", "unknown")
+        raise AsyncTaskContractError(f"Task {task_id!r} is missing required agent_type")
+    return agent_type.strip()
 
 
 class AsyncExecutor:
@@ -61,8 +75,8 @@ class AsyncExecutor:
     async def execute_task(self, task: dict[str, Any], agent_type: str) -> dict[str, Any]:
         """Execute a single agent task.
 
-        Simulates dispatch to the named agent type.  Concrete deployments
-        should override or wrap this method to call the real agent.
+        Dispatches to the named agent type. Concrete deployments must override
+        or wrap this method to call the real agent.
 
         Args:
             task: Task descriptor dict.  Expected keys: ``id``, ``prompt``,
@@ -123,11 +137,30 @@ class AsyncExecutor:
 
         Returns:
             List of result dicts in the same order as *tasks*.
+
+        Raises:
+            AsyncTaskContractError: If ``fail_fast`` is enabled and a task is
+                missing its required agent type.
         """
         if not tasks:
             return []
 
-        coroutines = [self.execute_task(task, task.get("agent_type", AgentType.FOREMAN.value)) for task in tasks]
+        try:
+            coroutines = [self.execute_task(task, _require_task_agent_type(task)) for task in tasks]
+        except AsyncTaskContractError as exc:
+            logger.warning("Wave task contract rejected: %s", exc)
+            if self.fail_fast:
+                raise
+            return [
+                {
+                    "task_id": task.get("id", "unknown"),
+                    "agent_type": task.get("agent_type"),
+                    "status": StatusEnum.FAILED.value,
+                    "output": None,
+                    "error": "missing required agent_type",
+                }
+                for task in tasks
+            ]
 
         if self.fail_fast:
             results: list[dict[str, Any]] = await asyncio.gather(*coroutines)
@@ -151,7 +184,18 @@ class AsyncExecutor:
                         },
                     )
                 else:
-                    results.append(outcome)  # type: ignore[arg-type]
+                    if isinstance(outcome, dict):
+                        results.append(outcome)
+                    else:
+                        results.append(
+                            {
+                                "task_id": task.get("id", "unknown"),
+                                "agent_type": task.get("agent_type", AgentType.FOREMAN.value),
+                                "status": StatusEnum.FAILED.value,
+                                "output": None,
+                                "error": f"Unexpected async task result type: {type(outcome).__name__}",
+                            },
+                        )
 
         return results
 
@@ -222,7 +266,7 @@ class AsyncExecutor:
 
         any_failed = any(r.get("status") == StatusEnum.FAILED.value for wave in wave_results for r in wave)
         if any_failed and overall_status != StatusEnum.FAILED.value:
-            overall_status = "completed_with_errors"
+            overall_status = StatusEnum.FAILED.value
 
         total_tasks = sum(len(w) for w in wave_results)
         return {
@@ -239,23 +283,15 @@ class AsyncExecutor:
     async def _dispatch(self, task: dict[str, Any], agent_type: str) -> dict[str, Any]:
         """Dispatch a task to the named agent type.
 
-        This is the extension point for concrete integrations.  The default
-        implementation performs a no-op ``asyncio.sleep(0)`` and returns a
-        synthetic completed result so that the executor can be tested without
-        a live agent.
+        This is the extension point for concrete integrations. The base
+        executor is instantiable so orchestration can wire it and tests can
+        monkeypatch a dispatcher, but executing without a concrete dispatcher
+        fails closed instead of returning synthetic success.
 
         Args:
             task: Task descriptor dict.
             agent_type: Agent type name.
 
-        Returns:
-            Result dict with ``task_id``, ``agent_type``, ``status``, and
-            ``output``.
+        Concrete executors must return the task result payload.
         """
-        await asyncio.sleep(0)  # yield control to event loop
-        return {
-            "task_id": task.get("id", "unknown"),
-            "agent_type": agent_type,
-            "status": StatusEnum.COMPLETED.value,
-            "output": task.get("prompt", ""),
-        }
+        raise RuntimeError("AsyncExecutor requires a concrete agent integration before dispatch")

@@ -12,7 +12,11 @@ Scheduler → **wiring** → (PDCAController | RegressionDetector | DefectTrendA
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import cast
 
+from vetinari.boundary_guards import assert_dependency_success, clamp_score
 from vetinari.constants import get_user_dir
 from vetinari.kaizen.defect_trends import DefectHotspot, DefectTrendAnalyzer, DefectTrendReport
 from vetinari.kaizen.improvement_log import ImprovementLog
@@ -21,6 +25,39 @@ from vetinari.kaizen.regression import RegressionAlert, RegressionDetector
 from vetinari.validation import DefectCategory
 
 logger = logging.getLogger(__name__)
+
+PDCA_APPLY_RECEIPTS_FILENAME = "kaizen_apply_receipts.jsonl"
+
+
+@dataclass(frozen=True, slots=True)
+class KaizenScheduledTask:
+    """Scheduler-facing registration for a Kaizen recurring task."""
+
+    name: str
+    cadence: str
+    callback: Callable[[str | None], object]
+
+
+def _pdca_receipt_path(db_path: str | None) -> str:
+    """Return the receipt path next to the scheduled PDCA database."""
+    return str(get_user_dir() / PDCA_APPLY_RECEIPTS_FILENAME) if db_path is None else str(db_path) + ".receipts.jsonl"
+
+
+def _int_value(value: object, default: int = 0) -> int:
+    """Convert persisted numeric values without accepting bool as an integer."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str | bytes):
+        try:
+            return int(value)
+        except ValueError:
+            logger.warning("Invalid persisted integer value %r; using default %d", value, default)
+            return default
+    return default
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
@@ -57,7 +94,7 @@ def _build_weekly_counts(
     return typed
 
 
-def _build_hotspots(raw_hotspots: list[dict]) -> list[DefectHotspot]:  # type: ignore[type-arg]
+def _build_hotspots(raw_hotspots: list[dict[str, object]]) -> list[DefectHotspot]:
     """Convert raw hotspot dicts from ImprovementLog to DefectHotspot objects.
 
     Args:
@@ -69,21 +106,23 @@ def _build_hotspots(raw_hotspots: list[dict]) -> list[DefectHotspot]:  # type: i
     hotspots: list[DefectHotspot] = []
     for h in raw_hotspots:
         try:
-            category = DefectCategory(h["category"])
+            category = DefectCategory(str(h["category"]))
         except ValueError:
             logger.warning(
                 "Unknown defect category %r in hotspot — skipping entry",
                 h.get("category"),
             )
             continue
-        total = max(h["count"], 1)
+        count = _int_value(h.get("count", 0))
+        total = max(count, 1)
+        raw_rate = h.get("defect_rate", count / total)
         hotspots.append(
             DefectHotspot(
-                agent_type=h["agent_type"],
-                mode=h["mode"],
+                agent_type=str(h["agent_type"]),
+                mode=str(h["mode"]),
                 defect_category=category,
-                defect_count=h["count"],
-                defect_rate=h["count"] / total,
+                defect_count=count,
+                defect_rate=clamp_score(raw_rate, field_name="defect_rate"),
             )
         )
     return hotspots
@@ -110,13 +149,14 @@ def scheduled_pdca_check(db_path: str | None = None) -> list[str]:
     """
     resolved_path = db_path if db_path is not None else str(get_user_dir() / "kaizen.db")
     improvement_log = ImprovementLog(resolved_path)
-    controller = PDCAController(improvement_log)
+    controller = PDCAController(improvement_log, receipt_path=_pdca_receipt_path(db_path))
+    controller.run_check_phase()
     proposed_ids = controller.check_trends_and_propose()
     logger.info(
         "Scheduled PDCA check complete — proposed %d improvement(s)",
         len(proposed_ids),
     )
-    return proposed_ids
+    return [str(proposed_id) for proposed_id in proposed_ids]
 
 
 def scheduled_regression_check(db_path: str | None = None) -> list[RegressionAlert]:
@@ -153,7 +193,7 @@ def scheduled_regression_check(db_path: str | None = None) -> list[RegressionAle
         "Scheduled regression check complete — %d alert(s) raised",
         len(alerts),
     )
-    return alerts
+    return cast(list[RegressionAlert], alerts)
 
 
 def scheduled_trend_analysis(db_path: str | None = None) -> DefectTrendReport:
@@ -205,14 +245,53 @@ def scheduled_trend_analysis(db_path: str | None = None) -> DefectTrendReport:
 # ── Master wiring entry point ─────────────────────────────────────────────────
 
 
-def wire_kaizen_subsystem() -> None:
+def kaizen_scheduled_tasks() -> tuple[KaizenScheduledTask, ...]:
+    """Return every Kaizen task the background scheduler must register."""
+    return (
+        KaizenScheduledTask("pdca_check", "daily", scheduled_pdca_check),
+        KaizenScheduledTask("regression_check", "daily", scheduled_regression_check),
+        KaizenScheduledTask("trend_analysis", "weekly", scheduled_trend_analysis),
+    )
+
+
+def register_kaizen_jobs(scheduler: object, db_path: str | None = None) -> tuple[KaizenScheduledTask, ...]:
+    """Register Kaizen recurring jobs on an APScheduler-compatible scheduler.
+
+    Args:
+        scheduler: Object exposing an ``add_job`` method.
+        db_path: Optional Kaizen database path passed to each scheduled task.
+
+    Returns:
+        Registered Kaizen task descriptors.
+    """
+    assert_dependency_success(scheduler is not None, dependency_id="kaizen_scheduler")
+    tasks = kaizen_scheduled_tasks()
+    add_job = getattr(scheduler, "add_job", None)
+    assert_dependency_success(callable(add_job), dependency_id="kaizen_scheduler.add_job")
+    for task in tasks:
+        add_job(task.callback, task.cadence, id=task.name, args=[db_path])
+    return tasks
+
+
+def wire_kaizen_subsystem(
+    scheduler: object | None = None, db_path: str | None = None
+) -> tuple[KaizenScheduledTask, ...]:
     """Register the kaizen subsystem as ready for scheduled invocation.
 
     Called once at startup to confirm that all kaizen scheduled functions
     (PDCA check, regression check, trend analysis) are importable and
     correctly wired. Logs a summary so the startup log confirms kaizen is
     active.
+
+    Args:
+        scheduler: Optional APScheduler-compatible scheduler. When provided,
+            recurring jobs are registered immediately.
+        db_path: Optional Kaizen database path passed to registered jobs.
+
+    Returns:
+        Scheduler task registrations that callers must register with their
+        recurring task runner.
     """
-    logger.info(
-        "Kaizen subsystem wired — scheduled_pdca_check, scheduled_regression_check, scheduled_trend_analysis are ready"
-    )
+    tasks = register_kaizen_jobs(scheduler, db_path) if scheduler is not None else kaizen_scheduled_tasks()
+    logger.info("Kaizen subsystem ready - %s", ", ".join(f"{task.name}:{task.cadence}" for task in tasks))
+    return tasks

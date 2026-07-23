@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_adapter_authority.schema.json",
+  "title": "Workbench Ecosystem Adapter Authority Contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "adapter_id",
+    "display_name",
+    "tool_kind",
+    "operations",
+    "domains",
+    "authority_mode",
+    "workbench_authoritative",
+    "lossiness",
+    "provenance_mapping",
+    "conflict_behavior",
+    "privacy_policy",
+    "stale_data_policy",
+    "required_permissions"
+  ],
+  "properties": {
+    "adapter_id": {"type": "string", "minLength": 1},
+    "display_name": {"type": "string", "minLength": 1},
+    "tool_kind": {
+      "type": "string",
+      "enum": ["langfuse", "phoenix", "braintrust", "mlflow", "dvc", "lakefs", "label_studio", "temporal", "dbos", "custom"]
+    },
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "enum": ["mirror", "execute", "evaluate", "annotate", "import_dataset"]}
+    },
+    "domains": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "enum": ["trace", "dataset", "annotation", "workflow"]}
+    },
+    "authority_mode": {
+      "type": "string",
+      "enum": ["workbench_authoritative", "external_read_only", "external_can_propose"]
+    },
+    "workbench_authoritative": {"type": "boolean"},
+    "lossiness": {"type": "string", "enum": ["lossless", "lossy_summary", "id_only"]},
+    "provenance_mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required_fields"],
+      "properties": {
+        "required_fields": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "identifier_fields": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1},
+          "default": ["trace_id", "dataset_revision_id", "annotation_id", "workflow_id"]
+        }
+      }
+    },
+    "conflict_behavior": {"type": "string", "enum": ["reject", "propose_only", "workbench_wins"]},
+    "privacy_policy": {"type": "string", "enum": ["local_only", "redacted_export", "allowlisted_export"]},
+    "stale_data_policy": {"type": "string", "enum": ["reject", "require_refresh", "mark_degraded"]},
+    "required_permissions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "minimum_confidence": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.8},
+    "max_staleness_hours": {"type": "integer", "minimum": 1, "default": 24},
+    "evidence_required": {"type": "boolean", "default": true},
+    "round_trip_keys": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1},
+      "default": ["trace_id", "dataset_revision_id", "annotation_id", "workflow_id"]
+    }
+  }
+}

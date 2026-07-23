@@ -14,6 +14,9 @@
   import * as api from '$lib/api.js';
   import * as fmt from '$lib/utils/format.js';
   import { showToast } from '$lib/stores/toast.svelte.js';
+  import HelpPopover from '$lib/components/help/HelpPopover.svelte';
+  import HelpTooltip from '$lib/components/help/HelpTooltip.svelte';
+  import Icon from '$lib/a11y/Icon.svelte';
 
   /** Dashboard data from API. */
   let overview = $state(null);
@@ -168,9 +171,14 @@
 <div class="dashboard-view">
   <div class="dashboard-header">
     <h2>
-      <i class="fas fa-chart-line"></i>
+      <Icon name="chart-line" />
       Dashboard
     </h2>
+    <HelpPopover
+      title="Dashboard"
+      body="Live overview of your Workbench project. Panels show active agents, recent runs, resource utilisation, and the current pipeline state. Data refreshes automatically on the configured interval; you can also trigger a manual refresh. Run status colours: blue = running, green = succeeded, yellow = blocked or approval-required, red = recovery needed. Memory and training summaries reflect the project's persistent stores and do not include in-flight agent context."
+      severity="info"
+    />
     <div class="dashboard-controls">
       <label class="auto-refresh-toggle">
         <input
@@ -190,15 +198,15 @@
         <option value={60}>60s</option>
         <option value={120}>2m</option>
       </select>
-      <button class="btn btn-secondary" onclick={manualRefresh} title="Refresh now">
-        <i class="fas fa-sync-alt" class:fa-spin={loading}></i>
+      <button class="btn btn-secondary" onclick={manualRefresh} aria-label="Refresh dashboard now" title="Refresh now">
+        <Icon name="sync-alt" class={loading ? 'fa-spin' : ''} />
       </button>
     </div>
   </div>
 
   {#if error}
     <div class="dashboard-error" role="alert">
-      <i class="fas fa-exclamation-triangle"></i>
+      <Icon name="exclamation-triangle" />
       <span>Failed to load dashboard: {error}</span>
       <button class="btn btn-ghost" onclick={manualRefresh}>Retry</button>
     </div>
@@ -278,8 +286,15 @@
 
   .dashboard-controls select {
     width: auto;
+    min-height: 44px;
     padding: 6px 10px;
     font-size: 0.8125rem;
+  }
+
+  .dashboard-controls button,
+  .dashboard-controls input[type='checkbox'] {
+    min-width: 44px;
+    min-height: 44px;
   }
 
   .dashboard-error {

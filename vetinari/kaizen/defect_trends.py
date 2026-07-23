@@ -14,10 +14,11 @@ from vetinari.validation import DefectCategory
 
 logger = logging.getLogger(__name__)
 
+
 CONCERNING_CHANGE_PCT = 0.15  # >15% week-over-week increase is concerning
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class DefectTrend:
     """Trend data for a single defect category.
 
@@ -41,7 +42,7 @@ class DefectTrend:
         return f"DefectTrend(category={self.category!r}, trend={self.trend!r}, is_concerning={self.is_concerning!r})"
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class DefectHotspot:
     """An agent+mode combination with a high defect rate.
 
@@ -160,7 +161,7 @@ class DefectTrendAnalyzer:
 
         return DefectTrendReport(
             trends=trends,
-            hotspots=hotspots or [],  # noqa: VET112 - empty fallback preserves optional request metadata contract
+            hotspots=hotspots or [],
             top_defect_category=top_category,
             recommendations=recommendations,
         )

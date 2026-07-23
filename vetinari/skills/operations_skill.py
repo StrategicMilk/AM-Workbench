@@ -26,9 +26,11 @@ import json
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
+from html import escape
 from typing import Any
 
 from vetinari.execution_context import ToolPermission
+from vetinari.security.redaction import redact_text
 from vetinari.tool_interface import (
     Tool,
     ToolCategory,
@@ -43,6 +45,11 @@ from vetinari.types import (
 from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
+
+
+def _log_ref(text: str) -> str:
+    """Return bounded redacted text for operational logs."""
+    return redact_text(str(text))[:120]
 
 
 class OperationsMode(str, Enum):
@@ -67,7 +74,7 @@ class OutputFormat(str, Enum):
     JSON = "json"
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class OperationsRequest:
     """Request structure for operations."""
 
@@ -86,7 +93,7 @@ class OperationsRequest:
         return dataclass_to_dict(self)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class Section:
     """A section of generated content."""
 
@@ -189,7 +196,7 @@ class OperationsSkillTool(Tool):
                 ToolParameter(
                     name="thinking_mode",
                     type=str,
-                    description="Operations depth (low/medium/high/xhigh)",
+                    description="Operations depth (none/low/medium/high/xhigh/max)",
                     required=False,
                     default="medium",
                     allowed_values=[m.value for m in ThinkingMode],
@@ -238,12 +245,14 @@ class OperationsSkillTool(Tool):
             try:
                 output_format = OutputFormat(format_str)
             except ValueError:
-                output_format = OutputFormat.MARKDOWN
+                logger.warning("Invalid output_format %r in tool call; returning error to caller", format_str)
+                return ToolResult(success=False, output=None, error=f"Invalid output_format: {format_str!r}")
 
             try:
                 thinking_mode = ThinkingMode(thinking_str)
             except ValueError:
-                thinking_mode = ThinkingMode.MEDIUM
+                logger.warning("Invalid thinking_mode %r in tool call; returning error to caller", thinking_str)
+                return ToolResult(success=False, output=None, error=f"Invalid thinking_mode: {thinking_str!r}")
 
             request = OperationsRequest(
                 mode=mode,
@@ -287,14 +296,17 @@ class OperationsSkillTool(Tool):
             return OperationsResult(success=False, content=f"Unknown mode: {request.mode.value}")
         return handler(request)
 
-    def _render_content(self, result: OperationsResult, output_format: OutputFormat) -> str | None:
+    @staticmethod
+    def _render_content(result: OperationsResult, output_format: OutputFormat) -> str | None:
         """Render sectioned output into the requested serialization format."""
         if result.content is None or not result.sections:
             return result.content
         if output_format == OutputFormat.MARKDOWN:
             return result.content
         if output_format == OutputFormat.HTML:
-            return "\n".join(f"<section><h2>{s.title}</h2><p>{s.content}</p></section>" for s in result.sections)
+            return "\n".join(
+                f"<section><h2>{escape(s.title)}</h2><p>{escape(s.content)}</p></section>" for s in result.sections
+            )
         if output_format == OutputFormat.PLAIN:
             return "\n\n".join(f"{s.title}\n{s.content}" for s in result.sections)
         return json.dumps(
@@ -306,9 +318,10 @@ class OperationsSkillTool(Tool):
             indent=2,
         )
 
-    def _documentation(self, request: OperationsRequest) -> OperationsResult:
+    @staticmethod
+    def _documentation(request: OperationsRequest) -> OperationsResult:
         """Generate documentation."""
-        logger.info("Generating documentation: %s", request.content[:80])
+        logger.info("Generating documentation: %s", _log_ref(request.content))
         sections = [
             Section(title="Overview", content=f"Documentation for: {request.content}", order=1),
             Section(title="Usage", content="Usage examples and getting started guide.", order=2),
@@ -330,9 +343,10 @@ class OperationsSkillTool(Tool):
             metadata={"word_count": sum(len(s.content.split()) for s in sections)},
         )
 
-    def _creative_writing(self, request: OperationsRequest) -> OperationsResult:
+    @staticmethod
+    def _creative_writing(request: OperationsRequest) -> OperationsResult:
         """Generate creative writing content."""
-        logger.info("Creative writing: %s", request.content[:80])
+        logger.info("Creative writing: %s", _log_ref(request.content))
         return OperationsResult(
             success=True,
             content=f"Creative content for: {request.content}",
@@ -342,9 +356,10 @@ class OperationsSkillTool(Tool):
             metadata={"word_count": len(request.content.split())},
         )
 
-    def _cost_analysis(self, request: OperationsRequest) -> OperationsResult:
+    @staticmethod
+    def _cost_analysis(request: OperationsRequest) -> OperationsResult:
         """Perform cost analysis."""
-        logger.info("Cost analysis: %s", request.content[:80])
+        logger.info("Cost analysis: %s", _log_ref(request.content))
         sections = [
             Section(title="Current Cost", content="Analysis of current resource costs.", order=1),
             Section(title="Projected Cost", content="Projected costs based on growth trends.", order=2),
@@ -360,9 +375,10 @@ class OperationsSkillTool(Tool):
             metadata={"estimated_cost": 0.0},
         )
 
-    def _experiment(self, request: OperationsRequest) -> OperationsResult:
+    @staticmethod
+    def _experiment(request: OperationsRequest) -> OperationsResult:
         """Design and run experiments."""
-        logger.info("Experiment: %s", request.content[:80])
+        logger.info("Experiment: %s", _log_ref(request.content))
         sections = [
             Section(title="Hypothesis", content=f"Hypothesis for: {request.content}", order=1),
             Section(title="Methodology", content="Experimental methodology and controls.", order=2),
@@ -378,9 +394,10 @@ class OperationsSkillTool(Tool):
             metadata={"experiment_results": {"status": "designed", "phase": "pre-execution"}},
         )
 
-    def _error_recovery(self, request: OperationsRequest) -> OperationsResult:
+    @staticmethod
+    def _error_recovery(request: OperationsRequest) -> OperationsResult:
         """Create error recovery plan."""
-        logger.info("Error recovery: %s", request.content[:80])
+        logger.info("Error recovery: %s", _log_ref(request.content))
         sections = [
             Section(title="Root Cause Analysis", content=f"Analysis of: {request.content}", order=1),
             Section(title="Fix Steps", content="Step-by-step recovery procedure.", order=2),
@@ -396,9 +413,10 @@ class OperationsSkillTool(Tool):
             warnings=["Review fix steps before applying to production"],
         )
 
-    def _synthesis(self, request: OperationsRequest) -> OperationsResult:
+    @staticmethod
+    def _synthesis(request: OperationsRequest) -> OperationsResult:
         """Synthesize information from multiple sources."""
-        logger.info("Synthesis: %s", request.content[:80])
+        logger.info("Synthesis: %s", _log_ref(request.content))
         sections = [
             Section(title="Summary", content=f"Synthesis of: {request.content}", order=1),
             Section(title="Key Insights", content="Primary insights from source material.", order=2),
@@ -414,7 +432,8 @@ class OperationsSkillTool(Tool):
             metadata={"source_count": 0},
         )
 
-    def _image_generation(self, request: OperationsRequest) -> OperationsResult:
+    @staticmethod
+    def _image_generation(request: OperationsRequest) -> OperationsResult:
         """Handle image generation by calling the local diffusion engine.
 
         Args:
@@ -424,7 +443,7 @@ class OperationsSkillTool(Tool):
             OperationsResult with success=True and image path, or success=False
             with an error description if the engine is unavailable or fails.
         """
-        logger.info("Image generation: %s", request.content[:80])
+        logger.info("Image generation: %s", _log_ref(request.content))
         from vetinari.image.diffusion_engine import DiffusionEngine
 
         engine = DiffusionEngine()
@@ -451,7 +470,11 @@ class OperationsSkillTool(Tool):
                 content=result.get("path", ""),
                 content_type="image_generation",
                 output_format=request.output_format,
-                metadata={"status": "generated", "path": result.get("path", ""), "filename": result.get("filename", "")},
+                metadata={
+                    "status": "generated",
+                    "path": result.get("path", ""),
+                    "filename": result.get("filename", ""),
+                },
             )
         return OperationsResult(
             success=False,
@@ -461,9 +484,10 @@ class OperationsSkillTool(Tool):
             metadata={"status": "generation_failed", "error": result.get("error", "")},
         )
 
-    def _improvement(self, request: OperationsRequest) -> OperationsResult:
+    @staticmethod
+    def _improvement(request: OperationsRequest) -> OperationsResult:
         """Identify improvement opportunities."""
-        logger.info("Improvement analysis: %s", request.content[:80])
+        logger.info("Improvement analysis: %s", _log_ref(request.content))
         sections = [
             Section(title="Current State", content=f"Analysis of: {request.content}", order=1),
             Section(title="Tech Debt", content="Identified technical debt items.", order=2),

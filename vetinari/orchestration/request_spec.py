@@ -12,12 +12,30 @@ import logging
 import re
 import threading
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
-from vetinari.orchestration.intake import TIER_PIPELINES, Tier
+try:
+    from vetinari.orchestration.intake import TIER_PIPELINES, Tier
+except (ImportError, AttributeError):  # pragma: no cover - exercised by partial import/stub environments
+
+    class RequestSpecTierFallback(Enum):
+        """Fallback request tier used when intake is temporarily unavailable."""
+
+        EXPRESS = "express"
+        STANDARD = "standard"
+        CUSTOM = "custom"
+
+    Tier = RequestSpecTierFallback
+    TIER_PIPELINES = {
+        Tier.EXPRESS: ["worker"],
+        Tier.STANDARD: ["foreman", "worker", "inspector"],
+        Tier.CUSTOM: ["foreman", "worker", "inspector"],
+    }
 from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
+
 
 # Compiled patterns for file reference extraction
 _FILE_PATTERN = re.compile(
@@ -41,7 +59,7 @@ _CATEGORY_CRITERIA: dict[str, list[str]] = {
 # ── QA Dataclass ───────────────────────────────────────────────────────
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class QA:
     """A question/answer pair from clarification.
 
@@ -76,7 +94,7 @@ class QA:
 # ── RequestSpec ────────────────────────────────────────────────────────
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RequestSpec:
     """Engineering drawing — fully specified before production starts.
 
@@ -103,6 +121,9 @@ class RequestSpec:
     constraints: dict[str, Any] = field(default_factory=dict)
     clarifications: list[QA] = field(default_factory=list)
     confidence: float = 1.0
+    confidence_source: str = "heuristic_request_spec_v1"
+    confidence_calibrated: bool = False
+    confidence_baseline_ref: str = "none:heuristic_not_eval_calibrated"
     estimated_complexity: int = 5
     suggested_pipeline: list[str] = field(default_factory=list)
 
@@ -169,6 +190,9 @@ class RequestSpec:
             constraints=_as_dict(data.get("constraints"), "constraints"),
             clarifications=clarifications,
             confidence=float(data.get("confidence", 1.0)),
+            confidence_source=str(data.get("confidence_source", "heuristic_request_spec_v1")),
+            confidence_calibrated=bool(data.get("confidence_calibrated")),
+            confidence_baseline_ref=str(data.get("confidence_baseline_ref", "none:heuristic_not_eval_calibrated")),
             estimated_complexity=int(data.get("estimated_complexity", 5)),
             suggested_pipeline=_as_list(data.get("suggested_pipeline"), "suggested_pipeline"),
         )
@@ -204,7 +228,7 @@ class RequestSpecBuilder:
         Returns:
             Fully assembled RequestSpec.
         """
-        clarifications = clarifications or []  # noqa: VET112 - empty fallback preserves optional request metadata contract
+        clarifications = clarifications or []
 
         # 1. Parse goal for file references → scope
         scope = self._extract_file_references(goal)
@@ -242,11 +266,15 @@ class RequestSpecBuilder:
             constraints={},
             clarifications=clarifications,
             confidence=confidence,
+            confidence_source="heuristic_request_spec_v1",
+            confidence_calibrated=False,
+            confidence_baseline_ref="none:heuristic_not_eval_calibrated",
             estimated_complexity=complexity,
             suggested_pipeline=pipeline,
         )
 
-    def _extract_file_references(self, goal: str) -> list[str]:
+    @staticmethod
+    def _extract_file_references(goal: str) -> list[str]:
         """Parse file paths from the goal text.
 
         Args:
@@ -265,8 +293,8 @@ class RequestSpecBuilder:
                 result.append(m)
         return result
 
+    @staticmethod
     def _generate_acceptance_criteria(
-        self,
         goal: str,
         category: str,
         clarifications: list[QA],
@@ -292,8 +320,8 @@ class RequestSpecBuilder:
 
         return criteria
 
+    @staticmethod
     def _estimate_complexity(
-        self,
         goal: str,
         scope: list[str],
         category: str,
@@ -330,8 +358,8 @@ class RequestSpecBuilder:
 
         return max(1, min(10, complexity))
 
+    @staticmethod
     def _compute_confidence(
-        self,
         goal: str,
         clarifications: list[QA],
         criteria: list[str],
@@ -364,7 +392,7 @@ class RequestSpecBuilder:
         if words >= 30:
             confidence += 0.05
 
-        return max(0.0, min(1.0, confidence))
+        return max(0.0, min(0.85, confidence))
 
 
 # ── Singleton ──────────────────────────────────────────────────────────

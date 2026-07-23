@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from vetinari.config.models_schema import _load_yaml
 from vetinari.constants import _PROJECT_ROOT, SANDBOX_MAX_MEMORY_MB, SANDBOX_TIMEOUT
@@ -59,12 +59,21 @@ class ExternalSandbox(BaseModel):
     allowed_hooks: list[str] = Field(default_factory=list)
     blocked_hooks: list[str] = Field(default_factory=list)
     allowed_domains: list[str] = Field(default_factory=list)
-    require_signature: bool = False
-    allow_network: bool = True
-    allow_file_write: bool = True
+    require_signature: bool = True
+    allow_network: bool = False
+    allow_file_write: bool = False
     audit_enabled: bool = True
     audit_log_dir: str = str(_PROJECT_ROOT / "logs" / "sandbox")
     audit_retention_days: int = Field(default=30, ge=1)
+
+    @model_validator(mode="after")
+    def _reject_unsigned_sensitive_permissions(self) -> ExternalSandbox:
+        """Fail closed for sensitive external plugin capabilities."""
+        if self.enabled and (self.allow_network or self.allow_file_write) and not self.require_signature:
+            raise ValueError("external sandbox network/file-write permissions require signed plugins")
+        if self.enabled and self.allow_network and not self.allowed_domains:
+            raise ValueError("external sandbox network access requires an explicit allowed_domains list")
+        return self
 
 
 class SandboxSection(BaseModel):
@@ -92,13 +101,20 @@ class SandboxRules(BaseModel):
         blocked_paths: Filesystem paths that are always off-limits.
     """
 
-    allow_code_execution: bool = True
+    allow_code_execution: bool = False
     require_approval_for_external: bool = True
-    allow_network: bool = True
+    allow_network: bool = False
     blocked_domains: list[str] = Field(default_factory=list)
     allow_file_read: bool = True
-    allow_file_write: bool = True
+    allow_file_write: bool = False
     blocked_paths: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _reject_unapproved_code_execution(self) -> SandboxRules:
+        """Code execution cannot be enabled without an approval gate."""
+        if self.allow_code_execution and not self.require_approval_for_external:
+            raise ValueError("code execution requires an external approval gate")
+        return self
 
 
 class ApprovalConfig(BaseModel):
@@ -109,7 +125,7 @@ class ApprovalConfig(BaseModel):
         require_approval_for: List of operation names that always need approval.
     """
 
-    auto_approve_builtin: bool = True
+    auto_approve_builtin: bool = False
     require_approval_for: list[str] = Field(default_factory=list)
 
 

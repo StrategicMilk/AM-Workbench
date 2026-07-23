@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_ai_bundle.schema.json",
+  "title": "Workbench AI Bundle Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bundle_id",
+    "project_id",
+    "kind",
+    "components",
+    "dependency_refs",
+    "provenance_refs",
+    "runtime_facts",
+    "oci_descriptors",
+    "tamper_evidence",
+    "selective_unpack"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "bundle_id": {"type": "string", "minLength": 1},
+    "project_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
+    "kind": {"const": "oci_bundle"},
+    "components": {
+      "type": "array",
+      "minItems": 11,
+      "items": {"$ref": "#/$defs/component"}
+    },
+    "dependency_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "provenance_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "runtime_facts": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "oci_descriptors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": {"type": "string", "minLength": 1}
+      }
+    },
+    "tamper_evidence": {
+      "type": "object",
+      "required": ["canonical_manifest_sha256", "descriptor_authority"],
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "selective_unpack": {
+      "type": "object",
+      "required": ["root"],
+      "additionalProperties": {"type": "string", "minLength": 1}
+    }
+  },
+  "$defs": {
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "kind",
+        "media_type",
+        "digest",
+        "size_bytes",
+        "blob_path",
+        "source",
+        "unpack_path",
+        "metadata"
+      ],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "kind": {
+          "enum": [
+            "model",
+            "dataset_snapshot",
+            "code",
+            "prompt",
+            "guardrail",
+            "policy",
+            "eval_suite",
+            "config",
+            "documentation",
+            "runtime_fact",
+            "manifest_record"
+          ]
+        },
+        "media_type": {"type": "string", "minLength": 1},
+        "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "blob_path": {"type": "string", "pattern": "^blobs/sha256/[0-9a-f]{64}$"},
+        "source": {"type": "string", "minLength": 1},
+        "unpack_path": {"type": "string", "minLength": 1},
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

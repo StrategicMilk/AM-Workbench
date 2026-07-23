@@ -16,7 +16,11 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from vetinari.utils.bounded_collections import BoundedList
+
 logger = logging.getLogger(__name__)
+
+MAX_GATE_HISTORY = 1_000
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +114,32 @@ WORKFLOW_GATES: dict[str, WorkflowGate] = {
 }
 
 
+def _gate_violations(gate: WorkflowGate, metrics: dict[str, Any]) -> list[str]:
+    def violation_for(key: str, threshold: Any) -> str | None:
+        value = metrics.get(key)
+        if value is None:
+            return f"Missing metric: {key}"
+        if isinstance(threshold, bool):
+            if value != threshold:
+                return f"{key}: expected {threshold}, got {value}"
+        elif isinstance(threshold, (int, float)):
+            if "max" in key and value > threshold:
+                return f"{key}: {value} exceeds maximum {threshold}"
+            if "max" not in key and value < threshold:
+                return f"{key}: {value} below minimum {threshold}"
+        return None
+
+    return [
+        violation
+        for key, threshold in gate.criteria.items()
+        if (violation := violation_for(key, threshold)) is not None
+    ]
+
+
+def _record_bounded_history(history: BoundedList[dict[str, Any]], entry: dict[str, Any]) -> None:
+    history.append(entry)
+
+
 # ---------------------------------------------------------------------------
 # Gate runner
 # ---------------------------------------------------------------------------
@@ -129,7 +159,7 @@ class WorkflowGateRunner:
 
     def __init__(self, gates: dict[str, WorkflowGate] | None = None):
         self._gates: dict[str, WorkflowGate] = gates if gates is not None else dict(WORKFLOW_GATES)
-        self._history: list[dict[str, Any]] = []
+        self._history: BoundedList[dict[str, Any]] = BoundedList(MAX_GATE_HISTORY)
 
     # -- public API ---------------------------------------------------------
 
@@ -155,68 +185,45 @@ class WorkflowGateRunner:
         """
         gate = self._gates.get(stage)
         if gate is None:
-            violations = [f"Unknown workflow stage: {stage}"]
-            entry = {
+            return self._unknown_stage_result(stage, metrics)
+
+        violations = _gate_violations(gate, metrics)
+        passed = len(violations) == 0
+        action = GateAction.CONTINUE if passed else gate.failure_action
+        self._record_gate_result(stage, gate.name, passed, action, violations, metrics)
+        return passed, action, violations
+
+    def _unknown_stage_result(self, stage: str, metrics: dict[str, Any]) -> tuple[bool, GateAction, list[str]]:
+        violations = [f"Unknown workflow stage: {stage}"]
+        self._record_gate_result(stage, None, False, GateAction.BLOCK, violations, metrics)
+        logger.error("No gate defined for stage %r -- blocking by default", stage)
+        return False, GateAction.BLOCK, violations
+
+    def _record_gate_result(
+        self,
+        stage: str,
+        gate_name: str | None,
+        passed: bool,
+        action: GateAction,
+        violations: list[str],
+        metrics: dict[str, Any],
+    ) -> None:
+        _record_bounded_history(
+            self._history,
+            {
                 "stage": stage,
-                "gate": None,
-                "passed": False,
-                "action": GateAction.BLOCK.value,
+                "gate": gate_name,
+                "passed": passed,
+                "action": action.value,
                 "violations": list(violations),
                 "metrics": dict(metrics),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-            self._history.append(entry)
-            logger.error("No gate defined for stage %r -- blocking by default", stage)
-            return False, GateAction.BLOCK, violations
-
-        violations: list[str] = []
-
-        for key, threshold in gate.criteria.items():
-            value = metrics.get(key)
-
-            if value is None:
-                violations.append(f"Missing metric: {key}")
-                continue
-
-            if isinstance(threshold, bool):
-                if value != threshold:
-                    violations.append(f"{key}: expected {threshold}, got {value}")
-            elif isinstance(threshold, (int, float)):
-                # For keys containing "max" the threshold is an upper bound;
-                # otherwise it is a lower bound.
-                if "max" in key:
-                    if value > threshold:
-                        violations.append(f"{key}: {value} exceeds maximum {threshold}")
-                elif value < threshold:
-                    violations.append(f"{key}: {value} below minimum {threshold}")
-
-        passed = len(violations) == 0
-        action = GateAction.CONTINUE if passed else gate.failure_action
-
-        # Record history entry
-        entry = {
-            "stage": stage,
-            "gate": gate.name,
-            "passed": passed,
-            "action": action.value,
-            "violations": list(violations),
-            "metrics": dict(metrics),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        self._history.append(entry)
-
+            },
+        )
         if passed:
-            logger.info("Gate %s PASSED for stage %s", gate.name, stage)
+            logger.info("Gate %s PASSED for stage %s", gate_name, stage)
         else:
-            logger.warning(
-                "Gate %s FAILED for stage %s: %s -> %s",
-                gate.name,
-                stage,
-                violations,
-                action.value,
-            )
-
-        return passed, action, violations
+            logger.warning("Gate %s FAILED for stage %s: %s -> %s", gate_name, stage, violations, action.value)
 
     def get_history(self) -> list[dict[str, Any]]:
         """Return an ordered list of all gate evaluation results."""

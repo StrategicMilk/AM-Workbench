@@ -1,0 +1,11 @@
+# DEPRECATED 2026-06-09 — superseded by config/model_routing.yaml
+#
+# config/model_routing.yaml is now the SINGLE SOURCE OF TRUTH for Claude + Codex model and
+# reasoning-effort routing (roles, audit lanes, program roles, session-start, and the
+# normal/scarce/exhausted + codex normal/constrained fallback ladders).
+#
+# scripts/delegation_model_fallback.py now defaults to config/model_routing.yaml.
+# Do NOT add routing data here. This tombstone is kept only to document the move.
+schema_version: "1"
+deprecated: true
+moved_to: config/model_routing.yaml

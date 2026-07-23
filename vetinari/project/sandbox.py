@@ -25,22 +25,40 @@ from pathlib import Path
 
 import yaml
 
+from vetinari.learning.atomic_writers import _write_text_atomic
 from vetinari.sandbox_policy import _SAFE_ENV_VARS
+from vetinari.security.sandbox import RustSandboxAuthorityBridge
 
 logger = logging.getLogger(__name__)
 
+
 # Path to the sandbox policy relative to the Vetinari package root.
-_POLICY_PATH: Path = Path(__file__).resolve().parent.parent.parent / "config" / "sandbox_policy.yaml"
+_POLICY_PATH_PARTS = ("config", "sandbox_policy.yaml")
+_POLICY_PATH = Path(__file__).resolve().parent.parent.parent.joinpath(*_POLICY_PATH_PARTS)
 
 # Default timeouts used when the policy file cannot be loaded.
 _DEFAULT_TIMEOUT: int = 300  # seconds
 _DEFAULT_MEMORY_MB: int = 2048
+_PYTHON_EXE = shutil.which("python") or shutil.which("python3") or "python"
+_RUFF_EXE = shutil.which("ruff") or "ruff"
+
 
 # Resolved executable paths — resolved once at module load so hot-path code
 # does not call shutil.which() on every subprocess call.
-_GIT_EXE: str = shutil.which("git") or "git"
-_PYTHON_EXE: str = shutil.which("python") or shutil.which("python3") or "python"
-_RUFF_EXE: str = shutil.which("ruff") or "ruff"
+def _policy_path() -> Path:
+    return _POLICY_PATH
+
+
+def _git_exe() -> str:
+    return shutil.which("git") or "git"
+
+
+def _python_exe() -> str:
+    return _PYTHON_EXE
+
+
+def _ruff_exe() -> str:
+    return _RUFF_EXE
 
 
 def _safe_subprocess_env() -> dict[str, str]:
@@ -100,8 +118,8 @@ def create_sandbox(project_path: Path) -> Path:
     sandbox_dir = Path(tempfile.mkdtemp(prefix="vetinari_sandbox_"))
     branch_name = f"vetinari-sandbox-{sandbox_dir.name}"
 
-    result = subprocess.run(  # noqa: S603 - argv is controlled and shell interpolation is not used
-        [_GIT_EXE, "worktree", "add", "--detach", str(sandbox_dir)],
+    result = subprocess.run(
+        [_git_exe(), "worktree", "add", "--detach", str(sandbox_dir)],
         capture_output=True,
         text=True,
         cwd=str(project_path),
@@ -133,14 +151,23 @@ def apply_changes(sandbox_path: Path, changes: dict[str, str]) -> bool:
         failed (errors are logged with the filename that failed).
     """
     all_ok = True
+    authority = RustSandboxAuthorityBridge(sandbox_path)
     resolved_sandbox = sandbox_path.resolve()
     for relative_path, content in changes.items():
-        target = sandbox_path / relative_path
         # Resolve after joining so that any `../` components in the key are
         # collapsed. Reject the path if it escapes the sandbox root — this
         # prevents path-traversal attacks where a change key like
         # `../../etc/passwd` would otherwise write outside the sandbox.
-        resolved_target = target.resolve()
+        try:
+            resolved_target = authority.require_path("write", relative_path)
+        except PermissionError as exc:
+            logger.warning(
+                "Path traversal rejected in apply_changes - key %r denied by Rust sandbox bridge: %s",
+                relative_path,
+                exc,
+            )
+            all_ok = False
+            continue
         if not resolved_target.is_relative_to(resolved_sandbox):
             logger.warning(
                 "Path traversal rejected in apply_changes — key %r resolves to %s which is outside sandbox root %s",
@@ -152,7 +179,7 @@ def apply_changes(sandbox_path: Path, changes: dict[str, str]) -> bool:
             continue
         try:
             resolved_target.parent.mkdir(parents=True, exist_ok=True)
-            resolved_target.write_text(content, encoding="utf-8")
+            _write_text_atomic(resolved_target, content)
         except OSError as exc:
             logger.warning(
                 "Could not write %s to sandbox — change will be skipped: %s",
@@ -206,8 +233,8 @@ def cleanup_sandbox(sandbox_path: Path) -> None:
             :func:`create_sandbox`.
     """
     try:
-        subprocess.run(  # noqa: S603 - argv is controlled and shell interpolation is not used
-            [_GIT_EXE, "worktree", "remove", "--force", str(sandbox_path)],
+        subprocess.run(
+            [_git_exe(), "worktree", "remove", "--force", str(sandbox_path)],
             capture_output=True,
             text=True,
             timeout=15,
@@ -240,7 +267,14 @@ def execute_in_sandbox(project_path: Path, changes: dict[str, str]) -> ProjectSa
     sandbox_path: Path | None = None
     try:
         sandbox_path = create_sandbox(project_path)
-        apply_changes(sandbox_path, changes)
+        if not apply_changes(sandbox_path, changes):
+            return ProjectSandboxResult(
+                success=False,
+                test_passed=False,
+                lint_passed=False,
+                errors=["apply_changes failed; sandbox checks were not run"],
+                worktree_path=None,
+            )
         result = run_checks(sandbox_path)
         result.worktree_path = None  # cleaned up below
         return result
@@ -273,16 +307,17 @@ def _load_policy() -> dict:
         or a default dict when the file is missing or unreadable.
     """
     try:
-        raw = _POLICY_PATH.read_text(encoding="utf-8")
+        policy_path = _policy_path()
+        raw = policy_path.read_text(encoding="utf-8")
         data = yaml.safe_load(raw)
         return data.get("sandbox", {}).get("external", {})
     except FileNotFoundError:
-        logger.debug("sandbox_policy.yaml not found at %s — using defaults", _POLICY_PATH)
+        logger.debug("sandbox_policy.yaml not found — using defaults")
         return {}
     except (yaml.YAMLError, OSError) as exc:
         logger.warning(
             "Could not read sandbox policy from %s — using defaults: %s",
-            _POLICY_PATH,
+            _policy_path(),
             exc,
         )
         return {}
@@ -303,8 +338,8 @@ def _run_tests(sandbox_path: Path, timeout: int) -> tuple[bool, list[str]]:
         exited with code 0 and *errors* contains any failure messages.
     """
     try:
-        result = subprocess.run(  # noqa: S603 - argv is controlled and shell interpolation is not used
-            [_PYTHON_EXE, "-m", "pytest", "--tb=short", "-q"],
+        result = subprocess.run(
+            [_python_exe(), "-m", "pytest", "--tb=short", "-q"],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -334,8 +369,8 @@ def _run_lint(sandbox_path: Path, timeout: int) -> tuple[bool, list[str]]:
         reported zero violations.
     """
     try:
-        result = subprocess.run(  # noqa: S603 - argv is controlled and shell interpolation is not used
-            [_RUFF_EXE, "check", str(sandbox_path)],
+        result = subprocess.run(
+            [_ruff_exe(), "check", str(sandbox_path)],
             capture_output=True,
             text=True,
             timeout=timeout,

@@ -1,0 +1,9 @@
+services:
+  amw-engine:
+    # TODO: replace with built amw-engine image.
+    image: amw-engine:dev
+    pull_policy: never
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/app/config:ro

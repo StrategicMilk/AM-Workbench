@@ -1,0 +1,45 @@
+coverage_oracle_registered: true
+
+# Persona bundles: five pre-defined user intent profiles layered over Worker mode clusters. Loaded by PersonaResolver.
+bundles:
+  rapid-prototyper:
+    description: "For users who want a working proof of concept quickly with minimal polish."
+    worker_mode_cluster: ["code", "spike"]
+    preferred_model_tier: fast
+    urgency_default: high
+    budget_tokens_default: 8000
+    request_frame_overrides:
+      scope_hint: "mvp only - no production hardening"
+  quality-craftsperson:
+    description: "For users who want production-grade, well-tested, and well-documented output."
+    worker_mode_cluster: ["code", "test", "docs"]
+    preferred_model_tier: quality
+    urgency_default: low
+    budget_tokens_default: 32000
+    request_frame_overrides:
+      scope_hint: "full coverage, docstrings, types"
+  analytical-researcher:
+    description: "For users who need system understanding and a findings document before code changes."
+    worker_mode_cluster: ["analysis", "docs"]
+    preferred_model_tier: quality
+    urgency_default: medium
+    budget_tokens_default: 16000
+    request_frame_overrides:
+      scope_hint: "findings document expected output"
+  refactor-surgeon:
+    description: "For users who want existing code improved without external behavior changes."
+    worker_mode_cluster: ["refactor", "test"]
+    preferred_model_tier: standard
+    urgency_default: medium
+    budget_tokens_default: 12000
+    request_frame_overrides:
+      scope_hint: "behavior-preserving only; tests must pass before and after"
+  infra-operator:
+    description: "For users who need infrastructure, scripts, migrations, or configuration managed carefully."
+    worker_mode_cluster: ["infra", "code"]
+    preferred_model_tier: standard
+    urgency_default: medium
+    budget_tokens_default: 12000
+    request_frame_overrides:
+      scope_hint: "idempotent operations preferred"
+      destructive_intent: true

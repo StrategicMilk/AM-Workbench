@@ -1,0 +1,428 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_governance_mode.schema.json",
+  "title": "Workbench Governance Mode Payload",
+  "description": "Current governance decisions and advisory-only retrospective scan reports.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/governanceModeDecision"
+    },
+    {
+      "$ref": "#/$defs/retrospectiveScanReport"
+    },
+    {
+      "$ref": "#/$defs/retrospectiveFinding"
+    }
+  ],
+  "$defs": {
+    "governanceMode": {
+      "type": "string",
+      "enum": [
+        "observe",
+        "warn",
+        "strict",
+        "retrospective_scan"
+      ]
+    },
+    "enforcementEffect": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "advisory_warning",
+        "requires_review",
+        "blocked",
+        "would_have_warned",
+        "would_have_blocked"
+      ]
+    },
+    "stringArray": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "governanceModeDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "decision_id",
+        "mode",
+        "enforcement_effect",
+        "verdict_value",
+        "upstream_verdict_id",
+        "action_id",
+        "run_id",
+        "policy_version",
+        "shield_version",
+        "evidence_refs",
+        "advisory_only",
+        "enforced",
+        "history_mutated",
+        "summary"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "1.0"
+        },
+        "decision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "enum": [
+            "observe",
+            "warn",
+            "strict"
+          ]
+        },
+        "enforcement_effect": {
+          "$ref": "#/$defs/enforcementEffect"
+        },
+        "verdict_value": {
+          "type": "string",
+          "enum": [
+            "allow",
+            "warn",
+            "block",
+            "escalate"
+          ]
+        },
+        "upstream_verdict_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "shield_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_refs": {
+          "$ref": "#/$defs/stringArray",
+          "minItems": 1
+        },
+        "advisory_only": {
+          "type": "boolean"
+        },
+        "enforced": {
+          "type": "boolean"
+        },
+        "history_mutated": {
+          "const": false
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "shield_decision_value": {
+          "type": "string"
+        },
+        "watcher_action": {
+          "type": "string"
+        },
+        "risk_context_decision": {
+          "type": "string"
+        },
+        "evaluated_at_utc": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "enum": [
+                  "observe",
+                  "warn"
+                ]
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "advisory_only": {
+                "const": true
+              },
+              "enforced": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "strict"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "advisory_only": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "retrospectiveFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "mode",
+        "finding_id",
+        "enforcement_effect",
+        "historical_trace_ref",
+        "historical_action_ref",
+        "historical_verdict_ref",
+        "historical_receipt_refs",
+        "historical_policy_version",
+        "historical_shield_version",
+        "candidate_policy_version",
+        "candidate_shield_version",
+        "candidate_rule_refs",
+        "would_have_warned",
+        "would_have_blocked",
+        "advisory_only",
+        "enforced",
+        "history_mutated",
+        "recommended_shield_packs",
+        "likely_false_positive_notes",
+        "evidence_refs",
+        "summary"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "1.0"
+        },
+        "mode": {
+          "const": "retrospective_scan"
+        },
+        "finding_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "enforcement_effect": {
+          "enum": [
+            "would_have_warned",
+            "would_have_blocked"
+          ]
+        },
+        "historical_trace_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "historical_action_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "historical_verdict_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "historical_receipt_refs": {
+          "$ref": "#/$defs/stringArray",
+          "minItems": 1
+        },
+        "historical_policy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "historical_shield_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "candidate_policy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "candidate_shield_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "candidate_rule_refs": {
+          "$ref": "#/$defs/stringArray",
+          "minItems": 1
+        },
+        "would_have_warned": {
+          "type": "boolean"
+        },
+        "would_have_blocked": {
+          "type": "boolean"
+        },
+        "advisory_only": {
+          "const": true
+        },
+        "enforced": {
+          "const": false
+        },
+        "history_mutated": {
+          "const": false
+        },
+        "recommended_shield_packs": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "likely_false_positive_notes": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "evidence_refs": {
+          "$ref": "#/$defs/stringArray",
+          "minItems": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "would_have_warned": {
+              "const": true
+            }
+          },
+          "required": [
+            "would_have_warned"
+          ]
+        },
+        {
+          "properties": {
+            "would_have_blocked": {
+              "const": true
+            }
+          },
+          "required": [
+            "would_have_blocked"
+          ]
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "would_have_blocked": {
+                "const": true
+              }
+            },
+            "required": [
+              "would_have_blocked"
+            ]
+          },
+          "then": {
+            "properties": {
+              "enforcement_effect": {
+                "const": "would_have_blocked"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "retrospectiveScanReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "mode",
+        "scan_id",
+        "candidate_policy_version",
+        "candidate_shield_version",
+        "scanned_trace_refs",
+        "findings",
+        "blast_radius_summary",
+        "generated_at_utc",
+        "advisory_only",
+        "history_mutated"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "1.0"
+        },
+        "mode": {
+          "const": "retrospective_scan"
+        },
+        "scan_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "candidate_policy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "candidate_shield_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scanned_trace_refs": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/retrospectiveFinding"
+          }
+        },
+        "blast_radius_summary": {
+          "type": "object",
+          "required": [
+            "actions_scanned",
+            "would_have_warned",
+            "would_have_blocked",
+            "history_mutations"
+          ],
+          "properties": {
+            "actions_scanned": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "would_have_warned": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "would_have_blocked": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "history_mutations": {
+              "const": 0
+            }
+          },
+          "additionalProperties": true
+        },
+        "generated_at_utc": {
+          "type": "string",
+          "minLength": 1
+        },
+        "advisory_only": {
+          "const": true
+        },
+        "history_mutated": {
+          "const": false
+        }
+      }
+    }
+  }
+}

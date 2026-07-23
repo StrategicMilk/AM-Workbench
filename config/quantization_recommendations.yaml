@@ -1,0 +1,33 @@
+schema_version: "1"
+coverage_oracle_registered: true
+generated_utc: "2026-04-25T00:00:00Z"
+compute_capabilities:
+  sm_120:
+    preferred_order: [awq_int4, gptq_int4, nvfp4, fp8, fp16, bf16]
+    rationale: "AWQ-Marlin and GPTQ-Marlin outperform FP8 on RTX 5090 Blackwell as of 2026-04-25; FP8 on WSL2 falls back to emulated paths. See ADR-0104."
+    adr: "ADR-0104-quant-policy-sm120-awq-marlin-over-fp8"
+    sources:
+      - url: "https://github.com/vllm-project/vllm/pull/22131"
+        retrieved_on: 2026-04-25
+        fetched_in_session: true
+    verified_on: 2026-04-25
+  sm_90:
+    preferred_order: [fp8, awq_int4, gptq_int4, fp16, bf16]
+    rationale: "Hopper FP8 is mature; verify against local backend pins before promotion."
+    verified_on: 2026-04-25
+  sm_89:
+    preferred_order: [awq_int4, gptq_int4, fp16, bf16]
+    rationale: "Ada guidance remains int4-first for local capacity."
+    verified_on: 2026-04-25
+role_quant_minimums:
+  inspector_deep_audit: q5_k_m_or_better
+  inspector_security_audit: q6_k_or_better
+  worker_build: q5_k_m_or_better
+  worker_chat: q4_k_m_or_better
+  worker_research: q5_k_m_or_better
+  foreman_planning: q5_k_m_or_better
+  tier_zero_routing: q4_k_m_or_better
+  worker_writing_long_form: q6_k_or_better
+notes:
+  - "Role floor is set by the lowest-acceptable quality at which the role's product behavior remains compliant with the verifier contract from SESSION-05."
+  - "Higher quant is always permitted; this is a floor, not a target."

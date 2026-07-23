@@ -1,7 +1,7 @@
 """Release tooling for Vetinari.
 
 Provides the proof artifact schema, append-only claims ledger, and utilities
-used by ``scripts/release/release_doctor.py`` and ``scripts/release/pre_release_gate.py``
+used by ``scripts/release_doctor.py`` and ``scripts/pre_release_gate.py``
 to record, verify, and gate release evidence before closing any release claim.
 
 Public API:

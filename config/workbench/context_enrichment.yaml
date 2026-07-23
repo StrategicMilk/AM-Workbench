@@ -1,0 +1,16 @@
+schema_version: 1
+unchanged_elision:
+  enabled: true
+  require_provenance: true
+  digest_algorithm: sha256
+diagnostics:
+  require_for_changed_content: true
+  require_for_high_risk_edit_preflight: true
+fallback_policy:
+  raw_read_degraded_default: false
+  raw_read_degraded_per_request_only: true
+  block_high_risk_without_diagnostics: true
+  operator_review_required_for_high_risk_raw_read: true
+freshness:
+  stale_context_assets_are_status_reasons: true
+  stale_feature_context_is_status_reason: true

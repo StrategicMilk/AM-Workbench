@@ -1,0 +1,685 @@
+schema_version: '1.0'
+matrix_id: integration-matrix
+owner: audit-suite-pack-0ah-integration-matrix
+stale_after: '2026-08-25'
+source_rubric: config/capability_completeness_rubric.yaml
+status_values:
+- integrated
+- partial
+- intentionally-not-integrated
+- missing
+cell_contract:
+  integrated: must cite at least one evidence file
+  partial: must cite evidence and explain the incomplete boundary
+  intentionally-not-integrated: must cite rationale; evidence is optional
+  missing: must cite rationale and must not be treated as complete
+capabilities:
+- agent_factory
+- local_runtime_backends
+- model_lab
+- prompt_engineering
+- evaluation_benchmarking
+- dataset_curation
+- training_pipeline
+- memory_rag
+- workflow_orchestration
+- release_certification
+- supportability
+matrix:
+- source: agent_factory
+  cells:
+  - target: agent_factory
+    status: integrated
+    rationale: A capability is integrated with its own required surfaces, error paths, recovery flows, and gates.
+    evidence:
+    - config/capability_completeness_rubric.yaml#agent_factory
+  - target: local_runtime_backends
+    status: intentionally-not-integrated
+    rationale: 'deferred: agent_factory and local_runtime_backends are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: model_lab
+    status: intentionally-not-integrated
+    rationale: 'deferred: agent_factory and model_lab are separate completeness contracts in Wave 0; later audits may promote
+      a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: prompt_engineering
+    status: intentionally-not-integrated
+    rationale: 'deferred: agent_factory and prompt_engineering are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: evaluation_benchmarking
+    status: intentionally-not-integrated
+    rationale: 'deferred: agent_factory and evaluation_benchmarking are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: dataset_curation
+    status: intentionally-not-integrated
+    rationale: 'deferred: agent_factory and dataset_curation are separate completeness contracts in Wave 0; later audits may
+      promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: training_pipeline
+    status: intentionally-not-integrated
+    rationale: 'deferred: agent_factory and training_pipeline are separate completeness contracts unless a training agent
+      is explicitly in scope.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: memory_rag
+    status: integrated
+    rationale: Agent prompts and handoffs depend on cited memory and recall contracts.
+    evidence:
+    - config/capability_completeness_rubric.yaml#agent_factory
+    - config/capability_completeness_rubric.yaml#memory_rag
+  - target: workflow_orchestration
+    status: integrated
+    rationale: Agent execution is coordinated by program and pack workflow state.
+    evidence:
+    - config/capability_completeness_rubric.yaml#agent_factory
+    - config/capability_completeness_rubric.yaml#workflow_orchestration
+  - target: release_certification
+    status: intentionally-not-integrated
+    rationale: 'deferred: agent_factory and release_certification are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: supportability
+    status: intentionally-not-integrated
+    rationale: 'deferred: agent_factory and supportability are separate completeness contracts in Wave 0; later audits may
+      promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+- source: local_runtime_backends
+  cells:
+  - target: agent_factory
+    status: intentionally-not-integrated
+    rationale: 'deferred: local_runtime_backends and agent_factory are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: local_runtime_backends
+    status: integrated
+    rationale: A capability is integrated with its own required surfaces, error paths, recovery flows, and gates.
+    evidence:
+    - config/capability_completeness_rubric.yaml#local_runtime_backends
+  - target: model_lab
+    status: integrated
+    rationale: Model lab choices depend on backend capability and lifecycle metadata.
+    evidence:
+    - config/capability_completeness_rubric.yaml#local_runtime_backends
+    - config/capability_completeness_rubric.yaml#model_lab
+  - target: prompt_engineering
+    status: intentionally-not-integrated
+    rationale: 'deferred: local_runtime_backends and prompt_engineering are separate completeness contracts in Wave 0; later
+      audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: evaluation_benchmarking
+    status: intentionally-not-integrated
+    rationale: 'deferred: local_runtime_backends and evaluation_benchmarking are separate completeness contracts in Wave 0;
+      later audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: dataset_curation
+    status: intentionally-not-integrated
+    rationale: 'deferred: local_runtime_backends and dataset_curation are separate completeness contracts in Wave 0; later
+      audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: training_pipeline
+    status: integrated
+    rationale: Training execution, deployment checks, and adapter compatibility depend on local runtime backend capability.
+    evidence:
+    - config/capability_completeness_rubric.yaml#local_runtime_backends
+    - config/capability_completeness_rubric.yaml#training_pipeline
+  - target: memory_rag
+    status: intentionally-not-integrated
+    rationale: 'deferred: local_runtime_backends and memory_rag are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: workflow_orchestration
+    status: intentionally-not-integrated
+    rationale: 'deferred: local_runtime_backends and workflow_orchestration are separate completeness contracts in Wave 0;
+      later audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: release_certification
+    status: intentionally-not-integrated
+    rationale: 'deferred: local_runtime_backends and release_certification are separate completeness contracts in Wave 0;
+      later audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: supportability
+    status: integrated
+    rationale: Backend health and setup failures need support diagnostics.
+    evidence:
+    - config/capability_completeness_rubric.yaml#local_runtime_backends
+    - config/capability_completeness_rubric.yaml#supportability
+- source: model_lab
+  cells:
+  - target: agent_factory
+    status: intentionally-not-integrated
+    rationale: 'deferred: model_lab and agent_factory are separate completeness contracts in Wave 0; later audits may promote
+      a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: local_runtime_backends
+    status: intentionally-not-integrated
+    rationale: 'deferred: model_lab and local_runtime_backends are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: model_lab
+    status: integrated
+    rationale: A capability is integrated with its own required surfaces, error paths, recovery flows, and gates.
+    evidence:
+    - config/capability_completeness_rubric.yaml#model_lab
+  - target: prompt_engineering
+    status: intentionally-not-integrated
+    rationale: 'deferred: model_lab and prompt_engineering are separate completeness contracts in Wave 0; later audits may
+      promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: evaluation_benchmarking
+    status: integrated
+    rationale: Model promotion requires comparable benchmark evidence.
+    evidence:
+    - config/capability_completeness_rubric.yaml#model_lab
+    - config/capability_completeness_rubric.yaml#evaluation_benchmarking
+  - target: dataset_curation
+    status: intentionally-not-integrated
+    rationale: 'deferred: model_lab and dataset_curation are separate completeness contracts in Wave 0; later audits may promote
+      a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: training_pipeline
+    status: integrated
+    rationale: Model lab promotion consumes training outputs, adapter metadata, and evaluation holdout evidence.
+    evidence:
+    - config/capability_completeness_rubric.yaml#model_lab
+    - config/capability_completeness_rubric.yaml#training_pipeline
+  - target: memory_rag
+    status: intentionally-not-integrated
+    rationale: 'deferred: model_lab and memory_rag are separate completeness contracts in Wave 0; later audits may promote
+      a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: workflow_orchestration
+    status: intentionally-not-integrated
+    rationale: 'deferred: model_lab and workflow_orchestration are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: release_certification
+    status: integrated
+    rationale: Promotion decisions can feed release and rollback evidence.
+    evidence:
+    - config/capability_completeness_rubric.yaml#model_lab
+    - config/capability_completeness_rubric.yaml#release_certification
+  - target: supportability
+    status: intentionally-not-integrated
+    rationale: 'deferred: model_lab and supportability are separate completeness contracts in Wave 0; later audits may promote
+      a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+- source: prompt_engineering
+  cells:
+  - target: agent_factory
+    status: intentionally-not-integrated
+    rationale: 'deferred: prompt_engineering and agent_factory are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: local_runtime_backends
+    status: intentionally-not-integrated
+    rationale: 'deferred: prompt_engineering and local_runtime_backends are separate completeness contracts in Wave 0; later
+      audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: model_lab
+    status: intentionally-not-integrated
+    rationale: 'deferred: prompt_engineering and model_lab are separate completeness contracts in Wave 0; later audits may
+      promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: prompt_engineering
+    status: integrated
+    rationale: A capability is integrated with its own required surfaces, error paths, recovery flows, and gates.
+    evidence:
+    - config/capability_completeness_rubric.yaml#prompt_engineering
+  - target: evaluation_benchmarking
+    status: integrated
+    rationale: Prompt revisions need eval proof before promotion.
+    evidence:
+    - config/capability_completeness_rubric.yaml#prompt_engineering
+    - config/capability_completeness_rubric.yaml#evaluation_benchmarking
+  - target: dataset_curation
+    status: intentionally-not-integrated
+    rationale: 'deferred: prompt_engineering and dataset_curation are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: training_pipeline
+    status: intentionally-not-integrated
+    rationale: 'deferred: prompt_engineering and training_pipeline are separate unless prompt-distillation jobs are explicitly
+      declared.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: memory_rag
+    status: integrated
+    rationale: Prompt assembly consumes cited memory and omission receipts.
+    evidence:
+    - config/capability_completeness_rubric.yaml#prompt_engineering
+    - config/capability_completeness_rubric.yaml#memory_rag
+  - target: workflow_orchestration
+    status: intentionally-not-integrated
+    rationale: 'deferred: prompt_engineering and workflow_orchestration are separate completeness contracts in Wave 0; later
+      audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: release_certification
+    status: intentionally-not-integrated
+    rationale: 'deferred: prompt_engineering and release_certification are separate completeness contracts in Wave 0; later
+      audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: supportability
+    status: intentionally-not-integrated
+    rationale: 'deferred: prompt_engineering and supportability are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+- source: evaluation_benchmarking
+  cells:
+  - target: agent_factory
+    status: intentionally-not-integrated
+    rationale: 'deferred: evaluation_benchmarking and agent_factory are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: local_runtime_backends
+    status: intentionally-not-integrated
+    rationale: 'deferred: evaluation_benchmarking and local_runtime_backends are separate completeness contracts in Wave 0;
+      later audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: model_lab
+    status: partial
+    rationale: Eval results inform model lab surfaces while lab UX remains separate.
+    evidence:
+    - config/capability_completeness_rubric.yaml#evaluation_benchmarking
+    - config/capability_completeness_rubric.yaml#model_lab
+  - target: prompt_engineering
+    status: intentionally-not-integrated
+    rationale: 'deferred: evaluation_benchmarking and prompt_engineering are separate completeness contracts in Wave 0; later
+      audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: evaluation_benchmarking
+    status: integrated
+    rationale: A capability is integrated with its own required surfaces, error paths, recovery flows, and gates.
+    evidence:
+    - config/capability_completeness_rubric.yaml#evaluation_benchmarking
+  - target: dataset_curation
+    status: integrated
+    rationale: Evaluations require versioned datasets and split contracts.
+    evidence:
+    - config/capability_completeness_rubric.yaml#evaluation_benchmarking
+    - config/capability_completeness_rubric.yaml#dataset_curation
+  - target: training_pipeline
+    status: integrated
+    rationale: Training promotion is blocked until benchmark and holdout evidence pass.
+    evidence:
+    - config/capability_completeness_rubric.yaml#evaluation_benchmarking
+    - config/capability_completeness_rubric.yaml#training_pipeline
+  - target: memory_rag
+    status: intentionally-not-integrated
+    rationale: 'deferred: evaluation_benchmarking and memory_rag are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: workflow_orchestration
+    status: intentionally-not-integrated
+    rationale: 'deferred: evaluation_benchmarking and workflow_orchestration are separate completeness contracts in Wave 0;
+      later audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: release_certification
+    status: intentionally-not-integrated
+    rationale: 'deferred: evaluation_benchmarking and release_certification are separate completeness contracts in Wave 0;
+      later audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: supportability
+    status: intentionally-not-integrated
+    rationale: 'deferred: evaluation_benchmarking and supportability are separate completeness contracts in Wave 0; later
+      audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+- source: dataset_curation
+  cells:
+  - target: agent_factory
+    status: intentionally-not-integrated
+    rationale: 'deferred: dataset_curation and agent_factory are separate completeness contracts in Wave 0; later audits may
+      promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: local_runtime_backends
+    status: intentionally-not-integrated
+    rationale: 'deferred: dataset_curation and local_runtime_backends are separate completeness contracts in Wave 0; later
+      audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: model_lab
+    status: intentionally-not-integrated
+    rationale: 'deferred: dataset_curation and model_lab are separate completeness contracts in Wave 0; later audits may promote
+      a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: prompt_engineering
+    status: intentionally-not-integrated
+    rationale: 'deferred: dataset_curation and prompt_engineering are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: evaluation_benchmarking
+    status: partial
+    rationale: Datasets supply evals, while scoring and thresholds live in eval workflows.
+    evidence:
+    - config/capability_completeness_rubric.yaml#dataset_curation
+    - config/capability_completeness_rubric.yaml#evaluation_benchmarking
+  - target: dataset_curation
+    status: integrated
+    rationale: A capability is integrated with its own required surfaces, error paths, recovery flows, and gates.
+    evidence:
+    - config/capability_completeness_rubric.yaml#dataset_curation
+  - target: training_pipeline
+    status: integrated
+    rationale: Training jobs consume only validated, policy-approved dataset versions.
+    evidence:
+    - config/capability_completeness_rubric.yaml#dataset_curation
+    - config/capability_completeness_rubric.yaml#training_pipeline
+  - target: memory_rag
+    status: integrated
+    rationale: Curated knowledge can feed retrieval only after privacy and lineage checks.
+    evidence:
+    - config/capability_completeness_rubric.yaml#dataset_curation
+    - config/capability_completeness_rubric.yaml#memory_rag
+  - target: workflow_orchestration
+    status: intentionally-not-integrated
+    rationale: 'deferred: dataset_curation and workflow_orchestration are separate completeness contracts in Wave 0; later
+      audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: release_certification
+    status: intentionally-not-integrated
+    rationale: 'deferred: dataset_curation and release_certification are separate completeness contracts in Wave 0; later
+      audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: supportability
+    status: intentionally-not-integrated
+    rationale: 'deferred: dataset_curation and supportability are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+- source: training_pipeline
+  cells:
+  - target: agent_factory
+    status: intentionally-not-integrated
+    rationale: 'deferred: training_pipeline and agent_factory are separate completeness contracts unless a training agent
+      is explicitly in scope.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: local_runtime_backends
+    status: integrated
+    rationale: Training output formats and deployment checks depend on local backend compatibility.
+    evidence:
+    - config/capability_completeness_rubric.yaml#training_pipeline
+    - config/capability_completeness_rubric.yaml#local_runtime_backends
+  - target: model_lab
+    status: integrated
+    rationale: Model lab promotion consumes training outputs, adapter metadata, and eval holdout evidence.
+    evidence:
+    - config/capability_completeness_rubric.yaml#training_pipeline
+    - config/capability_completeness_rubric.yaml#model_lab
+  - target: prompt_engineering
+    status: intentionally-not-integrated
+    rationale: 'deferred: training_pipeline and prompt_engineering remain separate unless prompt-distillation jobs are explicitly
+      declared.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: evaluation_benchmarking
+    status: integrated
+    rationale: Training promotion requires eval holdout and benchmark evidence before deployment.
+    evidence:
+    - config/capability_completeness_rubric.yaml#training_pipeline
+    - config/capability_completeness_rubric.yaml#evaluation_benchmarking
+  - target: dataset_curation
+    status: integrated
+    rationale: Training jobs consume only validated, policy-approved dataset versions.
+    evidence:
+    - config/capability_completeness_rubric.yaml#training_pipeline
+    - config/capability_completeness_rubric.yaml#dataset_curation
+  - target: training_pipeline
+    status: integrated
+    rationale: A capability is integrated with its own required surfaces, error paths, recovery flows, and gates.
+    evidence:
+    - config/capability_completeness_rubric.yaml#training_pipeline
+  - target: memory_rag
+    status: intentionally-not-integrated
+    rationale: 'deferred: training_pipeline and memory_rag are separate completeness contracts unless retrieval-training data
+      is explicitly declared.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: workflow_orchestration
+    status: integrated
+    rationale: Training jobs require durable run orchestration, checkpoints, and failure recovery.
+    evidence:
+    - config/capability_completeness_rubric.yaml#training_pipeline
+    - config/capability_completeness_rubric.yaml#workflow_orchestration
+  - target: release_certification
+    status: partial
+    rationale: Training outputs feed release readiness, but release certification owns rollout approval.
+    evidence:
+    - config/capability_completeness_rubric.yaml#training_pipeline
+    - config/capability_completeness_rubric.yaml#release_certification
+  - target: supportability
+    status: integrated
+    rationale: Training failures, dependency gaps, and dataset rejections require operator-facing diagnostics.
+    evidence:
+    - config/capability_completeness_rubric.yaml#training_pipeline
+    - config/capability_completeness_rubric.yaml#supportability
+- source: memory_rag
+  cells:
+  - target: agent_factory
+    status: intentionally-not-integrated
+    rationale: 'deferred: memory_rag and agent_factory are separate completeness contracts in Wave 0; later audits may promote
+      a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: local_runtime_backends
+    status: intentionally-not-integrated
+    rationale: 'deferred: memory_rag and local_runtime_backends are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: model_lab
+    status: intentionally-not-integrated
+    rationale: 'deferred: memory_rag and model_lab are separate completeness contracts in Wave 0; later audits may promote
+      a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: prompt_engineering
+    status: partial
+    rationale: Recall supports prompts, but prompt authoring owns template behavior.
+    evidence:
+    - config/capability_completeness_rubric.yaml#memory_rag
+    - config/capability_completeness_rubric.yaml#prompt_engineering
+  - target: evaluation_benchmarking
+    status: intentionally-not-integrated
+    rationale: 'deferred: memory_rag and evaluation_benchmarking are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: dataset_curation
+    status: intentionally-not-integrated
+    rationale: 'deferred: memory_rag and dataset_curation are separate completeness contracts in Wave 0; later audits may
+      promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: training_pipeline
+    status: intentionally-not-integrated
+    rationale: 'deferred: memory_rag and training_pipeline are separate unless retrieval-training data is explicitly declared.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: memory_rag
+    status: integrated
+    rationale: A capability is integrated with its own required surfaces, error paths, recovery flows, and gates.
+    evidence:
+    - config/capability_completeness_rubric.yaml#memory_rag
+  - target: workflow_orchestration
+    status: intentionally-not-integrated
+    rationale: 'deferred: memory_rag and workflow_orchestration are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: release_certification
+    status: intentionally-not-integrated
+    rationale: 'deferred: memory_rag and release_certification are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: supportability
+    status: intentionally-not-integrated
+    rationale: 'deferred: memory_rag and supportability are separate completeness contracts in Wave 0; later audits may promote
+      a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+- source: workflow_orchestration
+  cells:
+  - target: agent_factory
+    status: intentionally-not-integrated
+    rationale: 'deferred: workflow_orchestration and agent_factory are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: local_runtime_backends
+    status: intentionally-not-integrated
+    rationale: 'deferred: workflow_orchestration and local_runtime_backends are separate completeness contracts in Wave 0;
+      later audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: model_lab
+    status: intentionally-not-integrated
+    rationale: 'deferred: workflow_orchestration and model_lab are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: prompt_engineering
+    status: intentionally-not-integrated
+    rationale: 'deferred: workflow_orchestration and prompt_engineering are separate completeness contracts in Wave 0; later
+      audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: evaluation_benchmarking
+    status: intentionally-not-integrated
+    rationale: 'deferred: workflow_orchestration and evaluation_benchmarking are separate completeness contracts in Wave 0;
+      later audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: dataset_curation
+    status: intentionally-not-integrated
+    rationale: 'deferred: workflow_orchestration and dataset_curation are separate completeness contracts in Wave 0; later
+      audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: training_pipeline
+    status: integrated
+    rationale: Training jobs require durable workflow orchestration, checkpoints, failure recovery, and operator handoff.
+    evidence:
+    - config/capability_completeness_rubric.yaml#workflow_orchestration
+    - config/capability_completeness_rubric.yaml#training_pipeline
+  - target: memory_rag
+    status: intentionally-not-integrated
+    rationale: 'deferred: workflow_orchestration and memory_rag are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: workflow_orchestration
+    status: integrated
+    rationale: A capability is integrated with its own required surfaces, error paths, recovery flows, and gates.
+    evidence:
+    - config/capability_completeness_rubric.yaml#workflow_orchestration
+  - target: release_certification
+    status: integrated
+    rationale: Release evidence depends on workflow verdicts and scoped proof.
+    evidence:
+    - config/capability_completeness_rubric.yaml#workflow_orchestration
+    - config/capability_completeness_rubric.yaml#release_certification
+  - target: supportability
+    status: integrated
+    rationale: Pack failures must produce supportable evidence and recovery paths.
+    evidence:
+    - config/capability_completeness_rubric.yaml#workflow_orchestration
+    - config/capability_completeness_rubric.yaml#supportability
+- source: release_certification
+  cells:
+  - target: agent_factory
+    status: intentionally-not-integrated
+    rationale: 'deferred: release_certification and agent_factory are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: local_runtime_backends
+    status: intentionally-not-integrated
+    rationale: 'deferred: release_certification and local_runtime_backends are separate completeness contracts in Wave 0;
+      later audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: model_lab
+    status: intentionally-not-integrated
+    rationale: 'deferred: release_certification and model_lab are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: prompt_engineering
+    status: intentionally-not-integrated
+    rationale: 'deferred: release_certification and prompt_engineering are separate completeness contracts in Wave 0; later
+      audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: evaluation_benchmarking
+    status: intentionally-not-integrated
+    rationale: 'deferred: release_certification and evaluation_benchmarking are separate completeness contracts in Wave 0;
+      later audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: dataset_curation
+    status: intentionally-not-integrated
+    rationale: 'deferred: release_certification and dataset_curation are separate completeness contracts in Wave 0; later
+      audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: training_pipeline
+    status: partial
+    rationale: Training outputs feed release readiness, but release certification owns final rollout approval.
+    evidence:
+    - config/capability_completeness_rubric.yaml#release_certification
+    - config/capability_completeness_rubric.yaml#training_pipeline
+  - target: memory_rag
+    status: intentionally-not-integrated
+    rationale: 'deferred: release_certification and memory_rag are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: workflow_orchestration
+    status: intentionally-not-integrated
+    rationale: 'deferred: release_certification and workflow_orchestration are separate completeness contracts in Wave 0;
+      later audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: release_certification
+    status: integrated
+    rationale: A capability is integrated with its own required surfaces, error paths, recovery flows, and gates.
+    evidence:
+    - config/capability_completeness_rubric.yaml#release_certification
+  - target: supportability
+    status: integrated
+    rationale: Release outputs require known-limitations and rollback support guidance.
+    evidence:
+    - config/capability_completeness_rubric.yaml#release_certification
+    - config/capability_completeness_rubric.yaml#supportability
+- source: supportability
+  cells:
+  - target: agent_factory
+    status: intentionally-not-integrated
+    rationale: 'deferred: supportability and agent_factory are separate completeness contracts in Wave 0; later audits may
+      promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: local_runtime_backends
+    status: intentionally-not-integrated
+    rationale: 'deferred: supportability and local_runtime_backends are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: model_lab
+    status: intentionally-not-integrated
+    rationale: 'deferred: supportability and model_lab are separate completeness contracts in Wave 0; later audits may promote
+      a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: prompt_engineering
+    status: intentionally-not-integrated
+    rationale: 'deferred: supportability and prompt_engineering are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: evaluation_benchmarking
+    status: intentionally-not-integrated
+    rationale: 'deferred: supportability and evaluation_benchmarking are separate completeness contracts in Wave 0; later
+      audits may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: dataset_curation
+    status: intentionally-not-integrated
+    rationale: 'deferred: supportability and dataset_curation are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: training_pipeline
+    status: integrated
+    rationale: Training failures, dependency gaps, dataset rejections, and deployment blockers require operator-facing diagnostics.
+    evidence:
+    - config/capability_completeness_rubric.yaml#supportability
+    - config/capability_completeness_rubric.yaml#training_pipeline
+  - target: memory_rag
+    status: intentionally-not-integrated
+    rationale: 'deferred: supportability and memory_rag are separate completeness contracts in Wave 0; later audits may promote
+      a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: workflow_orchestration
+    status: intentionally-not-integrated
+    rationale: 'deferred: supportability and workflow_orchestration are separate completeness contracts in Wave 0; later audits
+      may promote a concrete integration if source evidence appears.'
+    owner: RCG-0007-P11-FSA-8761
+  - target: release_certification
+    status: partial
+    rationale: Support workflows inform release readiness but do not own certification.
+    evidence:
+    - config/capability_completeness_rubric.yaml#supportability
+    - config/capability_completeness_rubric.yaml#release_certification
+  - target: supportability
+    status: integrated
+    rationale: A capability is integrated with its own required surfaces, error paths, recovery flows, and gates.
+    evidence:
+    - config/capability_completeness_rubric.yaml#supportability

@@ -1,0 +1,39 @@
+[package]
+name = "amw-engine-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[features]
+native-grammar = ["amw-engine/cpu"]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+amw-engine = { path = ".." }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "gbnf_compile"
+path = "fuzz_targets/gbnf_compile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "api_parser"
+path = "fuzz_targets/api_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gguf_meta"
+path = "fuzz_targets/gguf_meta.rs"
+test = false
+doc = false
+bench = false

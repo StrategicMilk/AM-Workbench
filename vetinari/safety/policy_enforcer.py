@@ -59,7 +59,7 @@ _DEFAULT_MAX_DELEGATION_DEPTH: int = 3
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class PolicyDecision:
     """Result of a policy check for an agent action.
 
@@ -262,6 +262,11 @@ class PolicyEnforcer:
         if allowed_prefixes is None:
             # Unknown principal — fail closed. An unrecognised agent type has
             # no declared jurisdiction and must not silently inherit any access.
+            logger.warning(
+                "Unknown agent type %r in _check_jurisdiction; all mutating actions denied; "
+                "register the agent in _JURISDICTION to grant write access",
+                agent_type,
+            )
             return PolicyDecision(
                 allowed=False,
                 reason=(

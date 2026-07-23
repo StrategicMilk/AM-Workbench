@@ -58,7 +58,7 @@ class AgentAction(Enum):
     REJECT_PLAN = "reject_plan"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class AgentPermissionPolicy:
     """Immutable permission policy for a single agent type.
 
@@ -154,11 +154,12 @@ AGENT_PERMISSION_POLICIES: dict[AgentType, AgentPermissionPolicy] = {
             AgentAction.DELEGATE_TO_AGENT,
             AgentAction.MODIFY_PLAN,
         }),
-        description="Read-only auditor: inspects, reports, approves/rejects — no modification",
+        description="Read-only auditor: inspects, reports, approves/rejects, and runs read-only code checks — no file modification or shell execution",
     ),
 }
 
 
+# TODO(#5508): FSA-5508 real wiring in vetinari/agents/consolidated/worker_agent.py Task 1.4
 class AgentPermissions:
     """Authorization checker for agent actions.
 

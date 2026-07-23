@@ -11,6 +11,133 @@ if TYPE_CHECKING:
 _QualityScoreFactory = Callable[..., "QualityScore"]
 
 
+def _empty_heuristic_score(
+    task_id: str,
+    model_id: str,
+    task_type: str,
+    dims: list[str],
+    score_factory: _QualityScoreFactory,
+) -> QualityScore:
+    """Return a measured failure for empty output."""
+    return score_factory(
+        task_id=task_id,
+        model_id=model_id,
+        task_type=task_type,
+        overall_score=0.0,
+        issues=["Empty output"],
+        dimensions=dict.fromkeys(dims, 0.0),
+        measured_dimensions=["completeness"],
+        method="heuristic",
+    )
+
+
+def _score_completeness(words: int, scores: dict[str, float], measured: list[str], issues: list[str]) -> None:
+    """Populate generic completeness and efficiency scores."""
+    if words < 10:
+        scores["completeness"] = 0.15
+        issues.append("Very short output (< 10 words)")
+        measured.append("completeness")
+    elif words > 2000:
+        scores["efficiency"] = 0.4
+        scores["completeness"] = 0.85
+        issues.append("Very long output - may lack focus")
+        measured.extend(["efficiency", "completeness"])
+    else:
+        scores["completeness"] = min(0.9, 0.2 + (words / 300))
+        measured.append("completeness")
+
+
+def _score_task_structural(
+    task_type: str,
+    output: str,
+    lines: list[str],
+    scores: dict[str, float],
+    measured: list[str],
+    issues: list[str],
+) -> None:
+    """Dispatch task-specific structural scoring."""
+    task_key = task_type.lower()
+    if task_key == "coding":
+        _score_coding_structural(output, lines, scores, measured, issues)
+    elif task_key == "research":
+        _score_research_structural(output, lines, scores, measured, issues)
+    elif task_key == "documentation":
+        _score_documentation_structural(output, lines, scores, measured, issues)
+    elif task_key == "analysis":
+        _score_analysis_structural(output, lines, scores, measured, issues)
+    elif task_key == "testing":
+        _score_testing_structural(output, lines, scores, measured, issues)
+
+
+def _score_general_format(
+    output: str,
+    baselines: Mapping[str, float],
+    scores: dict[str, float],
+    measured: list[str],
+    issues: list[str],
+) -> None:
+    """Apply generic punctuation/code-block quality checks."""
+    if any(char in output for char in (".", "!", "?", ":", "```")):
+        return
+    scores.setdefault("quality", max(0.0, baselines.get("quality", 0.45) - 0.15))
+    issues.append("No sentence-ending punctuation or code blocks")
+    if "quality" not in measured:
+        measured.append("quality")
+
+
+def _apply_confidence_penalty(
+    inference_confidence: float | None,
+    scores: dict[str, float],
+    issues: list[str],
+) -> None:
+    """Reduce measured scores when inference confidence is low."""
+    if inference_confidence is None or inference_confidence >= 0.5:
+        return
+    confidence_penalty = (0.5 - inference_confidence) * 0.2
+    for dim in list(scores):
+        scores[dim] = max(0.0, scores[dim] - confidence_penalty)
+    issues.append(f"Low inference confidence ({inference_confidence:.2f})")
+
+
+def _overall_score(scores: dict[str, float], dims: list[str], measured: list[str]) -> float:
+    """Return the average score across measured dimensions only."""
+    for dimension in dims:
+        scores.setdefault(dimension, 0.0)
+    measured_set = set(measured)
+    overall_measured = [scores[dimension] for dimension in dims if dimension in measured_set]
+    if not overall_measured:
+        return 0.0
+    return sum(overall_measured) / len(overall_measured)
+
+
+def _make_heuristic_score(
+    score_factory: _QualityScoreFactory,
+    *,
+    task_id: str,
+    model_id: str,
+    task_type: str,
+    overall: float,
+    scores: dict[str, float],
+    measured: list[str],
+    issues: list[str],
+) -> QualityScore:
+    """Build the final heuristic QualityScore value."""
+    return score_factory(
+        task_id=task_id,
+        model_id=model_id,
+        task_type=task_type,
+        overall_score=round(overall, 3),
+        correctness=scores.get("correctness", 0.0),
+        completeness=scores.get("completeness", 0.0),
+        efficiency=scores.get("efficiency", 0.0),
+        style=scores.get("style", 0.0),
+        dimensions=scores,
+        measured_dimensions=measured,
+        issues=issues,
+        method="heuristic",
+    )
+
+
 def _score_heuristic_output(
     task_id: str,
     model_id: str,
@@ -47,86 +174,25 @@ def _score_heuristic_output(
     measured: list[str] = []
 
     if not output or not output.strip():
-        return score_factory(
-            task_id=task_id,
-            model_id=model_id,
-            task_type=task_type,
-            overall_score=0.0,
-            issues=["Empty output"],
-            dimensions=dict.fromkeys(dims, 0.0),
-            measured_dimensions=["completeness"],
-            method="heuristic",
-        )
+        return _empty_heuristic_score(task_id, model_id, task_type, dims, score_factory)
 
     baselines = baseline_config.get(task_type.lower(), baseline_config.get("default", {}))
     words = len(output.split())
     lines = output.split("\n")
 
-    # -- Completeness: length relative to expected output size --
-    if words < 10:
-        scores["completeness"] = 0.15
-        issues.append("Very short output (< 10 words)")
-        measured.append("completeness")
-    elif words > 2000:
-        scores["efficiency"] = 0.4
-        scores["completeness"] = 0.85
-        issues.append("Very long output — may lack focus")
-        measured.extend(["efficiency", "completeness"])
-    else:
-        scores["completeness"] = min(0.9, 0.2 + (words / 300))
-        measured.append("completeness")
-
-    # -- Task-specific structural checks --
-    if task_type.lower() == "coding":
-        _score_coding_structural(output, lines, scores, measured, issues)
-    elif task_type.lower() == "research":
-        _score_research_structural(output, lines, scores, measured, issues)
-    elif task_type.lower() == "documentation":
-        _score_documentation_structural(output, lines, scores, measured, issues)
-    elif task_type.lower() == "analysis":
-        _score_analysis_structural(output, lines, scores, measured, issues)
-    elif task_type.lower() == "testing":
-        _score_testing_structural(output, lines, scores, measured, issues)
-
-    # -- General format compliance (all task types) --
-    if not any(c in output for c in (".", "!", "?", ":", "```")):
-        scores.setdefault("quality", max(0.0, baselines.get("quality", 0.45) - 0.15))
-        issues.append("No sentence-ending punctuation or code blocks")
-        if "quality" not in measured:
-            measured.append("quality")
-
-    # -- Inference confidence adjustment (Item 3.5) --
-    if inference_confidence is not None and inference_confidence < 0.5:
-        confidence_penalty = (0.5 - inference_confidence) * 0.2  # Max 0.1 penalty
-        for dim in list(scores):
-            scores[dim] = max(0.0, scores[dim] - confidence_penalty)
-        issues.append(f"Low inference confidence ({inference_confidence:.2f})")
-
-    # Fill unmeasured dimensions with 0.0 (not baselines — unmeasured means unknown)
-    for d in dims:
-        if d not in scores:
-            scores[d] = 0.0
-
-    measured_set = set(measured)
-    overall_measured = [scores[d] for d in dims if d in measured_set]
-    if overall_measured:
-        overall = sum(overall_measured) / len(overall_measured)
-    else:
-        overall = 0.0
-
-    return score_factory(
+    _score_completeness(words, scores, measured, issues)
+    _score_task_structural(task_type, output, lines, scores, measured, issues)
+    _score_general_format(output, baselines, scores, measured, issues)
+    _apply_confidence_penalty(inference_confidence, scores, issues)
+    return _make_heuristic_score(
+        score_factory,
         task_id=task_id,
         model_id=model_id,
         task_type=task_type,
-        overall_score=round(overall, 3),
-        correctness=scores.get("correctness", 0.0),
-        completeness=scores.get("completeness", 0.0),
-        efficiency=scores.get("efficiency", 0.0),
-        style=scores.get("style", 0.0),
-        dimensions=scores,
-        measured_dimensions=measured,
+        overall=_overall_score(scores, dims, measured),
+        scores=scores,
+        measured=measured,
         issues=issues,
-        method="heuristic",
     )
 
 
@@ -201,9 +267,7 @@ def _score_research_structural(
 ) -> None:
     """Structural checks for research output: citations, evidence, actionability."""
     has_urls = "http" in output
-    has_source_refs = (
-        "source" in output.lower() or "reference" in output.lower() or "according to" in output.lower()
-    )
+    has_source_refs = "source" in output.lower() or "reference" in output.lower() or "according to" in output.lower()
     section_count = output.count("\n#") + output.count("\n## ")
     has_conclusion = "conclusion" in output.lower() or "summary" in output.lower() or "recommend" in output.lower()
     has_evidence = "evidence" in output.lower() or "data shows" in output.lower() or "study" in output.lower()

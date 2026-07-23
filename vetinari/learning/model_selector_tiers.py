@@ -10,10 +10,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+logger = logging.getLogger(__name__)
+
+
 if TYPE_CHECKING:
     from vetinari.learning.model_selector import ThompsonSamplingSelector
 
-logger = logging.getLogger(__name__)
 
 # Minimum arm observations before Thompson Sampling overrides rule-based tier routing.
 TIER_MIN_PULLS = 10

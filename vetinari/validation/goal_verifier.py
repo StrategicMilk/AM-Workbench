@@ -25,18 +25,18 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
 # AgentType imported lazily to avoid circular imports at module level
-from vetinari.constants import TRUNCATE_CONTENT_ANALYSIS
 from vetinari.types import AgentType
+from vetinari.validation.goal_verifier_agents import llm_goal_evaluation, security_check
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class FeatureVerification:
     """Verification result for a single feature/requirement."""
 
@@ -67,9 +67,9 @@ class GoalVerificationReport:
     features: list[FeatureVerification] = field(default_factory=list)
 
     # Security
-    security_passed: bool = True
+    security_passed: bool = False
     security_findings: list[dict[str, Any]] = field(default_factory=list)
-    security_score: float = 1.0
+    security_score: float = 0.0
 
     # Code quality
     quality_score: float = 0.0
@@ -111,7 +111,7 @@ class GoalVerificationReport:
         for feat in self.missing_features:
             if feat.upper().startswith("AVOID:"):
                 # Avoid-list violation: emit a removal task, not an implementation task
-                avoid_item = feat[len("AVOID:"):].strip()
+                avoid_item = feat[len("AVOID:") :].strip()
                 tasks.append({
                     "type": "remove_avoided_element",
                     "description": f"Remove prohibited element from deliverable: {avoid_item}",
@@ -229,26 +229,14 @@ class GoalVerifier:
         """
         report = GoalVerificationReport(project_id=project_id, goal=goal)
 
-        required_features = required_features or []  # noqa: VET112 - empty fallback preserves optional request metadata contract
-        things_to_avoid = things_to_avoid or []  # noqa: VET112 - empty fallback preserves optional request metadata contract
-        task_outputs = task_outputs or []  # noqa: VET112 - empty fallback preserves optional request metadata contract
+        required_features = required_features or []
+        things_to_avoid = things_to_avoid or []
+        task_outputs = task_outputs or []
 
         # 1. Check required features
         report.features = self._verify_features(goal, required_features, final_output, task_outputs)
 
-        # 2. Check things to avoid
-        avoid_violations = self._check_avoid_list(things_to_avoid, final_output)
-        if avoid_violations:
-            for violation in avoid_violations:
-                report.features.append(
-                    FeatureVerification(
-                        feature=f"AVOID: {violation}",
-                        implemented=False,  # False = violates "avoid"
-                        confidence=0.8,
-                        evidence=f"Found violation: {violation}",
-                        severity="major",
-                    ),
-                )
+        self._record_avoid_violations(report, things_to_avoid, final_output)
 
         # 3. Check for tests
         report.tests_present = self._check_tests_present(final_output, task_outputs)
@@ -260,73 +248,9 @@ class GoalVerifier:
                 if not has_it:
                     report.quality_issues.append(f"Expected output not delivered: {expected}")
 
-        # 5. Try LLM-based evaluation
-        try:
-            llm_result = self._llm_evaluation(goal, final_output, required_features, things_to_avoid)
-            if llm_result:
-                report.quality_score = llm_result.get("quality_score", 0.7)
-                report.evaluator_verdict = llm_result.get("verdict", "pass")
-                report.corrective_suggestions = llm_result.get("improvements", [])
-                report.model_used = llm_result.get("model_used", "")
-                # Merge LLM feature verdicts with heuristic
-                for feat_data in llm_result.get("feature_checks", []):
-                    feat_name = feat_data.get("feature", "")
-                    existing = next((f for f in report.features if f.feature == feat_name), None)
-                    if existing:
-                        # Update with higher-confidence LLM result
-                        existing.implemented = feat_data.get("implemented", existing.implemented)
-                        existing.confidence = max(existing.confidence, feat_data.get("confidence", 0.5))
-                        if feat_data.get("evidence"):
-                            existing.evidence = feat_data["evidence"]
-        except Exception as e:
-            logger.warning(
-                "LLM evaluation failed in goal verifier — defaulting quality_score to 0.3 "
-                "(failing value) to avoid masking verification gaps: %s",
-                e,
-            )
-            report.quality_score = 0.3  # P2.4: Fail-safe default, not passing
-
-        # 6. Run security check
-        try:
-            report.security_passed, report.security_findings, report.security_score = self._security_check(
-                final_output,
-                task_outputs,
-            )
-        except Exception as e:
-            logger.warning("Security check failed — failing closed: %s", e)
-            report.security_passed = False  # Fail-closed: security failures block
-            report.security_findings = [{"severity": "critical", "description": f"Security check error: {e}"}]
-            report.security_score = 0.0
-
-        # 7. Calculate overall compliance
-        report.missing_features = [
-            f.feature for f in report.features if not f.implemented and f.severity in ("major", "critical")
-        ]
-
-        if report.features:
-            feature_score = sum(f.confidence for f in report.features if f.implemented) / len(report.features)
-        else:
-            # P2.4: No features to verify — default to 0.5 (neutral, not passing) to avoid
-            # inflating compliance scores when feature list is empty or was not provided.
-            logger.warning(
-                "No features to verify for project %s — defaulting feature_score to 0.5",
-                project_id,
-            )
-            feature_score = 0.5
-        security_weight = 0.2 if not report.security_passed else 0.0
-        report.compliance_score = max(
-            0.0,
-            (
-                feature_score * 0.5
-                + report.quality_score * 0.3
-                + (1.0 if report.tests_present else 0.5) * 0.2
-                - security_weight
-            ),
-        )
-
-        report.fully_compliant = (
-            report.compliance_score >= self._threshold and report.security_passed and not report.missing_features
-        )
+        self._apply_llm_evaluation(report, goal, final_output, required_features, things_to_avoid)
+        self._apply_security_check(report, final_output, task_outputs)
+        self._calculate_overall_compliance(report, project_id)
 
         logger.info(
             f"Goal verification for {project_id}: "
@@ -337,6 +261,106 @@ class GoalVerifier:
         return report
 
     # ─── Private helpers ──────────────────────────────────────────────────────
+
+    def _record_avoid_violations(
+        self,
+        report: GoalVerificationReport,
+        things_to_avoid: list[str],
+        final_output: str,
+    ) -> None:
+        for violation in self._check_avoid_list(things_to_avoid, final_output):
+            report.features.append(
+                FeatureVerification(
+                    feature=f"AVOID: {violation}",
+                    implemented=False,
+                    confidence=0.8,
+                    evidence=f"Found violation: {violation}",
+                    severity="major",
+                ),
+            )
+
+    def _apply_llm_evaluation(
+        self,
+        report: GoalVerificationReport,
+        goal: str,
+        final_output: str,
+        required_features: list[str],
+        things_to_avoid: list[str],
+    ) -> None:
+        try:
+            llm_result = self._llm_evaluation(goal, final_output, required_features, things_to_avoid)
+        except Exception as e:
+            logger.warning(
+                "LLM evaluation failed in goal verifier; defaulting quality_score to 0.3 "
+                "(failing value) to avoid masking verification gaps: %s",
+                e,
+            )
+            report.quality_score = 0.3
+            return
+        if not llm_result:
+            return
+        report.quality_score = llm_result.get("quality_score", 0.7)
+        report.evaluator_verdict = llm_result.get("verdict", "pass")
+        report.corrective_suggestions = llm_result.get("improvements", [])
+        report.model_used = llm_result.get("model_used", "")
+        self._merge_llm_feature_checks(report, llm_result.get("feature_checks", []))
+
+    @staticmethod
+    def _merge_llm_feature_checks(report: GoalVerificationReport, feature_checks: list[dict[str, Any]]) -> None:
+        for feat_data in feature_checks:
+            feat_name = feat_data.get("feature", "")
+            existing_index = next((idx for idx, f in enumerate(report.features) if f.feature == feat_name), None)
+            existing = report.features[existing_index] if existing_index is not None else None
+            if existing:
+                report.features[existing_index] = replace(
+                    existing,
+                    implemented=feat_data.get("implemented", existing.implemented),
+                    confidence=max(existing.confidence, feat_data.get("confidence", 0.5)),
+                    evidence=feat_data.get("evidence") or existing.evidence,
+                )
+
+    def _apply_security_check(
+        self,
+        report: GoalVerificationReport,
+        final_output: str,
+        task_outputs: list[dict[str, Any]],
+    ) -> None:
+        try:
+            report.security_passed, report.security_findings, report.security_score = self._security_check(
+                final_output,
+                task_outputs,
+            )
+        except Exception as e:
+            logger.warning("Security check failed; failing closed: %s", e)
+            report.security_passed = False
+            report.security_findings = [{"severity": "critical", "description": f"Security check error: {e}"}]
+            report.security_score = 0.0
+
+    def _calculate_overall_compliance(self, report: GoalVerificationReport, project_id: str) -> None:
+        report.missing_features = [
+            f.feature for f in report.features if not f.implemented and f.severity in ("major", "critical")
+        ]
+        evaluator_failed = report.evaluator_verdict.strip().lower() in {"fail", "failed", "noncompliant"}
+        feature_score = self._feature_score(report, project_id)
+        security_weight = 0.2 if not report.security_passed else 0.0
+        tests_score = (1.0 if report.tests_present else 0.5) * 0.2
+        report.compliance_score = max(
+            0.0,
+            feature_score * 0.5 + report.quality_score * 0.3 + tests_score - security_weight,
+        )
+        report.fully_compliant = (
+            report.compliance_score >= self._threshold
+            and report.security_passed
+            and not report.missing_features
+            and not evaluator_failed
+        )
+
+    @staticmethod
+    def _feature_score(report: GoalVerificationReport, project_id: str) -> float:
+        if report.features:
+            return sum(f.confidence for f in report.features if f.implemented) / len(report.features)
+        logger.warning("No features to verify for project %s; defaulting feature_score to 0.5", project_id)
+        return 0.5
 
     # Negation phrases that indicate a feature is explicitly absent or incomplete.
     # A keyword match preceded by one of these phrases must NOT count as proof of delivery.
@@ -413,9 +437,7 @@ class GoalVerifier:
             keywords = [w for w in feature_lower.split() if len(w) > 3]
             # Count keyword hits, but exclude those that only appear in negation context
             matches = sum(
-                1
-                for kw in keywords
-                if kw in combined_lower and not self._has_negation_context(kw, combined_lower)
+                1 for kw in keywords if kw in combined_lower and not self._has_negation_context(kw, combined_lower)
             )
             confidence = min(1.0, matches / max(len(keywords), 1))
             implemented = confidence >= 0.5
@@ -432,7 +454,8 @@ class GoalVerifier:
 
         return verified
 
-    def _check_avoid_list(self, avoid_list: list[str], final_output: str) -> list[str]:
+    @staticmethod
+    def _check_avoid_list(avoid_list: list[str], final_output: str) -> list[str]:
         """Check if any 'avoid' items appear in the output."""
         violations = []
         output_lower = final_output.lower()
@@ -443,7 +466,8 @@ class GoalVerifier:
                 violations.append(item)
         return violations
 
-    def _check_tests_present(self, final_output: str, task_outputs: list[dict[str, Any]]) -> bool:
+    @staticmethod
+    def _check_tests_present(final_output: str, task_outputs: list[dict[str, Any]]) -> bool:
         """Check if test files or test code is present in a code context.
 
         Requires indicators to appear near other code patterns to avoid false
@@ -479,8 +503,8 @@ class GoalVerifier:
                 idx = combined.find(indicator, idx + 1)
         return False
 
+    @staticmethod
     def _check_output_type(
-        self,
         expected: str,
         final_output: str,
         task_outputs: list[dict[str, Any]],
@@ -498,96 +522,24 @@ class GoalVerifier:
         patterns = type_patterns.get(expected.lower(), [expected.lower()])
         return any(p in combined for p in patterns)
 
+    @staticmethod
     def _llm_evaluation(
-        self,
         goal: str,
         final_output: str,
         required_features: list[str],
         things_to_avoid: list[str],
     ) -> dict[str, Any] | None:
         """Use EvaluatorAgent for LLM-powered goal compliance check."""
-        try:
-            from vetinari.agents import get_inspector_agent
-            from vetinari.agents.contracts import AgentTask
+        return llm_goal_evaluation(goal, final_output, required_features, things_to_avoid)
 
-            evaluator = get_inspector_agent()
-
-            features_str = "\n".join(f"- {f}" for f in required_features) if required_features else "None specified"
-            avoid_str = "\n".join(f"- {a}" for a in things_to_avoid) if things_to_avoid else "None specified"
-
-            task = AgentTask(
-                task_id="goal_verification",
-                agent_type=AgentType.INSPECTOR,
-                description="Verify deliverable against goal",
-                prompt=f"""Verify this deliverable against the original goal.
-
-GOAL: {goal}
-
-REQUIRED FEATURES:
-{features_str}
-
-THINGS TO AVOID:
-{avoid_str}
-
-DELIVERABLE (first 3000 chars):
-{final_output[:3000]}
-
-For each required feature, check if it's implemented. Return JSON:
-{{
-  "verdict": "pass|fail|partial",
-  "quality_score": 0.0-1.0,
-  "feature_checks": [
-    {{"feature": "...", "implemented": true/false, "confidence": 0.0-1.0, "evidence": "..."}}
-  ],
-  "improvements": ["..."],
-  "summary": "..."
-}}""",
-                context={},
-            )
-
-            result = evaluator.execute(task)
-            if result.success and isinstance(result.output, dict):
-                return result.output
-
-        except Exception as e:
-            logger.warning("LLM evaluation in goal verifier failed: %s", e)
-        return None
-
+    @staticmethod
     def _security_check(
-        self,
         final_output: str,
         task_outputs: list[dict[str, Any]],
     ) -> tuple:
         """Run SecurityAuditorAgent on the output."""
-        try:
-            from vetinari.agents import get_inspector_agent
-            from vetinari.agents.contracts import AgentTask
+        return security_check(final_output, task_outputs)
 
-            auditor = get_inspector_agent()
-            combined = final_output[:TRUNCATE_CONTENT_ANALYSIS]  # Limit to avoid context overflow
-
-            task = AgentTask(
-                task_id="goal_security_check",
-                agent_type=AgentType.INSPECTOR,
-                description="Security review of final deliverable",
-                prompt=combined,
-                context={},
-            )
-
-            result = auditor.execute(task)
-            if result.success and isinstance(result.output, dict):
-                findings = result.output.get("findings", [])
-                score = result.output.get("score", 100) / 100.0
-                critical = [f for f in findings if f.get("severity") in ("critical", "high")]
-                return len(critical) == 0, findings, score
-        except Exception as e:
-            logger.warning("Security check failed — failing closed: %s", e)
-            return False, [{"severity": "critical", "description": f"Security check error: {e}"}], 0.0
-
-        return False, [{"severity": "critical", "description": "Security check returned no result"}], 0.0
-
-
-# ─── Singleton ────────────────────────────────────────────────────────────────
 
 _goal_verifier: GoalVerifier | None = None
 _goal_verifier_lock = threading.Lock()

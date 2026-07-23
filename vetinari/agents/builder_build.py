@@ -1,6 +1,6 @@
-"""Build-mode execution mixin for BuilderAgent.
+"""Build-mode execution behavior for BuilderAgent.
 
-Contains the ``BuilderBuildMixin`` class with methods for memory context
+Contains the ``BuilderBuildBehavior`` class with methods for memory context
 retrieval, scaffold generation, and build task execution. Extracted from
 ``builder_agent.py`` to keep it under the 550-line limit.
 
@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from vetinari.agents.contracts import AgentResult, AgentTask
+from vetinari.boundary_guards import require_nonempty
 from vetinari.config.inference_config import get_inference_config
 from vetinari.constants import TEMPERATURE_LOW
 from vetinari.exceptions import ModelUnavailableError
@@ -22,8 +23,13 @@ from vetinari.exceptions import ModelUnavailableError
 logger = logging.getLogger(__name__)
 
 
-class BuilderBuildMixin:
-    """Mixin providing build-mode execution for BuilderAgent.
+def validate_scaffold(scaffold_code: str) -> str:
+    """Require generated scaffold code before a build result can succeed."""
+    return require_nonempty(scaffold_code, field_name="scaffold")
+
+
+class BuilderBuildBehavior:
+    """Build-mode execution behavior for BuilderAgent.
 
     Requires the host class to provide:
     - ``self._infer(prompt, temperature)`` — raw LLM call
@@ -36,7 +42,8 @@ class BuilderBuildMixin:
 
     # -- Memory context retrieval --
 
-    def _retrieve_memory_context(self, spec: str) -> str:
+    @staticmethod
+    def _retrieve_memory_context(spec: str) -> str:
         """Retrieve read-only memory context relevant to the build task.
 
         Searches DECISION, PATTERN, and WARNING memory types to provide
@@ -51,30 +58,17 @@ class BuilderBuildMixin:
             if memory is unavailable or returns no results.
         """
         try:
-            from vetinari.memory import get_unified_memory_store
-            from vetinari.types import MemoryType
+            from vetinari.prompting.memory_packer import build_memory_recall_pack
 
-            store = get_unified_memory_store()
-            query = spec[:200]  # truncate to reasonable search length
-            results = store.search(query, limit=5)
-
-            relevant_types = {
-                MemoryType.DECISION,
-                MemoryType.PATTERN,
-                MemoryType.WARNING,
-                MemoryType.SOLUTION,
-            }
-
-            lines: list[str] = []
-            for entry in results:
-                if entry.entry_type in relevant_types:
-                    label = entry.entry_type.value.upper()
-                    title = entry.title or ""
-                    content_preview = (entry.content or "")[:300]
-                    lines.append(f"[{label}] {title}: {content_preview}")
-
-            if lines:
-                return "\n".join(lines[:5])
+            memory_pack = build_memory_recall_pack(
+                agent_type="WORKER",
+                task_type="builder",
+                query=spec[:500],
+            )
+            if memory_pack.prompt_text:
+                return memory_pack.prompt_text
+            if memory_pack.diagnostics:
+                logger.info("Builder memory recall omitted: %s", ", ".join(memory_pack.diagnostics[:3]))
         except Exception:
             logger.warning("Memory context retrieval unavailable; continuing without it", exc_info=True)
         return ""
@@ -104,19 +98,12 @@ class BuilderBuildMixin:
             logger.info("Builder enriched spec with %d memory entries", memory_context.count("["))
 
         scaffold = self._generate_scaffold(spec, feature_name)
+        if scaffold.get("generation_failed"):
+            error = str(scaffold.get("generation_error") or "code_generation_unavailable")
+            return self._failed_scaffold_result(scaffold, feature_name, error)
 
-        # Validate the generated scaffold code via CodeAgentEngine.validate()
-        validation_issues: list[str] = []
-        try:
-            from vetinari.coding_agent.engine import CodeAgentEngine, CodeArtifact
-
-            _engine = CodeAgentEngine()
-            _artifact = CodeArtifact(content=scaffold.get("scaffold_code", ""), language=self._language)
-            _valid, validation_issues = _engine.validate(_artifact)
-            if not _valid:
-                logger.warning("Code artifact validation failed: %s", "; ".join(validation_issues))
-        except Exception as _exc:
-            logger.warning("CodeAgentEngine validation unavailable: %s", _exc)
+        validate_scaffold(str(scaffold.get("scaffold_code", "")))
+        validation_issues = self._validate_scaffold_code(scaffold)
 
         written_files: list[str] = []
         if output_dir or task.context.get("write_files", False):
@@ -127,33 +114,8 @@ class BuilderBuildMixin:
         # Chain-of-verification: Worker generates verification questions
         # after code generation and answers them independently to catch
         # hallucinated imports before Inspector review.
-        verification_issues: list[str] = []
         code_text = scaffold.get("scaffold_code", "")
-        if code_text and not syntax_errors:
-            try:
-                from vetinari.config.inference_config import get_inference_config
-                from vetinari.llm_helpers import quick_llm_call
-
-                _vf_profile = get_inference_config().get_profile("verification")
-                verification = quick_llm_call(
-                    prompt=(
-                        f"You just generated this code:\n```python\n{code_text[:2000]}\n```\n\n"
-                        "Generate 3 verification questions about this code and answer each:\n"
-                        "1. Does every import reference a real module?\n"
-                        "2. Are all function signatures consistent with their call sites?\n"
-                        "3. Are there any undefined variables or missing dependencies?\n"
-                        "For each question, answer YES (ok) or NO (problem found). "
-                        "If NO, describe the specific issue."
-                    ),
-                    system_prompt="You verify code correctness by answering self-check questions.",
-                    max_tokens=_vf_profile.max_tokens,
-                    temperature=_vf_profile.temperature,
-                )
-                if verification and "NO" in verification.upper():
-                    verification_issues.append(verification)
-                    logger.info("Chain-of-verification found potential issues in generated code")
-            except Exception:
-                logger.warning("Chain-of-verification unavailable for %s — skipping verification step", feature_name)
+        verification_issues = self._verify_generated_code(code_text, syntax_errors, feature_name)
 
         return AgentResult(
             success=True,
@@ -170,6 +132,67 @@ class BuilderBuildMixin:
             },
         )
 
+    @staticmethod
+    def _failed_scaffold_result(scaffold: dict[str, Any], feature_name: str, error: str) -> AgentResult:
+        return AgentResult(
+            success=False,
+            output=scaffold,
+            errors=[error],
+            metadata={
+                "mode": "build",
+                "feature_name": feature_name,
+                "files_generated": 0,
+                "test_count": 0,
+                "written_files": [],
+                "syntax_errors": [],
+                "validation_issues": [],
+                "verification_issues": [],
+            },
+        )
+
+    def _validate_scaffold_code(self, scaffold: dict[str, Any]) -> list[str]:
+        validation_issues: list[str] = []
+        try:
+            from vetinari.coding_agent.engine import CodeAgentEngine, CodeArtifact
+
+            _engine = CodeAgentEngine()
+            _artifact = CodeArtifact(content=scaffold.get("scaffold_code", ""), language=self._language)
+            _valid, validation_issues = _engine.validate(_artifact)
+            if not _valid:
+                logger.warning("Code artifact validation failed: %s", "; ".join(validation_issues))
+        except Exception as _exc:
+            logger.warning("CodeAgentEngine validation unavailable: %s", _exc)
+        return validation_issues
+
+    @staticmethod
+    def _verify_generated_code(code_text: str, syntax_errors: list[str], feature_name: str) -> list[str]:
+        if not code_text or syntax_errors:
+            return []
+        try:
+            from vetinari.llm_helpers import quick_llm_call
+
+            _vf_profile = get_inference_config().get_profile("verification")
+            verification = quick_llm_call(
+                prompt=(
+                    f"You just generated this code:\n```python\n{code_text[:2000]}\n```\n\n"
+                    "Generate 3 verification questions about this code and answer each:\n"
+                    "1. Does every import reference a real module?\n"
+                    "2. Are all function signatures consistent with their call sites?\n"
+                    "3. Are there any undefined variables or missing dependencies?\n"
+                    "For each question, answer YES (ok) or NO (problem found). "
+                    "If NO, describe the specific issue."
+                ),
+                system_prompt="You verify code correctness by answering self-check questions.",
+                max_tokens=_vf_profile.max_tokens,
+                temperature=_vf_profile.temperature,
+            )
+            if verification and "NO" in verification.upper():
+                logger.info("Chain-of-verification found potential issues in generated code")
+                return [verification]
+        except Exception:
+            logger.warning("Chain-of-verification unavailable for %s — skipping verification step", feature_name)
+        return []
+
     def _generate_scaffold(self, spec: str, feature_name: str) -> dict[str, Any]:
         """Generate code scaffold using LLM-powered code generation.
 
@@ -184,22 +207,7 @@ class BuilderBuildMixin:
             Scaffold dict with keys: ``scaffold_code``, ``tests``, ``artifacts``,
             ``implementation_notes``, and ``summary``.
         """
-        # Inject codebase structure map for context-aware code generation
-        repo_map_section = ""
-        try:
-            from vetinari.repo_map import get_repo_map
-
-            repo_map = get_repo_map()
-            cfg = get_inference_config().get_profile("coding")
-            structure = repo_map.generate_for_task(
-                root_path=Path.cwd(),
-                task_description=f"{feature_name}: {spec[:200]}",
-                max_tokens=cfg.max_tokens,
-            )
-            if structure:
-                repo_map_section = f"\n## Codebase Structure\n{structure}\n"
-        except Exception:
-            logger.warning("Repo map unavailable for %s — generating without codebase context", feature_name)
+        repo_map_section = self._repo_map_section(feature_name, spec)
 
         prompt = f"""You are a code generation expert. Generate a complete, production-ready code scaffold.
 
@@ -232,7 +240,27 @@ Requirements:
         if result and isinstance(result, dict) and result.get("scaffold_code"):
             return result
 
-        # Fallback: minimal scaffold
+        return self._generate_plain_text_scaffold(spec, feature_name)
+
+    @staticmethod
+    def _repo_map_section(feature_name: str, spec: str) -> str:
+        try:
+            from vetinari.repo_map import get_repo_map
+
+            repo_map = get_repo_map()
+            cfg = get_inference_config().get_profile("coding")
+            structure = repo_map.generate_for_task(
+                root_path=Path.cwd(),
+                task_description=f"{feature_name}: {spec[:200]}",
+                max_tokens=cfg.max_tokens,
+            )
+            if structure:
+                return f"\n## Codebase Structure\n{structure}\n"
+        except Exception:
+            logger.warning("Repo map unavailable for %s — generating without codebase context", feature_name)
+        return ""
+
+    def _generate_plain_text_scaffold(self, spec: str, feature_name: str) -> dict[str, Any]:
         self._log("warning", "JSON scaffold failed, attempting plain text generation")
         safe_name = feature_name.lower().replace(" ", "_")
         class_name = feature_name.replace(" ", "").capitalize()
@@ -244,12 +272,22 @@ Requirements:
         try:
             generated_code = self._infer(code_prompt, temperature=TEMPERATURE_LOW)
         except ModelUnavailableError:
-            logger.warning("Model unavailable — returning minimal scaffold for %s", feature_name)
+            logger.warning("Model unavailable - failing build scaffold generation for %s", feature_name)
             generated_code = ""
 
+        if not generated_code or not generated_code.strip():
+            return {
+                "scaffold_code": "",
+                "tests": [],
+                "artifacts": [],
+                "implementation_notes": ["Model-backed code generation was unavailable; no pass-only scaffold emitted"],
+                "summary": f"Scaffold generation failed for {feature_name}",
+                "generation_failed": True,
+                "generation_error": "model_unavailable",
+            }
+
         return {
-            "scaffold_code": generated_code
-            or f'"""Auto-generated {feature_name} module."""\n\nclass {class_name}:\n    pass\n',
+            "scaffold_code": generated_code,
             "tests": [
                 {
                     "filename": f"test_{safe_name}.py",

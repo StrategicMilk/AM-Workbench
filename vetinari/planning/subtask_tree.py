@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ class SubtaskTree:
     """Hierarchical subtask storage with JSON file-backed persistence."""
 
     _instance = None
+    _instance_lock = threading.RLock()
 
     @classmethod
     def get_instance(cls, storage_path: str | None = None) -> SubtaskTree:
@@ -33,9 +35,20 @@ class SubtaskTree:
         Returns:
             The shared SubtaskTree singleton.
         """
-        if cls._instance is None or storage_path is not None:
-            cls._instance = cls(storage_path)
-        return cls._instance
+        with cls._instance_lock:
+            requested_path = Path(storage_path).resolve() if storage_path is not None else None
+            current_path = None
+            if cls._instance is not None:
+                current_path = Path(cls._instance.storage_path).resolve()
+            if cls._instance is None or (requested_path is not None and current_path != requested_path):
+                cls._instance = cls(storage_path)
+            return cls._instance
+
+    @classmethod
+    def reset_instance_for_test(cls) -> None:
+        """Reset the process-wide SubtaskTree singleton for isolated tests."""
+        with cls._instance_lock:
+            cls._instance = None
 
     def __init__(self, storage_path: str | None = None):
         if storage_path is None:
@@ -132,8 +145,8 @@ class SubtaskTree:
             dor_level=dor_level,
             estimated_effort=estimated_effort,
             max_depth_override=max_depth_override,
-            inputs=inputs or [],  # noqa: VET112 - empty fallback preserves optional request metadata contract
-            outputs=outputs or [],  # noqa: VET112 - empty fallback preserves optional request metadata contract
+            inputs=inputs or [],
+            outputs=outputs or [],
             decomposition_seed=decomposition_seed,
         )
 
@@ -141,23 +154,28 @@ class SubtaskTree:
         # persisting.  get_effective_max_depth() applies the per-subtask
         # override and clamps to the 12-16 range so over-deep decompositions
         # are caught at creation time rather than at inference time.
-        effective_max = subtask.get_effective_max_depth()
-        if depth > effective_max:
-            logger.warning(
-                "Subtask %s in plan %s has depth %d which exceeds its effective "
-                "maximum of %d — clamping to %d to prevent runaway decomposition",
-                subtask_id,
-                plan_id,
-                depth,
-                effective_max,
-                effective_max,
-            )
-            subtask.depth = effective_max
+        self._clamp_depth_to_effective_max(subtask)
 
         self.trees[plan_id][subtask_id] = subtask
         self._save_tree(plan_id)
 
         return subtask
+
+    @staticmethod
+    def _clamp_depth_to_effective_max(subtask: Subtask) -> None:
+        """Clamp a newly created subtask to its effective max depth."""
+        effective_max = subtask.get_effective_max_depth()
+        if subtask.depth > effective_max:
+            logger.warning(
+                "Subtask %s in plan %s has depth %d which exceeds its effective "
+                "maximum of %d; clamping to %d to prevent runaway decomposition",
+                subtask.subtask_id,
+                subtask.plan_id,
+                subtask.depth,
+                effective_max,
+                effective_max,
+            )
+            subtask.depth = effective_max
 
     def get_subtask(self, plan_id: str, subtask_id: str) -> Subtask | None:
         """Retrieve a single subtask by plan and subtask identifiers.
@@ -269,4 +287,20 @@ class SubtaskTree:
         return max(st.depth for st in subtasks)
 
 
-subtask_tree = SubtaskTree.get_instance()
+class _SubtaskTreeProxy:
+    """Lazy module-level compatibility facade for the SubtaskTree singleton."""
+
+    @classmethod
+    def get_all_subtasks(cls, plan_id: str) -> list[Subtask]:
+        return SubtaskTree.get_instance().get_all_subtasks(plan_id)
+
+    @classmethod
+    def update_subtask(cls, plan_id: str, subtask_id: str, updates: dict[str, Any]) -> Subtask | None:
+        return SubtaskTree.get_instance().update_subtask(plan_id, subtask_id, updates)
+
+    @classmethod
+    def delete_tree(cls, plan_id: str) -> bool:
+        return SubtaskTree.get_instance().delete_tree(plan_id)
+
+
+subtask_tree = _SubtaskTreeProxy

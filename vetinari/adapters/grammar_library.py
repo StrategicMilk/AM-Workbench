@@ -14,16 +14,15 @@ from __future__ import annotations
 import logging
 import re
 
+from vetinari.context.window_manager import count_tokens
+
 logger = logging.getLogger(__name__)
+
 
 # -- Grammar format constants -------------------------------------------------
 
 # Minimum valid grammar: at least one rule definition of the form `name ::= ...`
 _RULE_PATTERN = re.compile(r"^\s*\w[\w-]*\s*::=", re.MULTILINE)
-
-# Rough token estimate: 1 token ≈ 4 characters (GPT-style approximation).
-# Used for truncation budget calculations where an exact tokenizer is unavailable.
-_CHARS_PER_TOKEN: int = 4
 
 # -- GBNF Grammar definitions -------------------------------------------------
 # All grammars use llama.cpp's GBNF dialect.
@@ -227,6 +226,66 @@ def validate_grammar(grammar: str) -> bool:
     return True
 
 
+def _log_truncation(kind: str, original_len: int, result_len: int) -> None:
+    """Emit the common grammar truncation debug event."""
+    logger.debug(
+        "truncate_at_grammar_boundary: %s truncated from %d to %d chars",
+        kind,
+        original_len,
+        result_len,
+    )
+
+
+def _truncate_json_boundary(text: str, truncated: str, marker: str, label: str) -> str | None:
+    """Return text truncated at the last complete JSON boundary if present."""
+    boundary = _rfind_outside_strings(truncated, marker)
+    if boundary < 0:
+        return None
+    result = truncated[: boundary + 1]
+    _log_truncation(label, len(text), len(result))
+    return result
+
+
+def _truncate_yaml_boundary(text: str, truncated: str) -> str | None:
+    """Return text truncated at the final complete YAML line if present."""
+    last_newline = truncated.rfind("\n")
+    if last_newline < 0:
+        return None
+    result = truncated[: last_newline + 1]
+    _log_truncation("YAML", len(text), len(result))
+    return result
+
+
+def _truncate_plain_boundary(text: str, truncated: str) -> str:
+    """Return plain text truncated at a sentence, newline, or hard boundary."""
+    last_period = truncated.rfind(". ")
+    if last_period >= 0:
+        result = truncated[: last_period + 1]
+        logger.debug(
+            "truncate_at_grammar_boundary: plain-text truncated at sentence boundary from %d to %d chars",
+            len(text),
+            len(result),
+        )
+        return result
+
+    last_newline = truncated.rfind("\n")
+    if last_newline >= 0:
+        result = truncated[: last_newline + 1]
+        logger.debug(
+            "truncate_at_grammar_boundary: plain-text truncated at newline from %d to %d chars",
+            len(text),
+            len(result),
+        )
+        return result
+
+    logger.debug(
+        "truncate_at_grammar_boundary: hard-limit truncation from %d to %d chars",
+        len(text),
+        len(truncated),
+    )
+    return truncated
+
+
 def truncate_at_grammar_boundary(
     text: str,
     max_tokens: int,
@@ -248,7 +307,7 @@ def truncate_at_grammar_boundary(
 
     Args:
         text: Generated text to truncate.
-        max_tokens: Maximum number of tokens allowed (1 token ≈ 4 characters).
+        max_tokens: Maximum number of tokens allowed.
         grammar_name: Optional grammar name that was used to produce ``text``.
             Guides boundary selection. Pass ``None`` for plain-text outputs.
 
@@ -259,73 +318,34 @@ def truncate_at_grammar_boundary(
     if not text:
         return text
 
-    budget_chars = max_tokens * _CHARS_PER_TOKEN
-    if len(text) <= budget_chars:
+    if count_tokens(text) <= max_tokens:
         return text
 
-    truncated = text[:budget_chars]
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if count_tokens(text[:mid]) <= max_tokens:
+            lo = mid
+        else:
+            hi = mid - 1
+    truncated = text[:lo]
 
     if grammar_name in _JSON_OBJECT_GRAMMAR_NAMES:
-        last_brace = _rfind_outside_strings(truncated, "}")
-        if last_brace >= 0:
-            result = truncated[: last_brace + 1]
-            logger.debug(
-                "truncate_at_grammar_boundary: JSON truncated from %d to %d chars",
-                len(text),
-                len(result),
-            )
+        result = _truncate_json_boundary(text, truncated, "}", "JSON")
+        if result is not None:
             return result
 
     if grammar_name in _JSON_ARRAY_GRAMMAR_NAMES:
-        last_bracket = _rfind_outside_strings(truncated, "]")
-        if last_bracket >= 0:
-            result = truncated[: last_bracket + 1]
-            logger.debug(
-                "truncate_at_grammar_boundary: JSON array truncated from %d to %d chars",
-                len(text),
-                len(result),
-            )
+        result = _truncate_json_boundary(text, truncated, "]", "JSON array")
+        if result is not None:
             return result
 
     if grammar_name == "yaml_document":
-        last_newline = truncated.rfind("\n")
-        if last_newline >= 0:
-            result = truncated[: last_newline + 1]
-            logger.debug(
-                "truncate_at_grammar_boundary: YAML truncated from %d to %d chars",
-                len(text),
-                len(result),
-            )
+        result = _truncate_yaml_boundary(text, truncated)
+        if result is not None:
             return result
 
-    # Plain text / unknown grammar: truncate at last sentence boundary
-    last_period = truncated.rfind(". ")
-    if last_period >= 0:
-        result = truncated[: last_period + 1]
-        logger.debug(
-            "truncate_at_grammar_boundary: plain-text truncated at sentence boundary from %d to %d chars",
-            len(text),
-            len(result),
-        )
-        return result
-
-    last_newline = truncated.rfind("\n")
-    if last_newline >= 0:
-        result = truncated[: last_newline + 1]
-        logger.debug(
-            "truncate_at_grammar_boundary: plain-text truncated at newline from %d to %d chars",
-            len(text),
-            len(result),
-        )
-        return result
-
-    # Hard fallback: return exactly the budget-limited characters
-    logger.debug(
-        "truncate_at_grammar_boundary: hard-limit truncation from %d to %d chars",
-        len(text),
-        len(truncated),
-    )
-    return truncated
+    return _truncate_plain_boundary(text, truncated)
 
 
 # -- Private helpers ----------------------------------------------------------

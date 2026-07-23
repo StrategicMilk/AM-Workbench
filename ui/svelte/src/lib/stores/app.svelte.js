@@ -12,6 +12,10 @@ const STORAGE_KEYS = {
   focusMode: 'focusModeEnabled',
 };
 
+const VIEW_ALIASES = {
+  workbench_extensions: 'workbench-extensions',
+};
+
 /** Read a boolean or string from localStorage with a default. */
 function loadStored(key, fallback) {
   try {
@@ -34,14 +38,41 @@ function saveStored(key, value) {
   }
 }
 
+function defaultTheme() {
+  try {
+    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  } catch {
+    return 'dark';
+  }
+}
+
+function normalizeView(view) {
+  return VIEW_ALIASES[view] ?? view;
+}
+
 // -- Reactive state ----------------------------------------------------------
 
-let _currentView = $state(loadStored('currentView', 'prompt'));
+// FSA-0056: read setupComplete from storage FIRST so we can route the very
+// first paint to the onboarding view if the user hasn't completed first-run
+// setup yet.  resolveDefaultLandingView lives in routes/defaultLanding.js
+// and returns 'onboarding' when setupComplete is falsy, 'prompt' otherwise.
+const _initialSetupComplete = loadStored(STORAGE_KEYS.setupComplete, false);
+
+function initialView(setupComplete) {
+  // Use the stored currentView if one exists; fall back to the
+  // setup-aware default when there's no prior view.
+  const stored = loadStored('currentView', null);
+  if (stored != null) return normalizeView(stored);
+  return setupComplete === true ? 'prompt' : 'onboarding';
+}
+
+let _currentView = $state(initialView(_initialSetupComplete));
 let _currentProjectId = $state(null);
 let _sidebarCollapsed = $state(loadStored(STORAGE_KEYS.sidebarCollapsed, false));
-let _theme = $state(loadStored(STORAGE_KEYS.theme, 'dark'));
+let _theme = $state(loadStored(STORAGE_KEYS.theme, defaultTheme()));
 let _commandPaletteOpen = $state(false);
-let _setupComplete = $state(loadStored(STORAGE_KEYS.setupComplete, false));
+let _commandPaletteQuery = $state('');
+let _setupComplete = $state(_initialSetupComplete);
 let _focusMode = $state(loadStored(STORAGE_KEYS.focusMode, false));
 // Starts false — shell shows Disconnected until SSE handshakes and sets this true.
 let _serverConnected = $state(false);
@@ -56,8 +87,9 @@ let _sessionTokens = $state(0);
 export const appState = {
   get currentView() { return _currentView; },
   set currentView(v) {
-    _currentView = v;
-    saveStored('currentView', v);
+    const normalizedView = normalizeView(v);
+    _currentView = normalizedView;
+    saveStored('currentView', normalizedView);
   },
 
   get currentProjectId() { return _currentProjectId; },
@@ -77,6 +109,9 @@ export const appState = {
 
   get commandPaletteOpen() { return _commandPaletteOpen; },
   set commandPaletteOpen(v) { _commandPaletteOpen = v; },
+
+  get commandPaletteQuery() { return _commandPaletteQuery; },
+  set commandPaletteQuery(v) { _commandPaletteQuery = String(v ?? ''); },
 
   get setupComplete() { return _setupComplete; },
   set setupComplete(v) {

@@ -39,6 +39,7 @@ from vetinari.types import StatusEnum
 
 logger = logging.getLogger(__name__)
 
+
 _TYPE_MAP: dict[str, type] = {
     "str": str,
     "int": int,

@@ -39,6 +39,7 @@ from vetinari.utils.lazy_import import lazy_import
 
 logger = logging.getLogger(__name__)
 
+
 # Type alias for the import function accepted by _run_capability_detection.
 # Matches lazy_import's signature: (module_name) -> (module_or_none, available).
 _ImportFnType = Callable[[str], tuple[ModuleType | None, bool]]
@@ -54,7 +55,7 @@ _capability_lock: threading.Lock = threading.Lock()
 # ── Data classes ─────────────────────────────────────────────────────────────
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SpeculativeDecodingCapability:
     """Result of runtime capability detection for speculative decoding.
 

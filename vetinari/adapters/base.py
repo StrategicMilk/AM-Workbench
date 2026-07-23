@@ -8,6 +8,17 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, TypeAlias
 
+from vetinari.adapters.base_telemetry import (
+    AdapterCostEntry,
+    get_anomaly_detector,
+    get_cost_tracker,
+    get_forecaster,
+    get_genai_tracer,
+    get_sla_tracker,
+    get_telemetry_collector,
+    log_event,
+    record_model_call_failure,
+)
 from vetinari.constants import (
     INFERENCE_STATUS_ERROR,
     INFERENCE_STATUS_OK,
@@ -17,9 +28,35 @@ from vetinari.constants import (
     MODEL_SCORE_WEIGHT_FREE_TIER,
     MODEL_SCORE_WEIGHT_LATENCY,
 )
-from vetinari.types import ModelProvider
+from vetinari.types import ModelProvider, PriorityClass
 
 logger = logging.getLogger(__name__)
+
+
+def _exact_response_tokens(response: InferenceResponse) -> tuple[int, int]:
+    """Return typed engine token counts, failing closed when either is absent."""
+    if response.input_tokens is None or response.output_tokens is None:
+        logger.warning("Inference response omitted exact input/output token counts; recording zero cost")
+        return 0, 0
+    return max(0, response.input_tokens), max(0, response.output_tokens)
+
+
+def _record_model_call_failure_metric(
+    *,
+    project_id: str,
+    task_id: str,
+    agent_type: str,
+    model_id: str,
+    failure_class: str,
+) -> None:
+    """Record a failed model-call metric through the live metrics module."""
+    record_model_call_failure(
+        project_id=project_id,
+        task_id=task_id,
+        agent_type=agent_type,
+        model_id=model_id,
+        failure_class=failure_class,
+    )
 
 
 # Canonical enum lives in vetinari.types.ModelProvider.
@@ -27,7 +64,7 @@ logger = logging.getLogger(__name__)
 ProviderType: TypeAlias = ModelProvider
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ProviderConfig:
     """Configuration for a provider."""
 
@@ -45,7 +82,7 @@ class ProviderConfig:
 
 
 @dataclass
-class ModelInfo:
+class ProviderModelInfo:
     """Information about a model available from a provider."""
 
     id: str
@@ -64,6 +101,31 @@ class ModelInfo:
 
     def __repr__(self) -> str:
         return f"ModelInfo(id={self.id!r}, provider={self.provider!r}, context_len={self.context_len!r})"
+
+
+ModelInfo = ProviderModelInfo
+
+
+def derive_model_cache_maxsize(
+    config: ProviderConfig,
+    *,
+    model_memory_gb: int | float | None = None,
+    default_model_memory_gb: int = 4,
+) -> int:
+    """Derive a bounded local model cache size from provider memory budget.
+
+    Returns:
+        Maximum number of local models that fit within the configured memory budget.
+    """
+    budget_gb = max(1, int(getattr(config, "memory_budget_gb", 1) or 1))
+    configured_model_gb = model_memory_gb
+    if configured_model_gb is None:
+        configured_model_gb = config.extra_config.get("memory_gb", default_model_memory_gb)
+    try:
+        per_model_gb = max(1, int(float(configured_model_gb)))
+    except (TypeError, ValueError):
+        per_model_gb = max(1, int(default_model_memory_gb))
+    return max(1, budget_gb // per_model_gb)
 
 
 @dataclass
@@ -97,7 +159,22 @@ class InferenceRequest:
     logit_bias: dict[int, float] | None = None  # Token ID -> bias adjustments
     typical_p: float = 0.0  # Locally typical sampling (0.0 = disabled, 1.0 = default)
     tfs_z: float = 0.0  # Tail-free sampling z parameter (0.0 = disabled, 1.0 = default)
+    # FSA-0047: optional image inputs for multimodal (vision) models.  Each
+    # entry is either a data: URL ("data:image/png;base64,...") or a file://
+    # path.  Text-only adapters MUST reject requests where this list is
+    # non-empty (see llama_cpp_adapter_inference._build_messages).
+    images: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    priority_class: PriorityClass | str | None = None
+    eval_slot: int | None = None
+    session_id: str | None = None
+    prefix_refs: list[str] = field(default_factory=list)
+    dry_multiplier: float | None = None
+    dry_base: float | None = None
+    dry_allowed_length: int | None = None
+    xtc_probability: float | None = None
+    xtc_threshold: float | None = None
+    top_n_sigma: float | None = None
 
     def __repr__(self) -> str:
         return f"InferenceRequest(model_id={self.model_id!r}, max_tokens={self.max_tokens!r}, stream=False)"
@@ -113,6 +190,9 @@ class InferenceResponse:
     tokens_used: int
     status: str  # Use INFERENCE_STATUS_* constants from vetinari.constants
     error: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    confidence: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -204,9 +284,7 @@ class ProviderAdapter(ABC):
             request: The InferenceRequest about to be submitted.
         """
         try:
-            from vetinari.structured_logging import log_event as _sl_log_start
-
-            _sl_log_start(
+            log_event(
                 "debug",
                 "vetinari.adapters.base",
                 "inference_started",
@@ -287,108 +365,89 @@ class ProviderAdapter(ABC):
         Called automatically after each infer() call in concrete adapters.
         Failures are silently suppressed — telemetry must never crash inference.
         """
-        # Wire: OTel GenAI LLM span for inference observability
+        provider = self.provider_type.value
         try:
-            from vetinari.observability.otel_genai import get_genai_tracer
-
-            _genai_tracer = get_genai_tracer()
-            _llm_span = _genai_tracer.start_agent_span(
-                agent_name="llm",
-                operation="inference",
-                model=request.model_id,
-            )
-            _llm_span.attributes["latency_ms"] = response.latency_ms
-            _llm_span.attributes["gen_ai.usage.input_tokens"] = getattr(response, "input_tokens", 0)
-            _llm_span.attributes["gen_ai.usage.output_tokens"] = response.tokens_used
-            _llm_span.attributes["gen_ai.response.model"] = getattr(response, "model_id", request.model_id)
-            _genai_tracer.end_agent_span(
-                _llm_span,
+            genai_tracer = get_genai_tracer()
+            llm_span = genai_tracer.start_agent_span(agent_name="llm", operation="inference", model=request.model_id)
+            llm_span.attributes["latency_ms"] = response.latency_ms
+            llm_span.attributes["gen_ai.usage.input_tokens"] = getattr(response, "input_tokens", 0)
+            llm_span.attributes["gen_ai.usage.output_tokens"] = getattr(response, "output_tokens", 0) or 0
+            llm_span.attributes["gen_ai.response.model"] = getattr(response, "model_id", request.model_id)
+            genai_tracer.end_agent_span(
+                llm_span,
                 status=INFERENCE_STATUS_OK if response.status == INFERENCE_STATUS_OK else INFERENCE_STATUS_ERROR,
                 tokens_used=response.tokens_used,
             )
-        except Exception:  # Broad: telemetry is best-effort; never blocks inference
+        except Exception:
             logger.warning("GenAI tracer unavailable for LLM inference span", exc_info=True)
-
-        # Structured log: inference_completed
         try:
-            from vetinari.structured_logging import log_event as _sl_log_done
-
-            _sl_log_done(
+            input_tokens, output_tokens = _exact_response_tokens(response)
+            log_event(
                 "info" if response.status == INFERENCE_STATUS_OK else "warning",
                 "vetinari.adapters.base",
                 "inference_completed",
                 model_id=request.model_id,
                 latency_ms=response.latency_ms,
-                input_tokens=int((response.tokens_used or 0) * 0.6),
-                output_tokens=int((response.tokens_used or 0) * 0.4),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
                 status="completed" if response.status == INFERENCE_STATUS_OK else "failed",
             )
-        except Exception:  # Broad: telemetry is best-effort; never blocks inference
+        except Exception:
             logger.warning(
                 "Failed to emit inference_completed structured event for %s", request.model_id, exc_info=True
             )
-
         try:
-            from vetinari.telemetry import get_telemetry_collector
-
             get_telemetry_collector().record_adapter_latency(
-                provider=self.provider_type.value,
+                provider=provider,
                 model=request.model_id,
                 latency_ms=response.latency_ms,
                 tokens_used=response.tokens_used,
                 success=response.status == INFERENCE_STATUS_OK,
             )
-        except Exception:  # Broad: telemetry is best-effort; never blocks inference
+        except Exception:
             logger.warning("Failed to record adapter telemetry for %s", request.model_id, exc_info=True)
-
-        # --- Step 1: Cost tracking (fixed — construct CostEntry properly) ---
-        try:
-            from vetinari.analytics.cost import CostEntry, get_cost_tracker
-
-            total = response.tokens_used or 0
-            input_tokens = int(total * 0.6)
-            output_tokens = total - input_tokens
-            entry = CostEntry(
-                provider=self.provider_type.value,
-                model=request.model_id,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                agent=request.metadata.get("agent") if request.metadata else None,
-                task_id=request.metadata.get("task_id") if request.metadata else None,
-                latency_ms=float(response.latency_ms),
+        if response.status != INFERENCE_STATUS_OK:
+            metadata = request.metadata or {}
+            _record_model_call_failure_metric(
+                project_id=str(metadata.get("project_id") or "unknown"),
+                task_id=str(metadata.get("task_id") or "unknown"),
+                agent_type=str(metadata.get("agent_type") or metadata.get("agent") or "unknown"),
+                model_id=request.model_id,
+                failure_class=str(response.error or response.status or "failed"),
             )
-            get_cost_tracker().record(entry)
-        except Exception:  # Broad: telemetry is best-effort; never blocks inference
-            logger.warning("Failed to record cost tracking entry for %s", request.model_id, exc_info=True)
-
-        # --- Step 2: SLA tracking ---
         try:
-            from vetinari.analytics.sla import get_sla_tracker
-
+            input_tokens, output_tokens = _exact_response_tokens(response)
+            metadata = request.metadata or {}
+            get_cost_tracker().record(
+                AdapterCostEntry(
+                    provider=provider,
+                    model=request.model_id,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    agent=metadata.get("agent"),
+                    task_id=metadata.get("task_id"),
+                    latency_ms=float(response.latency_ms),
+                )
+            )
+        except Exception:
+            logger.warning("Failed to record cost tracking entry for %s", request.model_id, exc_info=True)
+        try:
             tracker = get_sla_tracker()
             tracker.record_latency(
-                f"{self.provider_type.value}:{request.model_id}",
+                f"{provider}:{request.model_id}",
                 latency_ms=float(response.latency_ms),
                 success=response.status == INFERENCE_STATUS_OK,
             )
             tracker.record_request(success=response.status == INFERENCE_STATUS_OK)
-        except Exception:  # Broad: telemetry is best-effort; never blocks inference
+        except Exception:
             logger.warning("Failed to record SLA metrics for %s", request.model_id, exc_info=True)
-
-        # --- Step 3: Forecaster ingestion ---
         try:
-            from vetinari.analytics.forecasting import get_forecaster
-
-            fc = get_forecaster()
-            fc.ingest("adapter.latency", float(response.latency_ms))
-            fc.ingest("adapter.tokens", float(response.tokens_used or 0))
-        except Exception:  # Broad: telemetry is best-effort; never blocks inference
+            forecaster = get_forecaster()
+            forecaster.ingest("adapter.latency", float(response.latency_ms))
+            forecaster.ingest("adapter.tokens", float(response.tokens_used or 0))
+        except Exception:
             logger.warning("Failed to ingest forecaster data for %s", request.model_id, exc_info=True)
-
-        # --- Step 4: Anomaly detection ---
         try:
-            from vetinari.analytics.anomaly import get_anomaly_detector
-
             result = get_anomaly_detector().detect("adapter.latency", float(response.latency_ms))
             if result.is_anomaly:
                 logger.warning(
@@ -398,7 +457,7 @@ class ProviderAdapter(ABC):
                     result.method,
                     result.score,
                 )
-        except Exception:  # Broad: telemetry is best-effort; never blocks inference
+        except Exception:
             logger.warning("Failed to run anomaly detection for %s", request.model_id, exc_info=True)
 
     async def async_infer(self, request: InferenceRequest) -> InferenceResponse:

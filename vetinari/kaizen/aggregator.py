@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from vetinari.kaizen.gemba import GembaFinding
 from vetinari.kaizen.improvement_log import (
@@ -101,12 +101,38 @@ class ImprovementAggregator:
         # Regressions: active OR reverted improvements where regression_detected=True.
         # Reverted improvements must be included so the weekly report surfaces
         # regressions that have already been auto-reverted (not just open ones).
-        regressions = [i for i in active if i.regression_detected] + [
-            i for i in reverted if i.regression_detected
-        ]
+        regressions = [i for i in active if i.regression_detected] + [i for i in reverted if i.regression_detected]
 
-        # Velocity: confirmed per day
+        # Velocity: confirmed per day this week
         velocity = len(confirmed) / 7.0
+
+        # Velocity trend: compare this week's velocity to last week's.
+        # Pull all confirmed improvements and filter to the prior 7-14 day window.
+        now = datetime.now(timezone.utc)
+        last_week_start = now - timedelta(days=14)
+        last_week_end = now - timedelta(days=7)
+        all_confirmed = self._log.get_confirmed_improvements()
+        confirmed_last_week = [
+            r
+            for r in all_confirmed
+            if r.confirmed_at is not None and last_week_start <= r.confirmed_at <= last_week_end
+        ]
+        prior_velocity = len(confirmed_last_week) / 7.0
+        # Acceptance contract: when no prior-week confirmed items exist AND
+        # no current-week confirmed items exist, the trend signal is
+        # 'insufficient_data', not 'flat'. 'flat' is reserved for the case
+        # where both windows had measurable velocity and they roughly match.
+        if prior_velocity == 0.0 and velocity == 0.0:
+            velocity_trend = "insufficient_data"
+        elif prior_velocity == 0.0:
+            # Any confirmed this week vs none last week = improving
+            velocity_trend = "up"
+        elif velocity > prior_velocity * 1.1:
+            velocity_trend = "up"
+        elif velocity < prior_velocity * 0.9:
+            velocity_trend = "down"
+        else:
+            velocity_trend = "flat"
 
         # Gemba findings
         gemba_findings: list[GembaFinding] = []
@@ -122,13 +148,13 @@ class ImprovementAggregator:
             proposed,
         )
 
-        now = datetime.now(timezone.utc)
         return KaizenWeeklyReport(
+            period_start=now - timedelta(days=7),
             period_end=now,
             top_improvements=top,
             regressions=regressions,
             improvement_velocity=velocity,
-            velocity_trend="flat",
+            velocity_trend=velocity_trend,
             open_hypotheses=proposed,
             active_experiments=active,
             recommendations=recommendations,

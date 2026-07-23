@@ -142,8 +142,8 @@ SECURITY_AUDIT_PROMPT: str = (
     "  cwe:CWE-89 (SQL Injection), owasp:A03:2021 Injection,\n"
     "  remediation:Use parameterized query,\n"
     "  code_example:cursor.execute('SELECT * FROM users WHERE email = %s', (email,))}\n\n"
-    "FEW-SHOT EXAMPLE 2 — Hardcoded secret:\n"
-    "Code: API_KEY = 'sk-abc123def456'\n"  # noqa: VET040 - static prompt text is not a runtime secret
+    "FEW-SHOT EXAMPLE 2 — Hardcoded credential:\n"
+    "Code: CREDENTIAL_NAME = '<redacted-example-key>'\n"
     "Finding: {severity:CRITICAL, finding:Hardcoded API key in source code,\n"
     "  cwe:CWE-798 (Hardcoded Credentials),\n"
     "  remediation:Use os.environ.get and store in .env or secrets manager,\n"

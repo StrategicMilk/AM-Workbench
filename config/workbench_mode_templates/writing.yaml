@@ -1,0 +1,14 @@
+id: writing
+primary_contract: vetinari.workbench.modes.writing.WritingModeState
+template_id: writing
+required_artifacts:
+  - audience_style_template
+  - draft_branch
+  - redline_plan
+  - fact_check_ledger
+  - export_manifest
+promotion_gate: require_writing_ready
+conversion_targets:
+  - prompt
+  - template
+  - plan

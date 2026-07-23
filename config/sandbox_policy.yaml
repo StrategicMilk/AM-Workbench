@@ -1,5 +1,10 @@
 version: "1.0"
 
+external:
+  # Compatibility mirror for validators that read the external plugin policy at
+  # the top level; the operative policy remains sandbox.external below.
+  require_signature: true
+
 sandbox:
   in_process:
     enabled: true
@@ -65,7 +70,7 @@ sandbox:
       - "api.openai.com"
 
     # Plugin security
-    require_signature: false
+    require_signature: true
     allow_network: true
     allow_file_write: true
 

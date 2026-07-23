@@ -9,8 +9,10 @@ with project IDs, model names, or other dynamic segments.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
+from typing import Any
 
 from vetinari.constants import (
     CHECKPOINT_DIR,
@@ -24,8 +26,10 @@ from vetinari.constants import (
 
 logger = logging.getLogger(__name__)
 
+
 __all__ = [
     "ensure_dir",
+    "privacy_receipt_for_path",
     "resolve_checkpoint_path",
     "resolve_log_path",
     "resolve_model_cache_path",
@@ -69,6 +73,39 @@ def ensure_dir(path: Path) -> Path:
     """
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def privacy_receipt_for_path(
+    path: Path | str,
+    *,
+    privacy_class: str = "operational",
+    subject_id: str | None = None,
+    source: str = "vetinari.paths",
+) -> dict[str, Any]:
+    """Build a privacy receipt for a resolved path reference.
+
+    Args:
+        path: Filesystem path to fingerprint after user and symlink
+            resolution.
+        privacy_class: Privacy classification to attach to the receipt.
+        subject_id: Optional subject identifier for subject-bound records.
+        source: Receipt source namespace used in the erasure token.
+
+    Returns:
+        Privacy receipt for the resolved path, including an erasure token based
+        on a SHA-256 path fingerprint instead of the raw path.
+    """
+    from vetinari.privacy.envelope import privacy_receipt
+
+    resolved = Path(path).expanduser().resolve()
+    path_fingerprint = hashlib.sha256(resolved.as_posix().encode("utf-8", errors="replace")).hexdigest()
+    return privacy_receipt(
+        privacy_class=privacy_class,
+        subject_id=subject_id,
+        source=source,
+        erasure_token=f"{source}:path:{path_fingerprint}",
+        redaction_applied=privacy_class in {"subject_data", "secret"},
+    )
 
 
 # ── Project paths ───────────────────────────────────────────────────────────

@@ -16,6 +16,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 # Section size limits to keep manifest within context budget
 MAX_DEPENDENCY_OUTPUTS = 10  # max dependency outputs to include
 MAX_MEMORY_SNIPPETS = 5  # max memory items to include
@@ -101,13 +102,36 @@ class TaskContextManifest:
                 content = str(mem.get("content", ""))
                 if len(content) > MAX_MEMORY_PREVIEW_CHARS:
                     content = content[:MAX_MEMORY_PREVIEW_CHARS] + " [truncated]"
-                parts.append(f"  [{mem_type}]: {content}")
+                metadata = self._format_memory_metadata(mem)
+                parts.append(f"  [{mem_type}{metadata}]: {content}")
             parts.append("")
 
         return "\n".join(parts)
 
+    @staticmethod
+    def _format_memory_metadata(memory: dict[str, Any]) -> str:
+        """Render provenance and quality metadata for a memory snippet."""
+        fields: list[str] = []
+        for key, label in (
+            ("memory_id", "id"),
+            ("id", "id"),
+            ("source", "source"),
+            ("source_ref", "source"),
+            ("quality_score", "quality"),
+            ("score", "quality"),
+            ("timestamp", "timestamp"),
+            ("created_at", "timestamp"),
+        ):
+            value = memory.get(key)
+            if value in (None, ""):
+                continue
+            rendered = f"{label}={value}"
+            if rendered not in fields:
+                fields.append(rendered)
+        return f" {'; '.join(fields)}" if fields else ""
+
     @classmethod
-    def build_for_task(
+    def create_for_task(
         cls,
         task_id: str,
         task_description: str,
@@ -119,13 +143,13 @@ class TaskContextManifest:
         context_budget_tokens: int = 4096,
         extra: dict[str, Any] | None = None,
     ) -> TaskContextManifest:
-        """Build a manifest by extracting relevant context from completed results.
+        """Create a manifest by extracting relevant context from completed results.
 
         Filters ``completed_results`` to only include outputs from tasks in
         ``dependency_ids``, capping at MAX_DEPENDENCY_OUTPUTS.
 
         Args:
-            task_id: The task this manifest is built for.
+            task_id: The task this manifest is created for.
             task_description: Human-readable task description.
             goal: Top-level goal string.
             completed_results: Dict mapping task_id -> result dict for all
@@ -139,11 +163,11 @@ class TaskContextManifest:
         Returns:
             Populated TaskContextManifest ready for format_for_prompt().
         """
-        completed_results = completed_results or {}  # noqa: VET112 — Optional per func param
-        dependency_ids = dependency_ids or []  # noqa: VET112 — Optional per func param
-        memory = memory or []  # noqa: VET112 — Optional per func param
-        constraints = constraints or {}  # noqa: VET112 — Optional per func param
-        extra = extra or {}  # noqa: VET112 — Optional per func param
+        completed_results = completed_results or {}
+        dependency_ids = dependency_ids or []
+        memory = memory or []
+        constraints = constraints or {}
+        extra = extra or {}
 
         # Gather outputs only for declared dependencies
         dep_outputs: list[dict[str, Any]] = []
@@ -159,7 +183,7 @@ class TaskContextManifest:
                 )
 
         logger.debug(
-            "[TaskContextManifest] Built manifest for task %s: %d deps, %d memory",
+            "[TaskContextManifest] Created manifest for task %s: %d deps, %d memory",
             task_id,
             len(dep_outputs),
             len(memory),
@@ -179,3 +203,4 @@ class TaskContextManifest:
 
 # Backward compatibility alias
 TaskManifestContext = TaskContextManifest
+TaskContextManifest.build_for_task = TaskContextManifest.create_for_task

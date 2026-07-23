@@ -17,20 +17,15 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from vetinari.learning.model_selector import ThompsonSamplingSelector, ThompsonTaskContext
 
+from vetinari.constants import STRATEGY_VALUE_SPACES
 from vetinari.exceptions import ConfigurationError
 
 logger = logging.getLogger(__name__)
 
+
 # -- Strategy value spaces (US-507: Meta-Learning Strategy Selection) -----
 # Kept here rather than in the class so they are accessible without importing
 # the full ThompsonSamplingSelector at sites that only need strategy config.
-STRATEGY_VALUE_SPACES: dict[str, list[str | int | float]] = {
-    "prompt_template_variant": ["standard", "concise", "detailed", "structured"],
-    "context_window_size": [2048, 4096, 8192, 16384],
-    "temperature": [0.0, 0.3, 0.5, 0.7, 1.0],
-    "decomposition_granularity": ["coarse", "medium", "fine"],
-}
-
 # Non-stationarity decay factor — slower decay because local models don't
 # change often, so older observations remain relevant longer.
 DECAY_FACTOR = 0.995
@@ -300,7 +295,7 @@ def select_model_contextual(
 
         bucket = task_context.to_bucket()
         bucket_key = f"ctx_{bucket}"
-        cost_per_model = cost_per_model or {}  # noqa: VET112 - empty fallback preserves optional request metadata contract
+        cost_per_model = cost_per_model or {}
         max_cost = max(cost_per_model.values(), default=1.0)
         if max_cost == 0.0:
             max_cost = 1.0  # Avoid division by zero in cost normalization

@@ -8,6 +8,7 @@
    * @prop {object|null} project - Current project data with progress info.
    */
   import { percent, duration } from '$lib/utils/format.js';
+  import { asArray, clampPercent } from '$lib/utils/safe.js';
 
   let { project = null } = $props();
 
@@ -18,15 +19,13 @@
     { id: 'complete', label: 'Complete', icon: 'fas fa-check' },
   ];
 
-  // The backend project response exposes: id, name, goal, config, conversation,
-  // tasks.  It does NOT expose progress, stage, or eta_ms.  We derive what we
-  // can from fields that ARE present so the rail stays accurate rather than
-  // rendering stale optimistic values or NaN/undefined.
+  // The backend project response exposes explicit stage/progress/eta_ms fields
+  // for current projects. We still derive fallbacks from tasks/status so older
+  // cached payloads do not render stale optimistic values or NaN/undefined.
   //
-  // stage  — inferred from project.config.status (backend field) or project.status.
-  // progress — computed from tasks array when available; falls back to null so
-  //            the progress bar is hidden rather than showing 0% incorrectly.
-  // eta_ms  — not available from backend; always null (ETA row hidden).
+  // stage - explicit backend field or inferred from project.config.status.
+  // progress - explicit backend field or computed from tasks when available.
+  // eta_ms - explicit backend field; null hides the ETA row.
 
   /** Map backend status strings onto the STAGES ids. */
   function statusToStage(status) {
@@ -45,7 +44,7 @@
   // so stageIndex would always be -1 and the progress bar would receive a function
   // instead of a number.
   let currentStage = $derived.by(() => {
-    // Prefer an explicit stage field if the backend ever starts returning one.
+    // Prefer the explicit project stage returned by the backend.
     if (project?.stage) return project.stage;
     // Derive from status fields that ARE in the backend payload.
     const status = project?.config?.status ?? project?.status ?? null;
@@ -53,11 +52,13 @@
   });
 
   let progress = $derived.by(() => {
-    // Prefer an explicit progress field if backend returns one in the future.
-    if (typeof project?.progress === 'number') return project.progress;
+    // Prefer the explicit project progress returned by the backend.
+    if (typeof project?.progress === 'number') {
+      return clampPercent(project.progress, null);
+    }
     // Derive from tasks array: completed / total.
-    const tasks = project?.tasks;
-    if (Array.isArray(tasks) && tasks.length > 0) {
+    const tasks = asArray(project?.tasks);
+    if (tasks.length > 0) {
       const done = tasks.filter(
         (t) => t.status === 'completed' || t.status === 'complete',
       ).length;
@@ -67,7 +68,16 @@
     return null;
   });
 
-  // ETA is not part of the backend payload — never show it.
+  let activeTask = $derived.by(() => {
+    const tasks = asArray(project?.tasks);
+    if (tasks.length === 0) return null;
+    return (
+      tasks.find((task) => task.status === 'running' || task.status === 'in_progress') ??
+      tasks.find((task) => task.status === 'pending' || task.status === 'planned') ??
+      tasks[tasks.length - 1]
+    );
+  });
+
   let eta = $derived(project?.eta_ms ?? null);
 
   let stageIndex = $derived(
@@ -119,17 +129,23 @@
             class:complete={progress >= 100}
           ></div>
         </div>
-        <div class="progress-meta">
-          <span>{percent(progress, 0)}</span>
-          {#if eta}
-            <span>ETA: {duration(eta)}</span>
+      <div class="progress-meta">
+        <span>{percent(progress, 0)}</span>
+        {#if activeTask}
+          <span>{activeTask.task_index ?? '?'} / {activeTask.total_tasks ?? project?.tasks?.length ?? '?'}: {activeTask.description ?? activeTask.id}</span>
+        {/if}
+        {#if eta}
+          <span>ETA: {duration(eta)}</span>
           {/if}
         </div>
       </div>
     {:else}
-      <!-- Backend does not yet expose progress — show a neutral running indicator. -->
+      <!-- No reliable progress value is available yet. -->
       <div class="progress-meta">
         <span class="progress-unknown">Running</span>
+        {#if activeTask}
+          <span>{activeTask.task_index ?? '?'} / {activeTask.total_tasks ?? project?.tasks?.length ?? '?'}: {activeTask.description ?? activeTask.id}</span>
+        {/if}
       </div>
     {/if}
   </div>

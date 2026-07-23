@@ -56,7 +56,9 @@ class VerificationSummary:
     """Aggregated outcome of running the verification pipeline on worker output.
 
     Attributes:
-        passed: True when no check returned FAILED status.
+        passed: True only when verification can be accepted without rework.
+            Warning-bearing summaries are real verifier output, but they are
+            not accepted as passed.
         error_count: Total number of error-severity issues across all checks.
         warning_count: Total number of warning-severity issues across all checks.
         results: Per-check VerificationResult keyed by check name.
@@ -71,6 +73,16 @@ class VerificationSummary:
 
     def __repr__(self) -> str:
         return "VerificationSummary(...)"
+
+    @property
+    def user_recommendation(self) -> str:
+        """Human-readable disposition for UI and CLI surfaces."""
+        labels = {
+            "accept": "Accept output",
+            "rework": "Rework output before continuing",
+            "reject": "Reject output and inspect verifier errors",
+        }
+        return labels.get(self.recommendation, "Inspect verification result before continuing")
 
 
 def run_stage_gate(stage: str, artifacts: dict[str, Any]) -> StageGateResult:
@@ -114,10 +126,15 @@ def run_stage_gate(stage: str, artifacts: dict[str, Any]) -> StageGateResult:
     if gate_results:
         avg_score = sum(gr.score for gr in gate_results) / len(gate_results)
     else:
-        avg_score = 1.0
+        avg_score = 0.0
 
     failed_names = [gr.gate_name for gr in gate_results if gr.result == GateResult.FAILED]
-    if passed:
+    if not gate_results:
+        passed = False
+        should_rework = True
+        failed_names = [f"no_gates_configured:{stage}"]
+        summary = f"No quality gates ran for stage '{stage}'"
+    elif passed:
         summary = f"All quality gates passed for stage '{stage}'"
     else:
         summary = f"Quality gate(s) failed for stage '{stage}': {', '.join(failed_names)}"
@@ -130,26 +147,7 @@ def run_stage_gate(stage: str, artifacts: dict[str, Any]) -> StageGateResult:
         avg_score,
     )
 
-    try:
-        from vetinari.events import QualityGateResult as QualityGateResultEvent
-        from vetinari.events import get_event_bus
-
-        bus = get_event_bus()
-        bus.publish(
-            QualityGateResultEvent(
-                event_type="QualityGateResult",
-                timestamp=time.time(),
-                task_id=stage,
-                passed=passed,
-                score=avg_score,
-                issues=failed_names,
-            )
-        )
-    except Exception:
-        logger.warning(
-            "Could not emit QualityGateResult event for stage '%s' — EventBus unavailable",
-            stage,
-        )
+    _publish_stage_gate_result(stage, passed, avg_score, failed_names)
 
     return StageGateResult(
         passed=passed,
@@ -157,6 +155,25 @@ def run_stage_gate(stage: str, artifacts: dict[str, Any]) -> StageGateResult:
         gate_results=gate_results,
         summary=summary,
     )
+
+
+def _publish_stage_gate_result(stage: str, passed: bool, score: float, failed_names: list[str]) -> None:
+    try:
+        from vetinari.events import QualityGateResult as QualityGateResultEvent
+        from vetinari.events import get_event_bus
+
+        get_event_bus().publish(
+            QualityGateResultEvent(
+                event_type="QualityGateResult",
+                timestamp=time.time(),
+                task_id=stage,
+                passed=passed,
+                score=score,
+                issues=failed_names,
+            )
+        )
+    except Exception:
+        logger.warning("Could not emit QualityGateResult event for stage '%s'; EventBus unavailable", stage)
 
 
 def verify_worker_output(
@@ -170,10 +187,10 @@ def verify_worker_output(
     level the singleton is still used — callers that need strict isolation
     should construct a VerificationPipeline directly.
 
-    The recommendation is derived from error and warning counts:
-    - "reject"  — one or more errors (FAILED checks)
-    - "rework"  — warnings only (WARNING checks, no FAILED)
-    - "accept"  — all checks passed or skipped
+    The recommendation is derived from error, warning, and evidence counts:
+    - "reject" when one or more errors occur, or no check produced real output
+    - "rework" when warnings occur without FAILED checks
+    - "accept" when at least one check passes with no failures or warnings
 
     Args:
         content: The string output produced by the Worker agent (code,
@@ -192,13 +209,17 @@ def verify_worker_output(
     error_count = sum(r.error_count for r in results.values())
     warning_count = sum(r.warning_count for r in results.values())
     has_failure = any(r.status == VerificationStatus.FAILED for r in results.values())
+    has_warning = warning_count > 0 or any(r.status == VerificationStatus.WARNING for r in results.values())
+    has_positive_evidence = any(r.status == VerificationStatus.PASSED for r in results.values())
 
-    passed = not has_failure
+    passed = not has_failure and error_count == 0 and not has_warning and has_positive_evidence
 
     if has_failure or error_count > 0:
         recommendation = "reject"
-    elif warning_count > 0:
+    elif has_warning:
         recommendation = "rework"
+    elif not has_positive_evidence:
+        recommendation = "reject"
     else:
         recommendation = "accept"
 

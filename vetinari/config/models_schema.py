@@ -10,14 +10,15 @@ from __future__ import annotations
 import functools
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from vetinari.exceptions import ConfigurationError
 
 logger = logging.getLogger(__name__)
+
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -68,7 +69,7 @@ class HardwareConfig(BaseModel):
 
 
 class LocalModelEntry(BaseModel):
-    """A single local model definition (llama-cpp-python / Ollama).
+    """A single local model definition (llama-cpp-python or server backend metadata).
 
     Attributes:
         model_id: Unique identifier used in API calls.
@@ -137,6 +138,16 @@ class CloudModelEntry(BaseModel):
     preferred_for: list[str] = Field(default_factory=list)
 
 
+CloudEgressMode = Literal["local_only", "local_first_with_fallback", "explicit_cloud", "explicit_opt_in_only"]
+CloudFallbackTrigger = Literal[
+    "disabled",
+    "local_unavailable",
+    "explicit_request",
+    "policy_approved",
+    "explicit_operator_override",
+]
+
+
 class RoutingPolicy(BaseModel):
     """Model routing policy controlling provider preference and cost caps.
 
@@ -149,6 +160,11 @@ class RoutingPolicy(BaseModel):
         preferred_providers: Ordered list of provider slugs by priority.
         allow_cloud_fallback: Whether cloud escalation is allowed when local fails.
         cloud_fallback_trigger: Condition that triggers the cloud fallback.
+        cloud_egress_mode: Product-level cloud egress policy. ``local_only``
+            means cloud routing is disabled, ``local_first_with_fallback`` means
+            local models are preferred and cloud is limited to the configured
+            fallback trigger, and ``explicit_cloud`` means callers must
+            intentionally select cloud.
     """
 
     local_first: bool = True
@@ -157,8 +173,28 @@ class RoutingPolicy(BaseModel):
     cost_weight: float = Field(default=0.3, ge=0)
     max_cost_per_1k_tokens: float | None = None
     preferred_providers: list[str] = Field(default_factory=list)
-    allow_cloud_fallback: bool = True
-    cloud_fallback_trigger: str = "local_unavailable"
+    allow_cloud_fallback: bool = False
+    cloud_fallback_trigger: CloudFallbackTrigger = "disabled"
+    cloud_egress_mode: CloudEgressMode = "local_only"
+
+    @model_validator(mode="after")
+    def validate_cloud_egress_contract(self) -> RoutingPolicy:
+        """Reject contradictory cloud-egress settings.
+
+        Returns:
+            The validated routing policy when cloud-egress settings are consistent.
+
+        Raises:
+            ValueError: If fallback trigger, fallback enablement, and egress mode
+                describe contradictory routing behavior.
+        """
+        if not self.allow_cloud_fallback and self.cloud_fallback_trigger != "disabled":
+            raise ValueError("cloud_fallback_trigger must be 'disabled' when allow_cloud_fallback is false")
+        if self.cloud_egress_mode == "local_only" and self.allow_cloud_fallback:
+            raise ValueError("local_only cloud_egress_mode cannot allow cloud fallback")
+        if self.cloud_egress_mode == "local_only" and self.cloud_fallback_trigger != "disabled":
+            raise ValueError("local_only cloud_egress_mode requires cloud_fallback_trigger='disabled'")
+        return self
 
 
 class ModelsConfig(BaseModel):

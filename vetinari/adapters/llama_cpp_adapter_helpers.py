@@ -8,17 +8,21 @@ import json
 import logging
 import threading
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from vetinari.adapters.base import InferenceRequest
 from vetinari.adapters.grammar_library import get_grammar_for_task_type, validate_grammar
 from vetinari.adapters.llama_cpp_model_info import _JSON_RESPONSE_FORMAT
-from vetinari.models.chat_templates import TemplateValidation, validate_template
+
+if TYPE_CHECKING:
+    from vetinari.models.chat_templates import TemplateValidation
 
 logger = logging.getLogger(__name__)
 
+
 SYSTEM_PROMPT_BOUNDARY = "<<<CONTEXT_BOUNDARY>>>"
 ADAPTER_CACHE_VERSION = "llama_cpp_adapter:v2"
+_ARTIFACT_HASH_CACHE_MAX = 128
 
 _ARTIFACT_HASH_CACHE: dict[tuple[str, int, int], str] = {}
 _ARTIFACT_HASH_LOCK = threading.Lock()
@@ -41,8 +45,17 @@ def _artifact_sha256(path: Path) -> str:
     value = digest.hexdigest()
 
     with _ARTIFACT_HASH_LOCK:
+        if len(_ARTIFACT_HASH_CACHE) >= _ARTIFACT_HASH_CACHE_MAX:
+            _ARTIFACT_HASH_CACHE.pop(next(iter(_ARTIFACT_HASH_CACHE)))
         _ARTIFACT_HASH_CACHE[cache_key] = value
     return value
+
+
+def _text_ref(text: str) -> str:
+    """Return a non-reversible reference for prompt/cache identity text."""
+    if not text:
+        return ""
+    return f"sha256:{hashlib.sha256(text.encode('utf-8')).hexdigest()}:len:{len(text)}"
 
 
 def _semantic_cache_identity(
@@ -53,7 +66,6 @@ def _semantic_cache_identity(
     resolution_outcome: str,
 ) -> tuple[str, str]:
     """Build semantic-cache isolation keys from output-affecting identity."""
-    artifact_path = str(model_path.resolve())
     artifact_hash = _artifact_sha256(model_path)
     grammar = request.grammar
     if grammar is None and request.task_type:
@@ -63,7 +75,7 @@ def _semantic_cache_identity(
 
     sampler_identity = {
         "adapter_version": ADAPTER_CACHE_VERSION,
-        "artifact_path": artifact_path,
+        "artifact_ref": f"sha256:{artifact_hash}",
         "artifact_sha256": artifact_hash,
         "fallback_outcome": resolution_outcome,
         "grammar": grammar,
@@ -82,7 +94,7 @@ def _semantic_cache_identity(
         "response_format": request.response_format,
         "seed": request.seed,
         "stop_sequences": request.stop_sequences,
-        "system_prompt": request.system_prompt or "",
+        "system_prompt_ref": _text_ref(request.system_prompt or ""),
         "task_type": request.task_type,
         "temperature": request.temperature,
         "template": request.metadata.get("chat_template") or request.metadata.get("template"),
@@ -191,6 +203,8 @@ def _validate_loaded_chat_template(model_id: str, llm: Any) -> TemplateValidatio
     embedded_template = _extract_embedded_chat_template(llm)
     if embedded_template is None:
         return None
+    from vetinari.models.chat_templates import validate_template
+
     _template, validation = validate_template(model_id, embedded_template)
     return validation
 

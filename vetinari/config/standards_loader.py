@@ -18,11 +18,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-import yaml
-
+from vetinari.config.standards_loader_yaml import StandardsYamlMixin
 from vetinari.types import AgentType
 
 logger = logging.getLogger(__name__)
+
 
 # ── Constants ──────────────────────────────────────────────────────────
 
@@ -183,7 +183,7 @@ def _compile_deny_pattern(raw_pattern: str) -> re.Pattern[str]:
 # ── StandardsLoader ────────────────────────────────────────────────────
 
 
-class StandardsLoader:
+class StandardsLoader(StandardsYamlMixin):
     """Loads and caches standards from vetinari/config/standards/.
 
     Thread-safe singleton with mtime-based cache invalidation.
@@ -229,49 +229,6 @@ class StandardsLoader:
         with self._lock:
             self._file_cache[filename] = (mtime, content)
         return content
-
-    def _read_yaml(self, filename: str) -> dict[str, Any]:
-        """Read and parse a YAML file with mtime caching.
-
-        Crash-safe: if the file is absent or unreadable (``OSError``), logs a
-        warning and returns an empty dict so callers can proceed with defaults
-        rather than propagating an unrecoverable error at prompt-build time.
-
-        Args:
-            filename: Name of the YAML file in the standards directory.
-
-        Returns:
-            Parsed YAML content as a dictionary, or ``{}`` when the file is
-            absent or cannot be read due to an OS-level error.
-        """
-        filepath = self._dir / filename
-        try:
-            mtime = filepath.stat().st_mtime
-        except OSError:
-            logger.warning(
-                "Standards YAML file not found or unreadable: %s — proceeding with empty config",
-                filepath,
-            )
-            return {}
-
-        with self._lock:
-            cached = self._yaml_cache.get(filename)
-            if cached and cached[0] == mtime:
-                return cached[1]
-
-        try:
-            content = filepath.read_text(encoding="utf-8")
-        except OSError:
-            logger.warning(
-                "Could not read standards YAML file %s — proceeding with empty config",
-                filepath,
-            )
-            return {}
-
-        parsed = yaml.safe_load(content) or {}
-        with self._lock:
-            self._yaml_cache[filename] = (mtime, parsed)
-        return parsed
 
     def _parse_sections(self, filename: str) -> dict[str, str]:
         """Parse a markdown file into sections keyed by normalized header.
@@ -432,8 +389,13 @@ class StandardsLoader:
                         "description": pattern_def.get("description", f"Deny pattern matched: {raw_pattern}"),
                         "match": match.group(0)[:80],
                     })
-            except re.error:
-                logger.warning("Invalid deny pattern regex: %s", raw_pattern)
+            except re.error as exc:
+                findings.append({
+                    "pattern": raw_pattern,
+                    "severity": "high",
+                    "description": f"Invalid deny pattern regex: {exc}",
+                    "match": "",
+                })
         return findings
 
     def get_quality_criteria(self, agent_type: str, mode: str) -> str:
@@ -499,6 +461,10 @@ class StandardsLoader:
 
         Returns:
             Formatted string of relevant standard sections.
+
+        Raises:
+            KeyError: If the relevance map selects no standards sections that
+                are present in the loaded standards document.
         """
         # Look up relevant sections
         section_keys = CONTEXT_RELEVANCE.get(
@@ -513,10 +479,7 @@ class StandardsLoader:
         ]
 
         if not parts:
-            # Fallback: at least include core principles
-            core = sections.get("core_principles", "")
-            if core:
-                parts.append(f"## Core Principles\n\n{core}")
+            raise KeyError(f"no standards sections available for agent_type={agent_type!r} mode={mode!r}")
 
         return "\n\n".join(parts)
 

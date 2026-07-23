@@ -5,15 +5,42 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from vetinari.constants import get_user_dir
+from vetinari.learning.atomic_writers import write_json_atomic
+from vetinari.privacy.envelope import PRIVACY_ENVELOPE_KEY, extract_privacy_envelope, privacy_receipt
+from vetinari.security.redaction import redact_text, redact_value
 from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
+
+
+class PlanCachePrivacyError(ValueError):
+    """Raised when persisted plan-cache state lacks a valid privacy receipt."""
+
+
+def _plan_privacy_receipt(goal_hash: str) -> dict[str, Any]:
+    return privacy_receipt(
+        privacy_class="operational",
+        retention_days=30,
+        source="plan_cache",
+        erasure_token=f"plan_cache:{goal_hash}",
+    )
+
+
+def _validate_plan_privacy_receipt(envelope: Any, *, context: str) -> dict[str, Any]:
+    if not isinstance(envelope, dict):
+        raise PlanCachePrivacyError(f"{context} missing privacy envelope")
+    try:
+        return extract_privacy_envelope({PRIVACY_ENVELOPE_KEY: envelope})
+    except Exception as exc:
+        raise PlanCachePrivacyError(f"{context} has invalid privacy envelope: {exc}") from exc
 
 
 @dataclass
@@ -27,6 +54,7 @@ class CachedPlan:
     hit_count: int = 0
     last_hit: float = 0.0
     quality_score: float = 0.0
+    privacy_envelope: dict[str, Any] = field(default_factory=lambda: _plan_privacy_receipt("unknown"))
 
     def __repr__(self) -> str:
         """Show key identifying fields for debugging."""
@@ -59,15 +87,23 @@ class PlanCache:
     Uses keyword overlap for similarity matching (no embedding model needed).
     """
 
-    DEFAULT_CACHE_DIR = ".vetinari/plan_cache"
+    DEFAULT_CACHE_DIR = "plan_cache"
     MAX_CACHE_SIZE = 100
     DEFAULT_THRESHOLD = 0.6
     DEFAULT_MAX_AGE_DAYS = 30
 
     def __init__(self, cache_dir: str | None = None):
-        self._cache_dir = Path(cache_dir or self.DEFAULT_CACHE_DIR)
+        self._cache_dir = self._resolve_cache_dir(cache_dir)
         self._cache: dict[str, CachedPlan] = {}
         self._loaded = False
+
+    @classmethod
+    def _resolve_cache_dir(cls, cache_dir: str | None = None) -> Path:
+        if cache_dir:
+            return Path(cache_dir)
+        if override := os.environ.get("VETINARI_PLAN_CACHE_DIR"):
+            return Path(override)
+        return get_user_dir() / cls.DEFAULT_CACHE_DIR
 
     def _ensure_loaded(self):
         if not self._loaded:
@@ -79,22 +115,32 @@ class PlanCache:
         if cache_file.exists():
             try:
                 data = json.loads(cache_file.read_text(encoding="utf-8"))
+                if not isinstance(data, list):
+                    raise PlanCachePrivacyError("plan cache root must be a list")
                 for entry in data:
+                    if not isinstance(entry, dict):
+                        raise PlanCachePrivacyError("plan cache entry must be an object")
+                    _validate_plan_privacy_receipt(
+                        entry.get("privacy_envelope"),
+                        context=f"plan cache entry {entry.get('goal_hash', '<unknown>')}",
+                    )
                     plan = CachedPlan.from_dict(entry)
                     self._cache[plan.goal_hash] = plan
             except Exception as e:
-                logger.warning("Plan cache load error: %s", e)
+                raise PlanCachePrivacyError(f"Plan cache load error: {e}") from e
 
     def _save_cache(self):
-        try:
-            self._cache_dir.mkdir(parents=True, exist_ok=True)
-            cache_file = self._cache_dir / "plans.json"
-            data = [p.to_dict() for p in self._cache.values()]
-            cache_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        except Exception as e:
-            logger.warning("Plan cache save error: %s", e)
+        cache_file = self._cache_dir / "plans.json"
+        data = [p.to_dict() for p in self._cache.values()]
+        for entry in data:
+            _validate_plan_privacy_receipt(
+                entry.get("privacy_envelope"),
+                context=f"plan cache entry {entry.get('goal_hash', '<unknown>')}",
+            )
+        write_json_atomic(cache_file, data)
 
-    def _goal_hash(self, goal: str) -> str:
+    @staticmethod
+    def _goal_hash(goal: str) -> str:
         normalized = " ".join(goal.lower().split())
         return hashlib.sha256(normalized.encode()).hexdigest()[:16]
 
@@ -164,6 +210,16 @@ class PlanCache:
         union = kw_a | kw_b
         return len(intersection) / len(union) if union else 0.0
 
+    def _evict_expired_loaded(self, older_than_days: int | None = None) -> int:
+        older_than_days = older_than_days or self.DEFAULT_MAX_AGE_DAYS
+        cutoff = time.time() - (older_than_days * 86400)
+        expired = [goal_hash for goal_hash, plan in self._cache.items() if plan.created_at < cutoff]
+        for goal_hash in expired:
+            del self._cache[goal_hash]
+        if expired:
+            self._save_cache()
+        return len(expired)
+
     def find_similar(self, goal: str, threshold: float | None = None) -> CachedPlan | None:
         """Find a cached plan similar to the given goal.
 
@@ -176,11 +232,15 @@ class PlanCache:
         """
         self._ensure_loaded()
         threshold = threshold or self.DEFAULT_THRESHOLD
+        self._evict_expired_loaded()
 
         # Exact match first
         goal_hash = self._goal_hash(goal)
         if goal_hash in self._cache:
             plan = self._cache[goal_hash]
+            if plan.quality_score <= 0:
+                logger.info("Plan cache exact hit rejected because quality_score=%.3f", plan.quality_score)
+                return None
             plan.hit_count += 1
             plan.last_hit = time.time()
             return plan
@@ -190,6 +250,8 @@ class PlanCache:
         best_score = 0.0
 
         for plan in self._cache.values():
+            if plan.quality_score <= 0:
+                continue
             score = self._similarity(goal, plan.goal)
             if score > best_score and score >= threshold:
                 best_score = score
@@ -214,11 +276,12 @@ class PlanCache:
 
         goal_hash = self._goal_hash(goal)
         self._cache[goal_hash] = CachedPlan(
-            goal=goal,
+            goal=redact_text(goal),
             goal_hash=goal_hash,
-            plan_data=plan_data,
+            plan_data=redact_value(plan_data),
             created_at=time.time(),
             quality_score=quality_score,
+            privacy_envelope=_plan_privacy_receipt(goal_hash),
         )
 
         # Evict oldest if over limit
@@ -235,17 +298,7 @@ class PlanCache:
             Number of cache entries that were expired and deleted.
         """
         self._ensure_loaded()
-        older_than_days = older_than_days or self.DEFAULT_MAX_AGE_DAYS
-        cutoff = time.time() - (older_than_days * 86400)
-
-        to_remove = [k for k, v in self._cache.items() if v.created_at < cutoff]
-        for k in to_remove:
-            del self._cache[k]
-
-        if to_remove:
-            self._save_cache()
-
-        return len(to_remove)
+        return self._evict_expired_loaded(older_than_days)
 
     def get_stats(self) -> dict[str, Any]:
         """Return aggregate statistics about the plan cache.

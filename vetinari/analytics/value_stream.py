@@ -10,14 +10,45 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
+from vetinari.errors import FailClosedError
+
 logger = logging.getLogger(__name__)
 
+# Maximum number of distinct execution_id buckets retained in memory before
+# the oldest are evicted.  Bounding this dict prevents unbounded growth in
+# long-running processes that accumulate per-execution timing events.
+MAX_VALUE_STREAM_EXECUTIONS: int = 1000
 
-@dataclass
+
+class _BoundedExecutionEvents(OrderedDict[str, list[dict[str, Any]]]):
+    """OrderedDict variant that evicts the oldest execution when capacity is hit.
+
+    Behaves like ``defaultdict(list)`` for the ``self[key].append(...)`` pattern
+    used by :py:meth:`ValueStreamAnalyzer.record_event`, but caps the number of
+    distinct execution buckets to :data:`MAX_VALUE_STREAM_EXECUTIONS`.
+    """
+
+    def __init__(self, capacity: int = MAX_VALUE_STREAM_EXECUTIONS) -> None:
+        super().__init__()
+        self._capacity = max(int(capacity), 1)
+
+    def __missing__(self, key: str) -> list[dict[str, Any]]:
+        value: list[dict[str, Any]] = []
+        self[key] = value
+        return value
+
+    def __setitem__(self, key: str, value: list[dict[str, Any]]) -> None:
+        super().__setitem__(key, value)
+        while len(self) > self._capacity:
+            evicted_key, _ = self.popitem(last=False)
+            logger.debug("ValueStreamAnalyzer evicted oldest execution %s for capacity", evicted_key)
+
+
+@dataclass(frozen=True, slots=True)
 class StationMetrics:
     """Metrics for a single pipeline station (agent).
 
@@ -100,7 +131,7 @@ class ValueStreamReport:
         }
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class AggregateReport:
     """Weekly aggregate value stream metrics.
 
@@ -146,6 +177,27 @@ class AggregateReport:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class _StationComputation:
+    """Intermediate station metrics plus totals used by value-stream reports."""
+
+    metrics: StationMetrics
+    processing_ms: float = 0.0
+    queue_ms: float = 0.0
+    rework_ms: float = 0.0
+    skipped: bool = False
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"metrics={self.metrics!r}, "
+            f"processing_ms={self.processing_ms!r}, "
+            f"queue_ms={self.queue_ms!r}, "
+            f"rework_ms={self.rework_ms!r}"
+            ")"
+        )
+
+
 class ValueStreamAnalyzer:
     """Computes value stream metrics from timing events.
 
@@ -154,7 +206,7 @@ class ValueStreamAnalyzer:
     """
 
     def __init__(self) -> None:
-        self._events: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self._events: _BoundedExecutionEvents = _BoundedExecutionEvents()
         self._lock = threading.Lock()
 
     def record_event(
@@ -180,8 +232,65 @@ class ValueStreamAnalyzer:
                 "agent_type": agent_type,
                 "timing_event": timing_event,
                 "timestamp": time.time(),
-                "metadata": metadata or {},  # noqa: VET112 - empty fallback preserves optional request metadata contract
+                "metadata": metadata or {},
             })
+
+    @staticmethod
+    def _group_events_by_agent(events: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        """Group sorted timing events by station/agent type."""
+        per_agent: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for evt in events:
+            per_agent[evt["agent_type"]].append(evt)
+        return per_agent
+
+    @staticmethod
+    def _compute_station_metrics(agent_type: str, agent_events: list[dict[str, Any]]) -> _StationComputation:
+        """Compute queue, processing, rework, and skip metrics for one station."""
+        queue_times: list[float] = []
+        proc_times: list[float] = []
+        rework_count = 0
+        tasks_processed = 0
+        total_rework_ms = 0.0
+        skipped = False
+        queued_at: dict[str, float] = {}
+        dispatched_at: dict[str, float] = {}
+        rework_start: dict[str, float] = {}
+
+        for evt in agent_events:
+            tid = evt["task_id"]
+            ts = evt["timestamp"]
+            timing_event = evt["timing_event"]
+            if timing_event == "task_queued":
+                queued_at.setdefault(tid, ts)
+            elif timing_event == "task_dispatched":
+                dispatched_at.setdefault(tid, ts)
+                if tid in queued_at:
+                    queue_times.append((ts - queued_at[tid]) * 1000.0)
+            elif timing_event == "task_completed":
+                tasks_processed += 1
+                if tid in dispatched_at:
+                    proc_times.append((ts - dispatched_at[tid]) * 1000.0)
+                if tid in rework_start:
+                    total_rework_ms += (ts - rework_start.pop(tid)) * 1000.0
+            elif timing_event in ("task_rejected", "task_rework"):
+                rework_count += 1
+                rework_start[tid] = ts
+            elif timing_event == "task_skipped":
+                skipped = True
+
+        return _StationComputation(
+            metrics=StationMetrics(
+                agent_type=agent_type,
+                queue_time_ms=sum(queue_times) / len(queue_times) if queue_times else 0.0,
+                processing_time_ms=sum(proc_times) / len(proc_times) if proc_times else 0.0,
+                rework_count=rework_count,
+                tasks_processed=tasks_processed,
+            ),
+            processing_ms=sum(proc_times),
+            queue_ms=sum(queue_times),
+            rework_ms=total_rework_ms,
+            skipped=skipped,
+        )
 
     def compute_metrics(self, execution_id: str) -> ValueStreamReport:
         """Compute value stream metrics for a single execution.
@@ -203,10 +312,7 @@ class ValueStreamAnalyzer:
 
         total_lead_time_ms = (events[-1]["timestamp"] - events[0]["timestamp"]) * 1000.0
 
-        # Group events by agent
-        per_agent: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for evt in events:
-            per_agent[evt["agent_type"]].append(evt)
+        per_agent = self._group_events_by_agent(events)
 
         stations: dict[str, StationMetrics] = {}
         total_processing = 0.0
@@ -216,58 +322,14 @@ class ValueStreamAnalyzer:
         skipped: set[str] = set()
 
         for agent_type, agent_events in per_agent.items():
-            queue_times: list[float] = []
-            proc_times: list[float] = []
-            rework_count = 0
-            tasks_processed = 0
-
-            # Match queued → dispatched → completed sequences.
-            # Keep earliest queued/dispatched time per task to avoid overwrite
-            # when the same task is re-queued or re-dispatched.
-            queued_at: dict[str, float] = {}
-            dispatched_at: dict[str, float] = {}
-            rework_start: dict[str, float] = {}
-
-            for evt in agent_events:
-                tid = evt["task_id"]
-                ts = evt["timestamp"]
-                te = evt["timing_event"]
-
-                if te == "task_queued":
-                    if tid not in queued_at:  # preserve earliest queued time
-                        queued_at[tid] = ts
-                elif te == "task_dispatched":
-                    if tid not in dispatched_at:  # preserve earliest dispatched time
-                        dispatched_at[tid] = ts
-                    if tid in queued_at:
-                        queue_times.append((ts - queued_at[tid]) * 1000.0)
-                elif te == "task_completed":
-                    tasks_processed += 1
-                    if tid in dispatched_at:
-                        proc_times.append((ts - dispatched_at[tid]) * 1000.0)
-                    # Close any open rework window
-                    if tid in rework_start:
-                        total_rework_ms += (ts - rework_start.pop(tid)) * 1000.0
-                elif te in ("task_rejected", "task_rework"):
-                    rework_count += 1
-                    rework_start[tid] = ts  # open rework window for actual duration
-                elif te == "task_skipped":
-                    skipped.add(agent_type)
-
-            avg_queue = sum(queue_times) / len(queue_times) if queue_times else 0.0
-            avg_proc = sum(proc_times) / len(proc_times) if proc_times else 0.0
-
-            stations[agent_type] = StationMetrics(
-                agent_type=agent_type,
-                queue_time_ms=avg_queue,
-                processing_time_ms=avg_proc,
-                rework_count=rework_count,
-                tasks_processed=tasks_processed,
-            )
-
-            total_processing += sum(proc_times)
-            total_queue += sum(queue_times)
-            total_rework += rework_count
+            station = self._compute_station_metrics(agent_type, agent_events)
+            stations[agent_type] = station.metrics
+            total_processing += station.processing_ms
+            total_queue += station.queue_ms
+            total_rework_ms += station.rework_ms
+            total_rework += station.metrics.rework_count
+            if station.skipped:
+                skipped.add(agent_type)
 
         value_add_ratio = total_processing / total_lead_time_ms if total_lead_time_ms > 0 else 0.0
         waste_time_ms = total_queue + total_rework_ms
@@ -280,6 +342,27 @@ class ValueStreamAnalyzer:
             waste_time_ms=waste_time_ms,
             stations_skipped=list(skipped),
         )
+
+    def compute_metrics_required(self, execution_id: str) -> ValueStreamReport:
+        """Compute metrics for an execution that must already have timing events.
+
+        Args:
+            execution_id: Identifier for the execution whose metrics are required.
+
+        Returns:
+            Value stream report containing at least one station metric.
+
+        Raises:
+            FailClosedError: If no timing events have been recorded for the execution.
+        """
+        report = self.compute_metrics(execution_id)
+        if not report.per_station:
+            raise FailClosedError(
+                "value_stream.execution_events",
+                f"no timing events recorded for execution '{execution_id}'",
+                recovery="record task timing events before requesting required metrics",
+            )
+        return report
 
     def get_aggregate_report(self, days: int = 7) -> AggregateReport:
         """Produce an aggregate report across all tracked executions.

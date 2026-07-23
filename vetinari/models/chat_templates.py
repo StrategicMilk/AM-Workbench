@@ -14,7 +14,11 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
+
+from vetinari.boundary_guards import route_enum_error
+from vetinari.security.redaction import redact_text
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +57,22 @@ _FALLBACK_TEMPLATES: dict[str, str] = {
         "{% endif %}"
         "{% endfor %}"
     ),
+    "phi": (
+        "{% for message in messages %}"
+        "<|im_start|>{{ message.role }}\n{{ message.content }}<|im_end|>\n"
+        "{% endfor %}"
+        "<|im_start|>assistant\n"
+    ),
+    "gemma": (
+        "{% for message in messages %}"
+        "{% if message.role == 'user' %}"
+        "<start_of_turn>user\n{{ message.content }}<end_of_turn>\n"
+        "{% elif message.role == 'assistant' %}"
+        "<start_of_turn>model\n{{ message.content }}<end_of_turn>\n"
+        "{% endif %}"
+        "{% endfor %}"
+        "<start_of_turn>model\n"
+    ),
     "default": (
         "{% for message in messages %}"
         "<|im_start|>{{ message.role }}\n{{ message.content }}<|im_end|>\n"
@@ -60,6 +80,17 @@ _FALLBACK_TEMPLATES: dict[str, str] = {
         "<|im_start|>assistant\n"
     ),
 }
+
+_TRUSTED_TEMPLATE_HASHES: dict[str, str] = {
+    hashlib.sha256(template.encode("utf-8")).hexdigest(): family for family, template in _FALLBACK_TEMPLATES.items()
+}
+
+
+class TrustEnum(str, Enum):
+    """Template trust decision."""
+
+    TRUSTED = "trusted"
+    UNTRUSTED = "untrusted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +119,14 @@ def _hash_template(template: str) -> str:
         Hex-encoded SHA-256 digest.
     """
     return hashlib.sha256(template.encode("utf-8")).hexdigest()
+
+
+def _resolve_template_trust(raw_validation_result: object) -> TrustEnum:
+    try:
+        return TrustEnum(raw_validation_result)
+    except ValueError:
+        logger.warning("Invalid template trust validation result: %r", raw_validation_result)
+        return route_enum_error(TrustEnum, raw_validation_result, TrustEnum.UNTRUSTED, "template_trust")
 
 
 def _detect_family(model_id: str) -> str:
@@ -134,13 +173,14 @@ def validate_template(
         Tuple of (template_to_use, TemplateValidation).
     """
     family = _detect_family(model_id)
+    safe_model_id = redact_text(model_id)
 
     if embedded_template is None:
         # No embedded template — use fallback
         fallback = _FALLBACK_TEMPLATES.get(family, _FALLBACK_TEMPLATES["default"])
         logger.info(
             "Model %s has no embedded chat template — using %s fallback",
-            model_id,
+            safe_model_id,
             family,
         )
         return fallback, TemplateValidation(
@@ -152,16 +192,14 @@ def validate_template(
 
     template_hash = _hash_template(embedded_template)
 
-    # For now, trust templates from known families (hash-based allowlist
-    # would require pre-computing hashes for every model version — too brittle).
-    # Instead, do a structural check: the template must contain standard tags.
-    is_structural_match = _is_structurally_safe(embedded_template)
-
-    if is_structural_match:
+    matched_family = _TRUSTED_TEMPLATE_HASHES.get(template_hash)
+    raw_validation_result = TrustEnum.TRUSTED.value if matched_family is not None else TrustEnum.UNTRUSTED.value
+    trust = _resolve_template_trust(raw_validation_result)
+    if trust is TrustEnum.TRUSTED:
         return embedded_template, TemplateValidation(
             is_trusted=True,
             template_hash=template_hash,
-            matched_family=family,
+            matched_family=matched_family,
             fallback_used=False,
         )
 
@@ -170,7 +208,7 @@ def validate_template(
     logger.warning(
         "Model %s has an untrusted chat template (hash=%s) — using %s fallback. "
         "The model's embedded template has been quarantined.",
-        model_id,
+        safe_model_id,
         template_hash[:16],
         family,
     )
@@ -180,52 +218,6 @@ def validate_template(
         matched_family=family,
         fallback_used=True,
     )
-
-
-def _is_structurally_safe(template: str) -> bool:
-    """Check if a template has standard Jinja2 structure without injection markers.
-
-    A safe template:
-    - Contains ``{% for`` or ``{% if`` (standard control flow)
-    - Contains ``message.role`` and ``message.content`` (standard variables)
-    - Does NOT contain ``import``, ``eval``, ``exec``, ``os.`` (injection markers)
-
-    Args:
-        template: The template string to validate.
-
-    Returns:
-        ``True`` if the template appears structurally safe.
-    """
-    lower = template.lower()
-
-    # Must contain standard Jinja2 patterns
-    has_control_flow = "{%" in template
-    has_role_ref = "message.role" in lower or "message['role']" in lower
-    has_content_ref = "message.content" in lower or "message['content']" in lower
-
-    # Must NOT contain dangerous patterns (includes Jinja2 SSTI payloads)
-    dangerous_patterns = (
-        "import ",
-        "eval(",
-        "exec(",
-        "os.",
-        "__",
-        "subprocess",
-        "open(",  # noqa: VET060 - template text intentionally keeps placeholder braces
-        "lipsum",
-        "cycler",
-        "joiner",
-        "namespace",
-        "globals",
-        "builtins",
-        "getattr",
-        "popen",
-        "_templatereference",
-        "self._",
-    )
-    has_dangerous = any(pat in lower for pat in dangerous_patterns)
-
-    return has_control_flow and (has_role_ref or has_content_ref) and not has_dangerous
 
 
 def _get_fallback_template(model_id: str) -> str:
@@ -249,5 +241,6 @@ def get_stats() -> dict[str, Any]:
     """
     return {
         "fallback_templates": len(_FALLBACK_TEMPLATES),
+        "trusted_template_hashes": len(_TRUSTED_TEMPLATE_HASHES),
         "supported_families": list(_FALLBACK_TEMPLATES.keys()),
     }

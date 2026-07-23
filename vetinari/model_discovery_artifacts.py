@@ -14,9 +14,11 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from vetinari.learning.atomic_writers import write_json_atomic
 from vetinari.model_discovery_types import RepoModelFile, RepoModelSnapshot, RepoSnapshotFile
 
 logger = logging.getLogger(__name__)
+
 
 _GGUF_DOWNLOAD_SUFFIXES = {".gguf"}  # Managed llama.cpp downloads are GGUF-only.
 _NATIVE_DOWNLOAD_FORMATS = {"safetensors", "awq", "gptq"}  # Native backend artifact families.
@@ -109,11 +111,7 @@ def _resolve_destination(models_dir: Path, filename: str) -> Path:
 def _resolve_snapshot_destination(native_root: Path, snapshot: RepoModelSnapshot) -> Path:
     root = native_root.resolve()
     destination = (
-        root
-        / snapshot.backend
-        / snapshot.model_format
-        / _repo_storage_name(snapshot.repo_id)
-        / snapshot.revision
+        root / snapshot.backend / snapshot.model_format / _repo_storage_name(snapshot.repo_id) / snapshot.revision
     ).resolve()
     if not destination.is_relative_to(root):
         raise ValueError("snapshot destination escapes the native models directory")
@@ -357,8 +355,7 @@ def _write_download_marker(path: Path, repo_file: RepoModelFile, digest: str) ->
         "size": path.stat().st_size,
         "completed_at": datetime.now(timezone.utc).isoformat(),
     }
-    marker_path = _marker_path(path)
-    marker_path.write_text(json.dumps(marker, indent=2, sort_keys=True), encoding="utf-8")
+    write_json_atomic(_marker_path(path), marker)
 
 
 def _write_snapshot_marker(path: Path, snapshot: RepoModelSnapshot, files: list[dict[str, Any]]) -> None:
@@ -368,7 +365,7 @@ def _write_snapshot_marker(path: Path, snapshot: RepoModelSnapshot, files: list[
         "files": files,
         "completed_at": datetime.now(timezone.utc).isoformat(),
     }
-    _snapshot_marker_path(path).write_text(json.dumps(marker, indent=2, sort_keys=True), encoding="utf-8")
+    write_json_atomic(_snapshot_marker_path(path), marker)
 
 
 def _read_download_marker(path: Path) -> dict[str, Any] | None:

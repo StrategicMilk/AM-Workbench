@@ -1,0 +1,365 @@
+- term: "Foreman"
+  short: "Planner role that decomposes goals into scoped tasks."
+  long: "Foreman is the planning role in AM Workbench's three-agent factory pipeline. It converts user goals into tasks, constraints, and evidence expectations before Worker execution begins."
+  see_also: ["Worker", "Inspector", "ForemanMode"]
+  category: "agent"
+- term: "Worker"
+  short: "Execution role that performs scoped implementation work."
+  long: "Worker is the implementation role in the Foreman to Worker to Inspector pipeline. It changes files, runs commands, and returns concrete evidence for Inspector review."
+  see_also: ["Foreman", "Inspector", "WorkerModeGroup"]
+  category: "agent"
+- term: "Inspector"
+  short: "Review role that verifies claims against evidence."
+  long: "Inspector checks whether work satisfies the request, plan, tests, and evidence contract. It turns verification results into pass or fail signals instead of accepting narration."
+  see_also: ["Foreman", "Worker", "InspectorMode"]
+  category: "agent"
+- term: "OutcomeSignal"
+  short: "Evidence-backed pass or fail result object."
+  long: "OutcomeSignal records whether a check passed, why it passed, and what evidence basis supports it. Many subsystems use it to avoid treating unsupported assertions as success."
+  see_also: ["VerificationResult", "ClaimsLedger", "WorkReceipt"]
+  category: "safety"
+- term: "ClaimsLedger"
+  short: "Append-only release claim and evidence ledger."
+  long: "ClaimsLedger records release claims with links to supporting evidence. Its verification path checks that recorded evidence exists and still matches expected hashes."
+  see_also: ["OutcomeSignal", "FSAClosureRecord", "WorkReceipt"]
+  category: "safety"
+- term: "FSAClosureRecord"
+  short: "Full-spectrum audit closure record."
+  long: "FSAClosureRecord captures the closure state for audit findings. It preserves remediation status, evidence links, and the decision trail for full-spectrum audit work."
+  see_also: ["ClaimsLedger", "VerificationResult", "ADR"]
+  category: "safety"
+- term: "ADR"
+  short: "Architecture decision record stored by the ADR system."
+  long: "ADR represents a durable architectural decision with status, category, consequences, and alternatives. AM Workbench uses ADRs to keep major design choices inspectable over time."
+  see_also: ["FSAClosureRecord", "PlanDecision", "ArchiveStore"]
+  category: "planning"
+- term: "RecycleStore"
+  short: "Safety store for reversible delete and recycle operations."
+  long: "RecycleStore keeps recoverable copies of deleted or replaced content. It supports safety workflows where destructive actions must remain reversible."
+  see_also: ["ArchiveStore", "RecyclePolicy", "ArchivePolicy"]
+  category: "safety"
+- term: "ArchiveStore"
+  short: "Lifecycle store for durable archived artifacts."
+  long: "ArchiveStore moves completed or retired artifacts into managed archive storage. It is paired with archive policy so retained state has predictable rules."
+  see_also: ["RecycleStore", "ArchivePolicy", "RecyclePolicy"]
+  category: "lifecycle"
+- term: "WorkReceipt"
+  short: "Structured record of agent work and outcome."
+  long: "WorkReceipt records who did the work, what was attempted, and the resulting OutcomeSignal. The UI and APIs use receipts to show real progress instead of synthetic status."
+  see_also: ["WorkReceiptStore", "OutcomeSignal", "EventBus"]
+  category: "planning"
+- term: "WorkReceiptStore"
+  short: "Repository-backed persistence for WorkReceipt records."
+  long: "WorkReceiptStore appends and reads WorkReceipt objects for projects and agent runs. It also supports attention and receipt APIs that surface blocked or completed work."
+  see_also: ["WorkReceipt", "EventBus", "ClaimsLedger"]
+  category: "planning"
+- term: "PlanReviewOutcome"
+  short: "Structured result from reviewing an execution plan."
+  long: "PlanReviewOutcome records whether a plan is approved, rejected, or needs revision. It carries citations, refusal reasons, and evidence for non-goal and override workflows."
+  see_also: ["PlanDecision", "RefusalReason", "NonGoal"]
+  category: "planning"
+- term: "PlanDecision"
+  short: "Enum for a plan review decision."
+  long: "PlanDecision names the allowed review outcomes for plan gates. It keeps approval, rejection, and revision states consistent across APIs and tests."
+  see_also: ["PlanReviewOutcome", "RefusalReason", "NonGoal"]
+  category: "planning"
+- term: "RefusalReason"
+  short: "Enum describing why a plan was refused."
+  long: "RefusalReason gives refusal decisions machine-readable categories. It helps route appeals and distinguish hard safety blocks from plans that merely need revision."
+  see_also: ["PlanReviewOutcome", "PlanDecision", "NonGoal"]
+  category: "safety"
+- term: "NonGoal"
+  short: "Explicit project constraint that a plan must not violate."
+  long: "NonGoal records work that is intentionally out of scope for a project. The planning review path checks proposed plans against non-goals before execution."
+  see_also: ["NonGoalStore", "PlanReviewOutcome", "RefusalReason"]
+  category: "planning"
+- term: "NonGoalStore"
+  short: "Persistence layer for project non-goal rules."
+  long: "NonGoalStore stores project-level non-goals and override appeal history. It backs the project non-goals API used by planning governance."
+  see_also: ["NonGoal", "PlanReviewOutcome", "PlanDecision"]
+  category: "planning"
+- term: "CapabilityMaturity"
+  short: "Promotion-readiness record for a model capability."
+  long: "CapabilityMaturity records observed quality, confidence, coverage, and promotion readiness for a model on a task profile. Promotion audits use it to decide whether a model can be trusted for stronger routing."
+  see_also: ["CapabilityMaturityStore", "TrainingLedgerEntry", "ModelSelection"]
+  category: "model"
+- term: "CapabilityMaturityStore"
+  short: "Store for model capability maturity records."
+  long: "CapabilityMaturityStore persists CapabilityMaturity entries and supports model lookup during promotion audits. It lets routing decisions use observed capability evidence instead of labels alone."
+  see_also: ["CapabilityMaturity", "TrainingLedgerEntry", "RouterModelInfo"]
+  category: "model"
+- term: "DraftPair"
+  short: "Main and draft model pairing for speculative decoding."
+  long: "DraftPair records a main model and draft model that can be evaluated together. AM Workbench uses draft-pair resolution to identify compatible acceleration pairs."
+  see_also: ["DraftPairResolver", "ModelSelection", "RouterModelInfo"]
+  category: "model"
+- term: "DraftPairResolver"
+  short: "Resolver that finds compatible draft-model pairs."
+  long: "DraftPairResolver evaluates available model metadata to produce DraftPair candidates. It supports model-management endpoints that display draft-pair compatibility."
+  see_also: ["DraftPair", "ModelSelection", "DynamicModelRouter"]
+  category: "model"
+- term: "ThompsonSamplingSelector"
+  short: "Adaptive selector that learns from model outcomes."
+  long: "ThompsonSamplingSelector uses Thompson sampling to choose among model arms for task patterns. Its updates let routing improve from observed quality without hardcoding winners."
+  see_also: ["DynamicModelRouter", "ModelSelection", "CapabilityMaturity"]
+  category: "model"
+- term: "ModelSelection"
+  short: "Typed result describing a chosen model route."
+  long: "ModelSelection captures the selected model, provider, routing reason, and supporting metadata. It is returned by router components after they score available candidates."
+  see_also: ["DynamicModelRouter", "RouterModelInfo", "ThompsonSamplingSelector"]
+  category: "model"
+- term: "DynamicModelRouter"
+  short: "Model router that scores and selects candidates dynamically."
+  long: "DynamicModelRouter combines model metadata, policy, and task context to choose models. It is one of the core runtime paths for adaptive local model selection."
+  see_also: ["ModelSelection", "RouterModelInfo", "ThompsonSamplingSelector"]
+  category: "model"
+- term: "RouterModelInfo"
+  short: "Model metadata record consumed by routers."
+  long: "RouterModelInfo normalizes model capabilities, context limits, costs, and provider details. Routers use it to compare candidates consistently."
+  see_also: ["DynamicModelRouter", "ModelSelection", "CapabilityMaturityStore"]
+  category: "model"
+- term: "InferenceConfigManager"
+  short: "Manager for effective inference parameters."
+  long: "InferenceConfigManager resolves runtime generation settings from profiles, task types, and tuning policy. Adapter preparation paths use it so inference options stay centralized."
+  see_also: ["InferenceProfile", "BudgetPolicy", "TokenBudget"]
+  category: "model"
+- term: "InferenceProfile"
+  short: "Named inference settings profile."
+  long: "InferenceProfile stores generation parameters such as temperature, top-p, context sizing, and backend preferences. Profiles keep model invocation settings reusable and inspectable."
+  see_also: ["InferenceConfigManager", "BudgetPolicy", "TokenOptimizer"]
+  category: "model"
+- term: "BudgetPolicy"
+  short: "Policy object for token and cost limits."
+  long: "BudgetPolicy sets constraints used when building model prompts and runtime parameters. It works with token budgeting so calls stay inside configured limits."
+  see_also: ["TokenBudget", "TokenOptimizer", "InferenceConfigManager"]
+  category: "model"
+- term: "TokenBudget"
+  short: "Calculated token allocation for a model call."
+  long: "TokenBudget records prompt, completion, reserve, and context limits for an invocation. It gives optimizers and routers a concrete budget to enforce."
+  see_also: ["TokenOptimizer", "BudgetPolicy", "InferenceProfile"]
+  category: "model"
+- term: "TokenOptimizer"
+  short: "Utility that trims prompts to fit token budgets."
+  long: "TokenOptimizer prioritizes and trims prompt segments so important context fits within model limits. It helps preserve high-value content under constrained contexts."
+  see_also: ["TokenBudget", "BudgetPolicy", "InferenceProfile"]
+  category: "model"
+- term: "TrainingLedgerEntry"
+  short: "Structured entry in the model training ledger."
+  long: "TrainingLedgerEntry records a training or promotion event with model id, task profile, metrics, and outcome. Promotion audits read these entries to evaluate readiness."
+  see_also: ["TrainingDataProvenance", "CapabilityMaturity", "OutcomeSignal"]
+  category: "training"
+- term: "TrainingDataProvenance"
+  short: "Source and lineage record for training data."
+  long: "TrainingDataProvenance tracks where training data came from and how it may be used. It supports auditability for local training and dataset synchronization."
+  see_also: ["TrainingLedgerEntry", "CapabilityMaturity", "ClaimsLedger"]
+  category: "training"
+- term: "EventBus"
+  short: "In-process event publish and subscribe system."
+  long: "EventBus delivers domain events across AM Workbench subsystems. Receipt stores, lifecycle components, and web streams use it to decouple producers from consumers."
+  see_also: ["WorkReceiptStore", "WorkReceipt", "AndonSystem"]
+  category: "infra"
+- term: "AndonSystem"
+  short: "Operational stop-signal system for workflow problems."
+  long: "AndonSystem captures warning, critical, and emergency signals that can pause or alert workflows. It gives orchestrators a shared way to react to quality or safety problems."
+  see_also: ["EventBus", "OutcomeSignal", "VerificationResult"]
+  category: "safety"
+- term: "MemoryEntry"
+  short: "Stored memory record used by memory APIs."
+  long: "MemoryEntry represents a persisted item in AM Workbench memory stores. Memory APIs and retrieval helpers use entries to return structured memory context."
+  see_also: ["EventBus", "SkillRegistry", "WorkReceipt"]
+  category: "infra"
+- term: "ArchivePolicy"
+  short: "Policy controlling archive retention and cleanup."
+  long: "ArchivePolicy defines how archived artifacts are retained and managed. It keeps lifecycle cleanup explicit instead of scattering retention decisions."
+  see_also: ["ArchiveStore", "RecyclePolicy", "RecycleStore"]
+  category: "lifecycle"
+- term: "RecyclePolicy"
+  short: "Policy controlling recycle-store retention."
+  long: "RecyclePolicy defines how long recoverable deleted content is retained. It complements ArchivePolicy for lifecycle-safe cleanup."
+  see_also: ["RecycleStore", "ArchivePolicy", "ArchiveStore"]
+  category: "lifecycle"
+- term: "SafetyDefaults"
+  short: "Central defaults for safety-related settings."
+  long: "SafetyDefaults collects baseline safety settings used by safety subsystems. It reduces drift by making defaults explicit and testable."
+  see_also: ["RecycleStore", "RefusalReason", "AndonSystem"]
+  category: "safety"
+- term: "WorkerMCPBridge"
+  short: "Bridge exposing worker capabilities through MCP."
+  long: "WorkerMCPBridge connects Worker-oriented operations to MCP tooling. It defines the boundary where external tools can reach worker functions."
+  see_also: ["Worker", "SkillRegistry", "MultiModeAgent"]
+  category: "infra"
+- term: "SkillRegistry"
+  short: "Registry for available agent skills."
+  long: "SkillRegistry indexes callable skill definitions for agent modes and workflows. It helps agents discover supported capabilities without hardcoded imports."
+  see_also: ["WorkerMCPBridge", "MultiModeAgent", "InspectorMode"]
+  category: "agent"
+- term: "MultiModeAgent"
+  short: "Base agent that supports multiple execution modes."
+  long: "MultiModeAgent provides shared behavior for agents that expose several modes. Foreman, Worker, and Inspector skills build on this pattern to route mode-specific behavior."
+  see_also: ["ForemanMode", "WorkerModeGroup", "InspectorMode"]
+  category: "agent"
+- term: "VerificationResult"
+  short: "Verification output from agent contract checks."
+  long: "VerificationResult carries pass/fail status, scores, and issues from verifier-style checks. It is a compact result type used alongside richer OutcomeSignal evidence."
+  see_also: ["OutcomeSignal", "Inspector", "AndonSystem"]
+  category: "safety"
+- term: "ForemanMode"
+  short: "Enum of supported Foreman planning modes."
+  long: "ForemanMode names the distinct planning behaviors exposed by the Foreman skill. It makes planning mode selection explicit at the skill boundary."
+  see_also: ["Foreman", "MultiModeAgent", "WorkerModeGroup"]
+  category: "agent"
+- term: "WorkerModeGroup"
+  short: "Enum grouping Worker execution modes."
+  long: "WorkerModeGroup categorizes Worker behaviors by execution style and responsibility. It supports routing worker work without relying on free-form strings."
+  see_also: ["Worker", "MultiModeAgent", "ForemanMode"]
+  category: "agent"
+- term: "InspectorMode"
+  short: "Enum of Inspector verification modes."
+  long: "InspectorMode names supported Inspector checks and review styles. It keeps verification routing consistent across skill calls and orchestration paths."
+  see_also: ["Inspector", "MultiModeAgent", "VerificationResult"]
+  category: "agent"
+- term: "KVStateCache"
+  short: "Key-value cache for model state reuse."
+  long: "KVStateCache stores reusable model state for compatible inference paths. It supports performance improvements where cached key-value state is safe to reuse."
+  see_also: ["ModelProfiler", "InferenceProfile", "TokenBudget"]
+  category: "model"
+- term: "ModelProfiler"
+  short: "Profiler that measures model runtime characteristics."
+  long: "ModelProfiler records model performance characteristics such as speed and resource use. Routers and operators use profiling data to understand candidate costs."
+  see_also: ["KVStateCache", "RouterModelInfo", "DynamicModelRouter"]
+  category: "model"
+- term: "TemplateValidation"
+  short: "Validation result for model chat templates."
+  long: "TemplateValidation records whether a model chat template is usable and why. Adapter helpers use it to surface template problems before inference fails later."
+  see_also: ["InferenceProfile", "RouterModelInfo", "VerificationResult"]
+  category: "model"
+- term: "AdversarialTestRunner"
+  short: "Runner for adversarial prompt and safety cases."
+  long: "AdversarialTestRunner loads adversarial test cases and records their results. It supports regression checks for prompt safety and robustness."
+  see_also: ["VerificationResult", "SafetyDefaults", "OutcomeSignal"]
+  category: "safety"
+- term: "ProtectedMutation"
+  short: "Decorator that guards lifecycle-fenced destructive operations."
+  long: "ProtectedMutation wraps functions that permanently delete, purge, clear, or reset data. It requires a ConfirmedIntent argument, retires the target via RecycleStore before acting, and emits a WorkReceipt for the audit trail. Missing or invalid intent fails closed."
+  see_also: ["RecycleStore", "WorkReceipt", "SafetyDefaults"]
+  category: "safety"
+- term: "MethodCard"
+  short: "Durable record of a discovered and measured behavior method."
+  long: "MethodCard stores when to use a method, when not to use it, expected cost, known failure modes, compatible task profiles, and measured performance deltas against a baseline. The Method Library view surfaces cards grouped by promotion status so operators can compare methods before promoting them."
+  see_also: ["MethodLibrary", "PromotionProposal", "MeasuredDelta"]
+  category: "workbench"
+- term: "MethodLibrary"
+  short: "Catalog of behavior methods discovered and measured by AM Workbench."
+  long: "MethodLibrary aggregates MethodCard records for a project and exposes them through the Method Library view. It tracks promotion status, measured performance deltas, and negative methods flagged as anti-patterns. Filter by kind or promotion status to focus on specific method categories."
+  see_also: ["MethodCard", "PromotionProposal", "NegativeMethod"]
+  category: "workbench"
+- term: "NegativeMethod"
+  short: "A measured method with consistently negative outcomes, flagged as an anti-pattern."
+  long: "NegativeMethod records a method that produced negative measured results and should not be applied. The Method Library view surfaces negative methods in a dedicated lane to prevent reuse."
+  see_also: ["MethodCard", "MethodLibrary", "MeasuredDelta"]
+  category: "workbench"
+- term: "MeasuredDelta"
+  short: "Quantified difference between a method's outcome and the baseline."
+  long: "MeasuredDelta records the metric name, baseline value, method value, numeric delta, and sign for a single measurement run. Method cards carry multiple deltas that together form the evidence basis for promotion decisions."
+  see_also: ["MethodCard", "PromotionProposal", "OutcomeSignal"]
+  category: "workbench"
+- term: "PromotionProposal"
+  short: "Pending request to promote a behavior method to the active method set."
+  long: "PromotionProposal is created when AM Workbench Inspector detects an improvement candidate that meets the promotion threshold. Approval uses first-match fail-closed semantics: the first chain member to decide controls the outcome and later members cannot override. A rejected proposal is final and cannot be re-opened."
+  see_also: ["PromotionInbox", "MethodCard", "Inspector"]
+  category: "workbench"
+- term: "PromotionInbox"
+  short: "UI view listing pending method promotion proposals for a project."
+  long: "PromotionInbox displays pending PromotionProposal records so operators can review, approve, or reject them. It enforces first-match fail-closed approval chain semantics — the first decision is final."
+  see_also: ["PromotionProposal", "MethodCard", "MethodLibrary"]
+  category: "workbench"
+- term: "DurableRun"
+  short: "A recoverable execution session with persistent checkpoint state."
+  long: "DurableRun is a run object whose progress is checkpointed so that AM Workbench can restart it after a crash or interruption. Mission Control surfaces durable runs with their recovery status and last heartbeat so operators can identify runs that need attention."
+  see_also: ["RunKernel", "RunTrace", "WorkReceipt"]
+  category: "workbench"
+- term: "RunKernel"
+  short: "Session kernel that manages the lifecycle of a single durable run."
+  long: "RunKernel orchestrates execution of a durable run, emitting heartbeats and persisting checkpoints so recovery can resume from the last safe state. The Foreman automatically restarts a kernel if two heartbeat cycles (60 seconds) pass without a signal."
+  see_also: ["DurableRun", "RunTrace", "WorkReceipt"]
+  category: "workbench"
+- term: "RunTrace"
+  short: "Structured event log capturing execution steps within a run."
+  long: "RunTrace records discrete execution events — tool calls, agent transitions, errors, decisions — for a single run. The Run Trace console streams these events in real time and persists them for post-run replay and debugging."
+  see_also: ["DurableRun", "RunKernel", "EventBus"]
+  category: "workbench"
+- term: "MachineProfile"
+  short: "Hardware snapshot describing the Workbench node's compute resources."
+  long: "MachineProfile captures GPU VRAM, RAM, CPU core count, and SSD capacity for the host running AM Workbench. The Resource Cockpit uses it to evaluate whether each configured model's memory requirements can be met."
+  see_also: ["HardwareDigitalTwin", "RuntimeAppliance", "ResourceCockpit"]
+  category: "infra"
+- term: "HardwareDigitalTwin"
+  short: "Runtime measurement of actual hardware availability versus model requirements."
+  long: "HardwareDigitalTwin continuously measures actual GPU VRAM, RAM, CPU, and SSD availability and compares them against the requirements of each configured model. It identifies the binding hardware bottleneck and powers the hardware-fit indicators in the Resource Cockpit."
+  see_also: ["MachineProfile", "RuntimeAppliance", "ResourceCockpit"]
+  category: "infra"
+- term: "RuntimeAppliance"
+  short: "Logical grouping of inference backends and their model allocations."
+  long: "RuntimeAppliance records which inference backends are active on the Workbench node and what models each backend has allocated. The Resource Cockpit surfaces this as service residency information alongside hardware-fit and scheduling data."
+  see_also: ["MachineProfile", "HardwareDigitalTwin", "SchedulerLane"]
+  category: "infra"
+- term: "SchedulerLane"
+  short: "Execution lane managed by the local workbench scheduler."
+  long: "SchedulerLane represents a named concurrency slot for routing and executing local inference jobs. The Local Runtime Setup view shows which lanes are ready to accept work after runtime probing completes."
+  see_also: ["RuntimeAppliance", "ResourceCockpit", "MachineProfile"]
+  category: "infra"
+- term: "ResourceCockpit"
+  short: "Dashboard showing GPU, RAM, CPU, SSD, queue, lease, and policy state."
+  long: "ResourceCockpit is the live hardware and scheduling dashboard for a Workbench node. It surfaces the hardware digital twin, storage tiering, service residency, active leases, queued jobs, and policy proposals so operators can tune concurrency and lease durations without restarting the Workbench."
+  see_also: ["MachineProfile", "HardwareDigitalTwin", "SchedulerLane"]
+  category: "workbench"
+- term: "ActiveLease"
+  short: "A currently held resource reservation for a running job."
+  long: "ActiveLease records which job holds a resource slot, when the lease expires, and what safe actions the operator can take. The Resource Cockpit lists active leases alongside their safe-action menus."
+  see_also: ["ResourceCockpit", "QueuedJob", "PolicyProposal"]
+  category: "infra"
+- term: "QueuedJob"
+  short: "A pending job waiting for a resource lease to become available."
+  long: "QueuedJob represents work that has been accepted but cannot start because all matching resource slots are occupied. The Resource Cockpit shows queued jobs alongside active leases so operators can understand backpressure."
+  see_also: ["ActiveLease", "SchedulerLane", "ResourceCockpit"]
+  category: "infra"
+- term: "PolicyProposal"
+  short: "Suggested change to concurrency limits or lease durations."
+  long: "PolicyProposal is a system-generated recommendation to adjust resource policy settings such as concurrency limits, lease durations, or priority weights. Operators review and approve proposals through the Resource Cockpit without restarting the Workbench."
+  see_also: ["ResourceCockpit", "ActiveLease", "MachineProfile"]
+  category: "infra"
+- term: "LocalRuntime"
+  short: "An inference backend running on the same machine as AM Workbench."
+  long: "LocalRuntime refers to inference services such as LM Studio, Jan, or Open WebUI running locally. The launcher probes each configured runtime endpoint at startup and reports reachability, discovered models, and latency. The Local Runtime Setup view surfaces this health information."
+  see_also: ["SchedulerLane", "RuntimeAppliance", "HardwareDigitalTwin"]
+  category: "infra"
+- term: "GatewayPolicy"
+  short: "Rules controlling which external APIs and model providers AM Workbench may contact."
+  long: "GatewayPolicy defines outbound access rules for cloud model providers, tool endpoints, and external APIs. The Gateway Policy Console lets operators manage policies without editing config files directly."
+  see_also: ["LocalRuntime", "SchedulerLane", "SafetyDefaults"]
+  category: "safety"
+- term: "CapabilityPack"
+  short: "A versioned bundle of skills and tool permissions for an agent."
+  long: "CapabilityPack groups related skills, MCP tool grants, and permission declarations into a deployable unit. Operators install and enable packs through the Capability Packs view; the Workbench activates only explicitly enabled packs."
+  see_also: ["SkillRegistry", "WorkerMCPBridge", "MultiModeAgent"]
+  category: "agent"
+- term: "AnnotationSession"
+  short: "A human-review session for labeling agent outputs or decisions."
+  long: "AnnotationSession groups annotation queue entries under a single review context so annotators can work through a batch consistently. Completed sessions feed labeling data back into training and quality workflows."
+  see_also: ["AnnotationQueueEntry", "TrainingLedgerEntry", "WorkReceipt"]
+  category: "training"
+- term: "AnnotationQueueEntry"
+  short: "A single item awaiting human review in an annotation queue."
+  long: "AnnotationQueueEntry holds an agent output or decision plus the context needed for a human annotator to label it. Entries are collected into AnnotationSessions and consumed by training data pipelines after labeling."
+  see_also: ["AnnotationSession", "TrainingDataProvenance", "TrainingLedgerEntry"]
+  category: "training"
+- term: "ContextEnrichment"
+  short: "The process of appending retrieved context to an agent prompt before inference."
+  long: "ContextEnrichment retrieves relevant memory entries, tool outputs, or document fragments and injects them into the prompt so the model has richer context without exceeding token limits. The Context Enrichment view shows which enrichment sources are active and their contribution to the prompt."
+  see_also: ["MemoryEntry", "TokenOptimizer", "InferenceProfile"]
+  category: "model"
+- term: "ToolOutputSavings"
+  short: "Reduction in prompt tokens achieved by compressing or caching tool outputs."
+  long: "ToolOutputSavings measures how much prompt space is recovered by truncating, summarizing, or caching repeated tool outputs. The Tool Output Savings view reports per-tool savings so operators can identify high-value compression targets."
+  see_also: ["TokenOptimizer", "TokenBudget", "ContextEnrichment"]
+  category: "model"

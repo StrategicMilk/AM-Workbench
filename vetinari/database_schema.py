@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS execution_state (
 
 -- Durable execution: task checkpoint state
 CREATE TABLE IF NOT EXISTS task_checkpoints (
-    task_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
     execution_id TEXT NOT NULL,
     agent_type TEXT NOT NULL DEFAULT '',
     mode TEXT NOT NULL DEFAULT '',
@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS task_checkpoints (
     started_at TEXT,
     completed_at TEXT,
     retry_count INTEGER DEFAULT 0,
+    PRIMARY KEY (execution_id, task_id),
     FOREIGN KEY (execution_id) REFERENCES execution_state(execution_id)
 );
 
@@ -81,8 +82,8 @@ CREATE TABLE IF NOT EXISTS episodes (
     model_id TEXT NOT NULL,
     prompt_hash TEXT NOT NULL,
     quality_score REAL NOT NULL,
-    tokens_used INTEGER NOT NULL DEFAULT 0,
-    latency_ms REAL NOT NULL DEFAULT 0.0,
+    tokens_used INTEGER NOT NULL CHECK (tokens_used > 0),
+    latency_ms REAL NOT NULL CHECK (latency_ms > 0),
     success INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -329,6 +330,8 @@ CREATE INDEX IF NOT EXISTS idx_ep_score ON memory_episodes(quality_score);
 CREATE TABLE IF NOT EXISTS episode_embeddings (
     episode_id TEXT PRIMARY KEY,
     embedding_blob BLOB NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    dimensions INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (episode_id) REFERENCES memory_episodes(episode_id) ON DELETE CASCADE
 );
 

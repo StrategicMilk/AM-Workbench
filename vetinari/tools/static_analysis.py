@@ -79,38 +79,44 @@ def run_static_analysis(target: Path | str, timeout: int = GREP_TIMEOUT * 3) -> 
     """Run the full 4-stage static analysis pipeline.
 
     Args:
-        target: File or directory to analyze.
-        timeout: Per-tool timeout in seconds.
+        target: Target object or path updated by the operation.
+        timeout: Timeout value controlling how long the operation may wait.
 
     Returns:
-        AnalysisResult with findings and gate status.
+        Value produced for the caller.
     """
     target = Path(target)
     if not target.exists():
         return AnalysisResult(error=f"Target does not exist: {target}")
     result = AnalysisResult()
-
-    # Gate 1: ast.parse
     py_files = list(target.rglob("*.py")) if target.is_dir() else [target]
-    for f in py_files[:200]:
-        try:
-            ast.parse(f.read_text(encoding="utf-8"), filename=str(f))
-        except SyntaxError as e:
-            result.findings.append(
-                AnalysisFinding(
-                    tool="ast", file=str(f), line=e.lineno or 0, severity="error", message=f"SyntaxError: {e.msg}"
-                )
-            )
+    _run_ast_gate(py_files, result)
     if any(f.severity == "error" for f in result.findings):
         result.gates_failed.append("ast")
         return result
     result.gates_passed.append("ast")
+    _run_pyright_gate(target, timeout, result)
+    _run_ruff_gate(target, timeout, result)
+    _run_vulture_gate(target, timeout, result)
+    return result
 
-    # Gate 2: pyright
+
+def _run_ast_gate(py_files: list[Path], result: AnalysisResult) -> None:
+    """Run ast.parse over a bounded file set."""
+    for file_path in py_files[:200]:
+        try:
+            ast.parse(file_path.read_text(encoding="utf-8"), filename=str(file_path))
+        except SyntaxError as exc:
+            result.findings.append(
+                AnalysisFinding("ast", str(file_path), exc.lineno or 0, "error", f"SyntaxError: {exc.msg}")
+            )
+
+
+def _run_pyright_gate(target: Path, timeout: int, result: AnalysisResult) -> None:
+    """Run pyright and update the analysis result."""
     try:
-        pyright_cmd = _tool_command("pyright", "pyright")
         proc = subprocess.run(
-            [*pyright_cmd, "--outputjson", str(target)],
+            [*_tool_command("pyright", "pyright"), "--outputjson", str(target)],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -120,33 +126,35 @@ def run_static_analysis(target: Path | str, timeout: int = GREP_TIMEOUT * 3) -> 
         pyright_has_error = False
         for diag in diagnostics:
             severity = "error" if diag.get("severity") == "error" else "warning"
-            if severity == "error":
-                pyright_has_error = True
-            result.findings.append(
-                AnalysisFinding(
-                    tool="pyright",
-                    file=diag.get("file", ""),
-                    line=diag.get("range", {}).get("start", {}).get("line", 0),
-                    severity=severity,
-                    message=diag.get("message", ""),
-                    code=diag.get("rule", ""),
-                )
-            )
-        if pyright_has_error:
-            result.gates_failed.append("pyright")
-        else:
-            result.gates_passed.append("pyright")
+            pyright_has_error = pyright_has_error or severity == "error"
+            result.findings.append(_pyright_finding(diag))
+        result.gates_failed.append("pyright") if pyright_has_error else result.gates_passed.append("pyright")
     except FileNotFoundError:
-        logger.warning("pyright unavailable — skipping pyright gate")
+        logger.warning("pyright unavailable - skipping pyright gate")
         _mark_gate_skipped(result, "pyright", "unavailable")
     except subprocess.TimeoutExpired:
-        logger.warning("pyright timed out — skipping pyright gate")
+        logger.warning("pyright timed out - skipping pyright gate")
         _mark_gate_skipped(result, "pyright", "timeout")
     except json.JSONDecodeError:
-        logger.warning("pyright produced invalid JSON — skipping pyright gate")
+        logger.warning("pyright produced invalid JSON - skipping pyright gate")
         _mark_gate_skipped(result, "pyright", "invalid-json")
 
-    # Gate 3: ruff
+
+def _pyright_finding(diag: dict) -> AnalysisFinding:
+    """Convert one pyright diagnostic to an AnalysisFinding."""
+    severity = "error" if diag.get("severity") == "error" else "warning"
+    return AnalysisFinding(
+        tool="pyright",
+        file=diag.get("file", ""),
+        line=diag.get("range", {}).get("start", {}).get("line", 0),
+        severity=severity,
+        message=diag.get("message", ""),
+        code=diag.get("rule", ""),
+    )
+
+
+def _run_ruff_gate(target: Path, timeout: int, result: AnalysisResult) -> None:
+    """Run ruff and update the analysis result."""
     try:
         proc = subprocess.run(
             ["ruff", "check", "--output-format", "json", str(target)],
@@ -156,67 +164,62 @@ def run_static_analysis(target: Path | str, timeout: int = GREP_TIMEOUT * 3) -> 
             check=False,
         )
         ruff_items = json.loads(proc.stdout)
-        for item in ruff_items:
-            result.findings.append(
-                AnalysisFinding(
-                    tool="ruff",
-                    file=item.get("filename", ""),
-                    line=item.get("location", {}).get("row", 0),
-                    severity="warning",
-                    message=item.get("message", ""),
-                    code=item.get("code", ""),
-                )
-            )
-        if proc.returncode != 0 or ruff_items:
-            result.gates_failed.append("ruff")
-        else:
-            result.gates_passed.append("ruff")
+        result.findings.extend(_ruff_finding(item) for item in ruff_items)
+        result.gates_failed.append("ruff") if proc.returncode != 0 or ruff_items else result.gates_passed.append("ruff")
     except FileNotFoundError:
-        logger.warning("ruff unavailable — skipping ruff gate")
+        logger.warning("ruff unavailable - skipping ruff gate")
         _mark_gate_skipped(result, "ruff", "unavailable")
     except subprocess.TimeoutExpired:
-        logger.warning("ruff timed out — skipping ruff gate")
+        logger.warning("ruff timed out - skipping ruff gate")
         _mark_gate_skipped(result, "ruff", "timeout")
     except json.JSONDecodeError:
-        logger.warning("ruff produced invalid JSON — skipping ruff gate")
+        logger.warning("ruff produced invalid JSON - skipping ruff gate")
         _mark_gate_skipped(result, "ruff", "invalid-json")
 
-    # Gate 4: vulture
+
+def _ruff_finding(item: dict) -> AnalysisFinding:
+    """Convert one ruff diagnostic to an AnalysisFinding."""
+    return AnalysisFinding(
+        tool="ruff",
+        file=item.get("filename", ""),
+        line=item.get("location", {}).get("row", 0),
+        severity="warning",
+        message=item.get("message", ""),
+        code=item.get("code", ""),
+    )
+
+
+def _run_vulture_gate(target: Path, timeout: int, result: AnalysisResult) -> None:
+    """Run vulture and update the analysis result."""
     try:
-        vulture_cmd = _tool_command("vulture", "vulture")
         proc = subprocess.run(
-            [*vulture_cmd, str(target), "--min-confidence", "80"],
+            [*_tool_command("vulture", "vulture"), str(target), "--min-confidence", "80"],
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
         )
-        vulture_findings = 0
-        for line in proc.stdout.strip().splitlines():
-            parts = line.split(":", 2)
-            if len(parts) >= 3:
-                vulture_findings += 1
-                result.findings.append(
-                    AnalysisFinding(
-                        tool="vulture",
-                        file=parts[0],
-                        line=int(parts[1]) if parts[1].isdigit() else 0,
-                        severity="info",
-                        message=parts[2].strip(),
-                    )
-                )
-        if proc.returncode != 0 or vulture_findings:
-            result.gates_failed.append("vulture")
-        else:
-            result.gates_passed.append("vulture")
+        findings = [
+            finding for line in proc.stdout.strip().splitlines() if (finding := _vulture_finding(line)) is not None
+        ]
+        result.findings.extend(findings)
+        result.gates_failed.append("vulture") if proc.returncode != 0 or findings else result.gates_passed.append(
+            "vulture"
+        )
     except FileNotFoundError:
-        logger.warning("vulture unavailable — skipping vulture gate")
+        logger.warning("vulture unavailable - skipping vulture gate")
         _mark_gate_skipped(result, "vulture", "unavailable")
     except subprocess.TimeoutExpired:
-        logger.warning("vulture timed out — skipping vulture gate")
+        logger.warning("vulture timed out - skipping vulture gate")
         _mark_gate_skipped(result, "vulture", "timeout")
 
-    return result
+
+def _vulture_finding(line: str) -> AnalysisFinding | None:
+    """Convert one vulture output line to an AnalysisFinding."""
+    parts = line.split(":", 2)
+    if len(parts) < 3:
+        return None
+    return AnalysisFinding("vulture", parts[0], int(parts[1]) if parts[1].isdigit() else 0, "info", parts[2].strip())
 
 
 # -- OutcomeSignal wrapper ---------------------------------------------------
@@ -252,7 +255,7 @@ def run_static_analysis_signal(target: Path | str, timeout: int = GREP_TIMEOUT *
     pipeline callers receive a fail-closed ``OutcomeSignal`` instead of raw
     gate lists.  One ``ToolEvidence`` entry is emitted per gate that ran.
     Skipped gates lower the evidence count but do NOT cause ``passed=True``
-    — any skip or failure keeps the signal at ``passed=False``.
+    â€” any skip or failure keeps the signal at ``passed=False``.
 
     On target-not-found or all-gates-skipped the signal uses
     ``basis=EvidenceBasis.UNSUPPORTED`` with ``passed=False``.
@@ -281,37 +284,7 @@ def run_static_analysis_signal(target: Path | str, timeout: int = GREP_TIMEOUT *
             ),
         )
 
-    tool_evidences: list[ToolEvidence] = []
-
-    for gate in analysis.gates_passed:
-        gate_findings = [f for f in analysis.findings if f.tool == gate]
-        stdout_text = "; ".join(f"{f.file}:{f.line} {f.message}" for f in gate_findings) or "no findings"
-        snippet, sha = _sha256_snippet(stdout_text)
-        tool_evidences.append(
-            ToolEvidence(
-                tool_name=gate,
-                command=f"{gate} {target}",
-                exit_code=0,
-                stdout_snippet=snippet,
-                stdout_hash=sha,
-                passed=True,
-            )
-        )
-
-    for gate in analysis.gates_failed:
-        gate_findings = [f for f in analysis.findings if f.tool == gate]
-        stdout_text = "; ".join(f"{f.file}:{f.line} [{f.severity}] {f.message}" for f in gate_findings) or "gate failed"
-        snippet, sha = _sha256_snippet(stdout_text)
-        tool_evidences.append(
-            ToolEvidence(
-                tool_name=gate,
-                command=f"{gate} {target}",
-                exit_code=1,
-                stdout_snippet=snippet,
-                stdout_hash=sha,
-                passed=False,
-            )
-        )
+    tool_evidences = _analysis_tool_evidences(analysis, target)
 
     if not tool_evidences:
         skip_summary = "; ".join(f"{g}={r}" for g, r in analysis.skip_reasons.items()) or "all gates skipped"
@@ -319,7 +292,7 @@ def run_static_analysis_signal(target: Path | str, timeout: int = GREP_TIMEOUT *
             passed=False,
             score=0.0,
             basis=EvidenceBasis.UNSUPPORTED,
-            issues=(f"No gates executed — {skip_summary}",),
+            issues=(f"No gates executed â€” {skip_summary}",),
             provenance=Provenance(
                 source="vetinari.tools.static_analysis",
                 timestamp_utc=_utc_now(),
@@ -328,8 +301,7 @@ def run_static_analysis_signal(target: Path | str, timeout: int = GREP_TIMEOUT *
         )
 
     all_passed = len(analysis.gates_failed) == 0 and len(analysis.gates_skipped) == 0
-    issues: tuple[str, ...] = tuple(f"{f.tool}:{f.file}:{f.line} [{f.severity}] {f.message}" for f in analysis.findings)
-    skipped_issues: tuple[str, ...] = tuple(f"gate '{g}' skipped: {r}" for g, r in analysis.skip_reasons.items())
+    issues, skipped_issues = _analysis_issues(analysis)
     score = round(
         len(analysis.gates_passed) / max(len(analysis.gates_passed) + len(analysis.gates_failed), 1),
         3,
@@ -347,3 +319,26 @@ def run_static_analysis_signal(target: Path | str, timeout: int = GREP_TIMEOUT *
             tool_name="static_analysis_pipeline",
         ),
     )
+
+
+def _analysis_tool_evidences(analysis: AnalysisResult, target: Path | str) -> list[ToolEvidence]:
+    """Build ToolEvidence entries for passed and failed analysis gates."""
+    evidences: list[ToolEvidence] = []
+    for gate in analysis.gates_passed:
+        gate_findings = [finding for finding in analysis.findings if finding.tool == gate]
+        stdout_text = "; ".join(f"{f.file}:{f.line} {f.message}" for f in gate_findings) or "no findings"
+        snippet, sha = _sha256_snippet(stdout_text)
+        evidences.append(ToolEvidence(gate, f"{gate} {target}", 0, snippet, sha, True))
+    for gate in analysis.gates_failed:
+        gate_findings = [finding for finding in analysis.findings if finding.tool == gate]
+        stdout_text = "; ".join(f"{f.file}:{f.line} [{f.severity}] {f.message}" for f in gate_findings) or "gate failed"
+        snippet, sha = _sha256_snippet(stdout_text)
+        evidences.append(ToolEvidence(gate, f"{gate} {target}", 1, snippet, sha, False))
+    return evidences
+
+
+def _analysis_issues(analysis: AnalysisResult) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return finding and skipped-gate issue strings."""
+    issues = tuple(f"{f.tool}:{f.file}:{f.line} [{f.severity}] {f.message}" for f in analysis.findings)
+    skipped = tuple(f"gate '{gate}' skipped: {reason}" for gate, reason in analysis.skip_reasons.items())
+    return issues, skipped

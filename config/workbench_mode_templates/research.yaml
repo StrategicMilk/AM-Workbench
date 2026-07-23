@@ -1,0 +1,15 @@
+id: research
+primary_contract: vetinari.workbench.modes.research.ResearchModeState
+template_id: research
+required_artifacts:
+  - research_brief
+  - source_plan
+  - claim_ledger
+  - contradiction_log
+  - freshness_checks
+  - confidence_summary
+promotion_gate: require_research_ready
+conversion_targets:
+  - evidence_notebook
+  - dataset
+  - plan

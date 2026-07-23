@@ -1,0 +1,97 @@
+schema_version: 1
+kinds:
+  - id: web_page
+    display_label: "Web Page"
+    description: "An HTTP-fetched HTML or text page consumed through the hardened scraper."
+    default_freshness_seconds: 86400
+    default_staleness_action: reject
+    default_rate_limit_per_minute: 30
+    cite_required_default: true
+    typical_caveats:
+      - "Robots.txt and per-host rate limits apply."
+      - "Content may be paywalled or geo-gated; observation is not evidence of public availability."
+  - id: mcp_server
+    display_label: "MCP Server"
+    description: "A Model Context Protocol server exposing typed tools and resources."
+    default_freshness_seconds: 3600
+    default_staleness_action: reject
+    default_rate_limit_per_minute: 60
+    cite_required_default: true
+    typical_caveats:
+      - "Server-declared tool descriptions are not authoritative; consult vendor docs for terms."
+  - id: http_api
+    display_label: "HTTP API"
+    description: "A vendor-supplied JSON or REST API consumed by authenticated request."
+    default_freshness_seconds: 600
+    default_staleness_action: reject
+    default_rate_limit_per_minute: 60
+    cite_required_default: true
+    typical_caveats:
+      - "Per-endpoint quotas and cost-per-call apply."
+      - "Vendor terms may forbid persistent storage of responses."
+  - id: local_tool
+    display_label: "Local Tool"
+    description: "A locally executed tool, subprocess, or library function with bounded I/O."
+    default_freshness_seconds: 300
+    default_staleness_action: reject
+    default_rate_limit_per_minute: 600
+    cite_required_default: false
+    typical_caveats:
+      - "Local tools may use stale binaries; pin tool version when reproducibility matters."
+  - id: scraper_recipe
+    display_label: "Scraper Recipe"
+    description: "A configured source, extractor, and schedule."
+    default_freshness_seconds: 86400
+    default_staleness_action: reject
+    default_rate_limit_per_minute: 10
+    cite_required_default: true
+    typical_caveats:
+      - "Recipes inherit web page caveats plus extractor-specific drift risk."
+  - id: dataset_ref
+    display_label: "Dataset Reference"
+    description: "A versioned dataset reference such as DVC, lakeFS, or Lance."
+    default_freshness_seconds: 604800
+    default_staleness_action: reject
+    default_rate_limit_per_minute: 600
+    cite_required_default: true
+    typical_caveats:
+      - "License text must be cited alongside any model trained on the dataset."
+  - id: search_index
+    display_label: "Search Index"
+    description: "A queryable index such as a RAG store or semantic search surface."
+    default_freshness_seconds: 3600
+    default_staleness_action: reject
+    default_rate_limit_per_minute: 600
+    cite_required_default: true
+    typical_caveats:
+      - "Index freshness is bounded by the indexer's last build time; check upstream."
+tools:
+  - kind: web_scraper
+    default_rate_limit_per_minute: 10
+    default_safety_caveats:
+      - "Tool may serve stale cached results; verify observed_at_utc before promoting to claim."
+    default_permitted_claim_kinds: []
+  - kind: mcp_invocation
+    default_rate_limit_per_minute: 60
+    default_safety_caveats:
+      - "MCP server tool descriptions are not authoritative; verify provenance independently."
+    default_permitted_claim_kinds: []
+  - kind: http_caller
+    default_rate_limit_per_minute: 60
+    default_safety_caveats:
+      - "Vendor terms may forbid storage of responses; respect retention policy."
+    default_permitted_claim_kinds: []
+  - kind: local_function
+    default_rate_limit_per_minute: 600
+    default_safety_caveats: []
+    default_permitted_claim_kinds: []
+  - kind: dataset_query
+    default_rate_limit_per_minute: 600
+    default_safety_caveats:
+      - "Dataset license must be cited alongside any derived claim."
+    default_permitted_claim_kinds: []
+  - kind: search_query
+    default_rate_limit_per_minute: 600
+    default_safety_caveats:
+      - "Search index freshness depends on upstream indexer build time."
+    default_permitted_claim_kinds: []

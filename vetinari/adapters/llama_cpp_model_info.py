@@ -29,8 +29,10 @@ from pathlib import Path
 from typing import Any
 
 from vetinari.constants import DEFAULT_CONTEXT_LENGTH
+from vetinari.models.vram_capacity import KV_BYTES_PER_TOKEN
 
 logger = logging.getLogger(__name__)
+
 
 # ── Default resource budgets ──────────────────────────────────────────────────
 
@@ -73,7 +75,7 @@ _CONTEXT_PATTERNS: list[tuple[str, int]] = [
 ]
 
 # GGUF file size to approximate VRAM usage (rough: file_size * 1.1 for KV cache overhead)
-_VRAM_OVERHEAD_FACTOR = 1.1
+_WEIGHTS_OVERHEAD_FACTOR = 1.05
 
 # Per-request constant — allocated once, reused on every JSON-mode call
 _JSON_RESPONSE_FORMAT: dict[str, str] = {"type": "json_object"}
@@ -81,6 +83,12 @@ _JSON_RESPONSE_FORMAT: dict[str, str] = {"type": "json_object"}
 # Streaming fallback constants — allocated once, reused per-token
 _EMPTY_CHOICES_FALLBACK: list[dict] = [{}]
 _EMPTY_DELTA_FALLBACK: dict = {}
+_GGUF_MAGIC = b"GGUF"
+_GGUF_MIN_HEADER_BYTES = 24
+
+
+class GGUFIntegrityError(ValueError):
+    """Raised when a GGUF file fails deterministic pre-load validation."""
 
 
 # ── Pure helper functions ─────────────────────────────────────────────────────
@@ -127,10 +135,11 @@ def _infer_context_window(model_id: str) -> int:
 
 
 def _estimate_memory_gb(file_path: Path) -> float:
-    """Estimate VRAM usage from GGUF file size with overhead factor.
+    """Estimate VRAM usage from GGUF weights plus context KV-cache reserve.
 
-    Uses ``_VRAM_OVERHEAD_FACTOR`` (1.1) to account for KV cache overhead
-    beyond the raw model weights.
+    Uses measured GGUF file size as the weight basis, adds a small allocator
+    reserve, and includes an explicit KV-cache reserve from the inferred
+    context window instead of a fixed file-size multiplier.
 
     Args:
         file_path: Path to the .gguf file.
@@ -139,40 +148,36 @@ def _estimate_memory_gb(file_path: Path) -> float:
         Estimated memory usage in GB, rounded to one decimal place.
     """
     size_bytes = file_path.stat().st_size
-    size_gb = size_bytes / (1024**3)
-    return round(size_gb * _VRAM_OVERHEAD_FACTOR, 1)
+    weights_gb = (size_bytes / (1024**3)) * _WEIGHTS_OVERHEAD_FACTOR
+    context_len = _infer_context_window(_model_id_from_path(file_path))
+    kv_gb = (context_len * KV_BYTES_PER_TOKEN["f16"]) / (1024**3)
+    return round(weights_gb + kv_gb, 1)
 
 
 def verify_gguf_checksum(file_path: Path, expected_sha256: str | None = None) -> bool:
     """Verify SHA256 checksum of a downloaded GGUF file.
 
     Computes the SHA256 hash of the file and compares against the expected
-    value if provided. When no expected hash is given, logs the computed
-    hash for manual verification.
+    value. Missing or malformed expected hashes fail closed because a local
+    model artifact without an external digest cannot be authenticated.
 
     Args:
         file_path: Path to the downloaded GGUF file.
-        expected_sha256: Expected SHA256 hex digest (lowercase). When
-            ``None``, the computed hash is logged but the function returns
-            ``True`` (no mismatch possible without a reference value).
+        expected_sha256: Expected SHA256 hex digest.
 
     Returns:
-        True if checksum matches or no expected hash was provided.
-        False if checksums don't match.
+        True if checksum matches. False if the expected hash is missing,
+        malformed, or mismatched.
     """
+    if not expected_sha256 or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha256.strip()):
+        logger.warning("GGUF checksum verification failed for %s: expected sha256 is required", file_path.name)
+        return False
+
     sha256 = hashlib.sha256()
     with open(file_path, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
             sha256.update(chunk)
     computed = sha256.hexdigest()
-
-    if expected_sha256 is None:
-        logger.info(
-            "GGUF checksum for %s: %s (no expected hash to verify)",
-            file_path.name,
-            computed,
-        )
-        return True
 
     if computed != expected_sha256.lower():
         logger.warning(
@@ -187,6 +192,30 @@ def verify_gguf_checksum(file_path: Path, expected_sha256: str | None = None) ->
     return True
 
 
+def validate_gguf_file(file_path: Path) -> None:
+    """Validate a GGUF file before handing it to llama.cpp.
+
+    Args:
+        file_path: Path to the GGUF artifact.
+
+    Raises:
+        GGUFIntegrityError: If the file is missing, truncated, or does not
+            start with the GGUF magic header.
+    """
+    if not file_path.is_file():
+        raise GGUFIntegrityError(f"GGUF file missing: {file_path}")
+    size = file_path.stat().st_size
+    if size < _GGUF_MIN_HEADER_BYTES:
+        raise GGUFIntegrityError(f"GGUF file too small: {file_path} ({size} bytes)")
+    with file_path.open("rb") as handle:
+        header = handle.read(_GGUF_MIN_HEADER_BYTES)
+    if header[:4] != _GGUF_MAGIC:
+        raise GGUFIntegrityError(f"GGUF magic header missing: {file_path}")
+    version = int.from_bytes(header[4:8], byteorder="little", signed=False)
+    if version < 1:
+        raise GGUFIntegrityError(f"GGUF version is invalid: {version}")
+
+
 def _model_id_from_path(file_path: Path) -> str:
     """Derive a model ID from a GGUF file path by stripping the extension.
 
@@ -196,7 +225,7 @@ def _model_id_from_path(file_path: Path) -> str:
     Returns:
         Model identifier string (the filename stem).
     """
-    return file_path.stem
+    return str(file_path.stem)
 
 
 def _friendly_model_name(model_id: str) -> str:

@@ -13,11 +13,14 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timezone
+from json import JSONDecodeError
 from typing import Any
 
+from vetinari.boundary_guards import account_evidence_drop
 from vetinari.database import get_connection
 
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -77,7 +80,7 @@ class RecordedEpisode:
         self.success = success
         self.model_id = model_id
         self.importance = importance
-        self.metadata = metadata or {}  # noqa: VET112 — Optional per func param
+        self.metadata = metadata or {}
         self.scope = scope
 
     def __repr__(self) -> str:
@@ -116,6 +119,26 @@ class EpisodeRecorder:
     connection.  Evicts oldest episodes when the table exceeds
     ``MAX_EPISODES`` rows.
     """
+
+    @staticmethod
+    def _store_episode_embedding(conn: Any, episode_id: str, task_summary: str, output_summary: str) -> None:
+        """Store best-effort embedding for episode similarity search."""
+        try:
+            from vetinari.embeddings import get_embedder
+            from vetinari.memory.memory_storage import _pack_embedding
+
+            vec = get_embedder().embed(f"{task_summary} {output_summary}")
+            conn.execute(
+                "INSERT OR REPLACE INTO episode_embeddings (episode_id, embedding_blob) VALUES (?, ?)",
+                (episode_id, _pack_embedding(vec)),
+            )
+            conn.commit()
+        except Exception as exc:
+            logger.warning(
+                "Episode embedding storage failed for episode %s: %s - episode recorded without embedding",
+                episode_id,
+                exc,
+            )
 
     def record(
         self,
@@ -173,30 +196,13 @@ class EpisodeRecorder:
                 int(success),
                 model_id,
                 importance,
-                json.dumps(metadata or {}),  # noqa: VET112 — value is Optional
+                json.dumps(metadata or {}),
                 scope,
             ),
         )
         conn.commit()
 
-        # Store embedding for episode similarity search
-        try:
-            from vetinari.embeddings import get_embedder
-            from vetinari.memory.memory_storage import _pack_embedding
-
-            vec = get_embedder().embed(f"{task_summary} {output_summary}")
-            conn.execute(
-                "INSERT OR REPLACE INTO episode_embeddings (episode_id, embedding_blob) VALUES (?, ?)",
-                (episode_id, _pack_embedding(vec)),
-            )
-            conn.commit()
-        except Exception as exc:
-            logger.warning(
-                "Episode embedding storage failed for episode %s: %s — episode recorded without embedding",
-                episode_id,
-                exc,
-            )
-
+        self._store_episode_embedding(conn, episode_id, task_summary, output_summary)
         self._maybe_evict()
         return episode_id
 
@@ -240,7 +246,7 @@ class EpisodeRecorder:
         where = " AND ".join(clauses)
         params.append(limit)
         rows = conn.execute(
-            f"SELECT * FROM memory_episodes WHERE {where} ORDER BY created_at DESC LIMIT ?",  # noqa: S608 - SQL identifiers are constrained while values stay parameterized
+            f"SELECT * FROM memory_episodes WHERE {where} ORDER BY created_at DESC LIMIT ?",
             params,
         ).fetchall()
         return [self._row_to_episode(row) for row in rows]
@@ -264,7 +270,8 @@ class EpisodeRecorder:
         ).fetchall()
         return [row[0] for row in rows]
 
-    def _maybe_evict(self) -> None:
+    @staticmethod
+    def _maybe_evict() -> None:
         """Evict oldest low-importance episodes when the table is too large."""
         conn = get_connection()
         count = conn.execute("SELECT COUNT(*) FROM memory_episodes").fetchone()[0]
@@ -297,8 +304,22 @@ class EpisodeRecorder:
         if row["metadata_json"]:
             try:
                 meta = json.loads(row["metadata_json"])
-            except Exception:
+            except JSONDecodeError as exc:
+                logger.warning(
+                    "Episode metadata JSON decode failed for episode %s: %s",
+                    row["episode_id"],
+                    exc,
+                )
+                account_evidence_drop(
+                    logger=logger,
+                    evidence_ref=f"episode:{row['episode_id']}:metadata_json",
+                    reason="episode_metadata_decode_error",
+                )
                 meta = {}
+        try:
+            scope = row["scope"] or "global"
+        except (IndexError, KeyError, TypeError):
+            scope = "global"
         return RecordedEpisode(
             episode_id=row["episode_id"],
             timestamp=row["timestamp"],
@@ -311,5 +332,5 @@ class EpisodeRecorder:
             model_id=row["model_id"] or "",
             importance=float(row["importance"]),
             metadata=meta,
-            scope=row.get("scope", "global"),
+            scope=scope,
         )

@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_knowledge_vault.schema.json",
+  "title": "Workbench Knowledge Vault",
+  "oneOf": [
+    { "$ref": "#/$defs/VaultEntry" },
+    { "$ref": "#/$defs/VaultIndex" },
+    { "$ref": "#/$defs/VaultManifest" },
+    { "$ref": "#/$defs/RefinementJournalEntry" },
+    { "$ref": "#/$defs/RefinementJournalSnapshot" }
+  ],
+  "$defs": {
+    "ProvenanceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref_id", "ref_type", "evidence"],
+      "properties": {
+        "ref_id": { "type": "string", "minLength": 1 },
+        "ref_type": { "type": "string", "minLength": 1 },
+        "evidence": { "type": "string", "minLength": 1 }
+      }
+    },
+    "RejectedVaultEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entry_id", "slug", "title", "reasons"],
+      "properties": {
+        "entry_id": { "type": "string", "minLength": 1 },
+        "slug": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "reasons": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
+      }
+    },
+    "VaultEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entry_id", "kind", "slug", "title", "frontmatter", "wiki_links", "provenance_refs", "confidence", "authority", "lifecycle_state", "boundary_class", "source_links", "content_hash"],
+      "properties": {
+        "entry_id": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "enum": ["memory", "project_knowledge", "decision", "artifact", "graph_node"] },
+        "slug": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "frontmatter": { "type": "object" },
+        "wiki_links": { "type": "array", "items": { "type": "string" } },
+        "provenance_refs": { "type": "array", "items": { "$ref": "#/$defs/ProvenanceRef" }, "minItems": 1 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "authority": { "type": "string", "minLength": 1 },
+        "lifecycle_state": { "type": "string", "minLength": 1 },
+        "boundary_class": { "type": "string", "minLength": 1 },
+        "source_links": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+        "content_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "VaultIndex": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entries", "rejected", "generated_path", "body"],
+      "properties": {
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/VaultEntry" } },
+        "rejected": { "type": "array", "items": { "$ref": "#/$defs/RejectedVaultEntry" } },
+        "generated_path": { "type": "string", "minLength": 1 },
+        "body": { "type": "string" }
+      }
+    },
+    "VaultManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entries", "rejected", "created", "updated", "removed", "unchanged", "manifest_hash"],
+      "properties": {
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/VaultEntry" } },
+        "rejected": { "type": "array", "items": { "$ref": "#/$defs/RejectedVaultEntry" } },
+        "created": { "type": "array", "items": { "type": "string" } },
+        "updated": { "type": "array", "items": { "type": "string" } },
+        "removed": { "type": "array", "items": { "type": "string" } },
+        "unchanged": { "type": "array", "items": { "type": "string" } },
+        "manifest_hash": { "type": "string" }
+      }
+    },
+    "RefinementJournalEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "kind", "before_ref", "after_ref", "reasons", "evidence_refs", "decided_at", "reversal_token", "actor"],
+      "properties": {
+        "event_id": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "enum": ["consolidation", "duplicate_merge", "confidence_decay", "relationship_inferred", "rejection", "quiet_window_skip", "resource_busy_deferral"] },
+        "before_ref": { "type": "string", "minLength": 1 },
+        "after_ref": { "type": "string" },
+        "reasons": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+        "evidence_refs": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+        "decided_at": { "type": "string", "format": "date-time" },
+        "reversal_token": { "type": "string" },
+        "actor": { "type": "string", "minLength": 1 }
+      }
+    },
+    "RefinementJournalSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entries", "total_entries"],
+      "properties": {
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/RefinementJournalEntry" } },
+        "total_entries": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

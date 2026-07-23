@@ -3,10 +3,10 @@
 Provides web search capabilities via the Brave Search API, complementing
 the existing DuckDuckGo and SearXNG backends in WebSearchTool.
 
-Requires the ``brave-search-python-client`` package and a valid API key
-in the ``BRAVE_SEARCH_API_KEY`` environment variable.  When either is
-unavailable, all methods raise informative errors rather than silently
-returning empty results.
+Uses Vetinari's governed HTTP client and a valid API key in the
+``BRAVE_SEARCH_API_KEY`` environment variable.  When the key is unavailable,
+all methods raise informative errors rather than silently returning empty
+results.
 
 Usage::
 
@@ -24,19 +24,15 @@ import logging
 import os
 from typing import Any
 
-from vetinari.constants import MAX_RETRIES, WEB_SEARCH_SHORT_TIMEOUT
+from vetinari.constants import WEB_SEARCH_SHORT_TIMEOUT
+from vetinari.http import GovernedHttpClient, GovernedHttpConfig, create_governed_client
+from vetinari.resilience import RetryBudget, RetryPolicy
 from vetinari.tools.web_search_types import SearchResult
 
 logger = logging.getLogger(__name__)
 
-# Attempt to import the Brave Search client
-try:
-    from brave_search import BraveSearch as _BraveSearchClient
 
-    _BRAVE_AVAILABLE = True
-except ImportError:
-    _BraveSearchClient = None  # type: ignore[assignment,misc]
-    _BRAVE_AVAILABLE = False
+_BRAVE_AVAILABLE = True
 
 
 # ── Constants ────────────────────────────────────────────────────────
@@ -61,8 +57,8 @@ def _redact_query(query: str) -> str:
 class BraveSearchTool:
     """Web search via the Brave Search API.
 
-    Wraps the ``brave-search-python-client`` library to provide search
-    results in the same ``SearchResult`` format used by ``WebSearchTool``.
+    Uses raw governed HTTP to provide search results in the same
+    ``SearchResult`` format used by ``WebSearchTool``.
 
     Args:
         api_key: Brave Search API key.  Defaults to the
@@ -76,24 +72,27 @@ class BraveSearchTool:
         api_key: str | None = None,
         country: str = _DEFAULT_COUNTRY,
         language: str = _DEFAULT_LANGUAGE,
+        http_client: GovernedHttpClient | None = None,
+        timeout_seconds: float = WEB_SEARCH_SHORT_TIMEOUT,
+        retry_policy: RetryPolicy | None = None,
     ) -> None:
         self._api_key = api_key or os.environ.get("BRAVE_SEARCH_API_KEY", "")
         self._country = country
         self._language = language
-        self._client: Any = None
+        self._timeout_seconds = timeout_seconds
+        self._http_client = http_client or create_governed_client(
+            GovernedHttpConfig(
+                timeout_seconds=timeout_seconds,
+                retry_budget=RetryBudget(max_attempts=2, base_delay_seconds=0.2, max_delay_seconds=1.0),
+                telemetry_label="brave_search",
+                comparison_label="brave_sdk",
+            ),
+            retry_policy=retry_policy,
+        )
 
-        if _BRAVE_AVAILABLE and self._api_key:
-            try:
-                self._client = _BraveSearchClient(api_key=self._api_key)
-                logger.info("BraveSearchTool: initialized with API key")
-            except Exception as exc:
-                logger.warning("BraveSearchTool: client init failed: %s", exc)
-        elif not _BRAVE_AVAILABLE:
-            logger.debug(
-                "BraveSearchTool: brave-search-python-client not installed; "
-                "install with: pip install 'brave-search-python-client>=0.4.0'",  # noqa: VET301 — user guidance string
-            )
-        elif not self._api_key:
+        if self._api_key:
+            logger.info("BraveSearchTool: initialized with governed HTTP")
+        else:
             logger.debug(
                 "BraveSearchTool: no API key found; set BRAVE_SEARCH_API_KEY environment variable",
             )
@@ -103,9 +102,9 @@ class BraveSearchTool:
         """Whether the Brave Search client is configured and ready.
 
         Returns:
-            True if the client is initialised with a valid API key.
+            True if the raw HTTP client has a valid API key.
         """
-        return self._client is not None
+        return bool(self._api_key)
 
     def search(
         self,
@@ -127,21 +126,39 @@ class BraveSearchTool:
                 or API key).
         """
         if not self.is_available:
-            reason = (
-                "brave-search-python-client not installed" if not _BRAVE_AVAILABLE else "BRAVE_SEARCH_API_KEY not set"
-            )
-            raise RuntimeError(
-                f"BraveSearchTool not available: {reason}. "
-                f"Install: pip install 'brave-search-python-client>=0.4.0' "  # noqa: VET301 — user guidance string
-                f"and set BRAVE_SEARCH_API_KEY.",
-            )
+            raise RuntimeError("BraveSearchTool not available: BRAVE_SEARCH_API_KEY not set.")
 
         try:
-            raw_results = self._request(_WEB_SEARCH_URL, query, max_results)
-            return self._parse_results(raw_results, query)
+            return self.search_required(query, max_results=max_results)
         except Exception as exc:
             logger.warning("BraveSearchTool: search failed for %s: %s", _redact_query(query), exc)
             return []
+
+    def search_required(
+        self,
+        query: str,
+        max_results: int = _DEFAULT_MAX_RESULTS,
+    ) -> list[SearchResult]:
+        """Execute a web search where unavailable or empty results are failures.
+
+        Args:
+            query: Search query string to submit to Brave.
+            max_results: Maximum number of results to request.
+
+        Returns:
+            Structured web search results.
+
+        Raises:
+            RuntimeError: If the API key is missing or Brave returns no
+                structured web results.
+        """
+        if not self.is_available:
+            raise RuntimeError("BraveSearchTool not available: BRAVE_SEARCH_API_KEY not set.")
+        raw_results = self._request(_WEB_SEARCH_URL, query, max_results)
+        results = self._parse_results(raw_results, query)
+        if not results:
+            raise RuntimeError("BraveSearchTool returned no structured web results")
+        return results
 
     def search_news(
         self,
@@ -164,16 +181,39 @@ class BraveSearchTool:
             raise RuntimeError("BraveSearchTool not available for news search")
 
         try:
-            raw_results = self._request(_NEWS_SEARCH_URL, query, max_results)
-            return self._parse_results(raw_results, query, source_type="news")
+            return self.search_news_required(query, max_results=max_results)
         except Exception as exc:
             logger.warning("BraveSearchTool: news search failed for %s: %s", _redact_query(query), exc)
             return []
 
+    def search_news_required(
+        self,
+        query: str,
+        max_results: int = _DEFAULT_MAX_RESULTS,
+    ) -> list[SearchResult]:
+        """Search news where unavailable or empty results are failures.
+
+        Args:
+            query: News search query string to submit to Brave.
+            max_results: Maximum number of results to request.
+
+        Returns:
+            Structured news search results.
+
+        Raises:
+            RuntimeError: If the API key is missing or Brave returns no
+                structured news results.
+        """
+        if not self.is_available:
+            raise RuntimeError("BraveSearchTool not available for news search")
+        raw_results = self._request(_NEWS_SEARCH_URL, query, max_results)
+        results = self._parse_results(raw_results, query, source_type="news")
+        if not results:
+            raise RuntimeError("BraveSearchTool returned no structured news results")
+        return results
+
     def _request(self, url: str, query: str, max_results: int) -> dict[str, Any]:
         """Call Brave's HTTPS API with bounded timeout and retry behavior."""
-        import requests
-
         headers = {
             "Accept": "application/json",
             "X-Subscription-Token": self._api_key,
@@ -184,29 +224,17 @@ class BraveSearchTool:
             "country": self._country,
             "search_lang": self._language,
         }
-        last_exc: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                resp = requests.get(
-                    url,
-                    headers=headers,
-                    params=params,
-                    timeout=WEB_SEARCH_SHORT_TIMEOUT,
-                    allow_redirects=False,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                return data if isinstance(data, dict) else {}
-            except requests.RequestException as exc:
-                last_exc = exc
-                logger.warning(
-                    "BraveSearchTool: request attempt %d/%d failed for %s: %s",
-                    attempt,
-                    MAX_RETRIES,
-                    _redact_query(query),
-                    type(exc).__name__,
-                )
-        raise RuntimeError(f"Brave Search request failed after {MAX_RETRIES} attempts: {last_exc}")
+        resp = self._http_client.get(
+            url,
+            headers=headers,
+            params=params,
+            timeout=self._timeout_seconds,
+            allow_redirects=False,
+            telemetry_label="brave_search",
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
 
     def _parse_results(
         self,
@@ -276,8 +304,9 @@ class BraveSearchTool:
         """
         return {
             "available": self.is_available,
-            "client_installed": _BRAVE_AVAILABLE,
+            "client_installed": False,
             "api_key_set": bool(self._api_key),
             "country": self._country,
             "language": self._language,
+            "transport": "governed_http",
         }

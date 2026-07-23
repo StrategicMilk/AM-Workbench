@@ -1,0 +1,5 @@
+schema_version: 1
+state_dir: outputs/workbench/run-kernel
+heartbeat_timeout_seconds: 300
+stale_heartbeat_strategy: reap
+require_sealed_checkpoint_for_resume: true

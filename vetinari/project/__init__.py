@@ -12,7 +12,7 @@ target project before it is committed.
 
 from __future__ import annotations
 
-from vetinari.project.git_integration import (  # noqa: VET123 — git functions have no external callers but removing causes VET120
+from vetinari.project.git_integration import (
     commit_changes,
     create_pr_description,
     has_uncommitted_changes,

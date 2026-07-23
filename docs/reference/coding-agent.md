@@ -1,6 +1,6 @@
-# Vetinari Coding Agent
+# AM Workbench Coding Agent
 
-The Vetinari Coding Agent is an in-process coding agent that can generate code scaffolds, implementations, tests, and reviews. It integrates with Vetinari's plan mode and memory system.
+The AM Workbench Coding Agent is an in-process coding agent that can generate code scaffolds, implementations, tests, and reviews. It integrates with AM Workbench's plan mode and memory system.
 
 ## Architecture
 
@@ -11,12 +11,15 @@ The Vetinari Coding Agent is an in-process coding agent that can generate code s
    - Generates scaffolds, implementations, tests, and reviews
    - Multi-step task support
 
-2. **CodeBridge** (`vetinari/coding_agent/bridge.py`)
-   - External service bridge for offloading heavier tasks
-   - Optional integration with CodeNomad-like services
+2. **Execution helpers** (`vetinari/coding_agent/engine_execution.py`)
+   - Validate generated artifacts before they are returned
+   - Keep generated file writes scoped to the requested target files
 
-3. **Data Models**
-   - `CodeTask`: Coding task specification
+3. **Generation helpers** (`vetinari/coding_agent/engine_generation.py`)
+   - Produce scaffold, implementation, test, review, refactor, and fix artifacts
+
+4. **Data Models** (`vetinari/coding_agent/engine_models.py`)
+   - `make_code_agent_task`: public factory for coding `AgentTask` objects
    - `CodeArtifact`: Generated code artifact
 
 ## Usage
@@ -24,15 +27,16 @@ The Vetinari Coding Agent is an in-process coding agent that can generate code s
 ### Basic Usage
 
 ```python
-from vetinari.coding_agent import CodeAgentEngine, CodeTask, CodingTaskType
+from vetinari.coding_agent import CodeAgentEngine, CodingTaskType, make_code_agent_task
 
 agent = CodeAgentEngine()
 
 # Create a scaffold task
-task = CodeTask(
-    type=CodingTaskType.SCAFFOLD,
+task = make_code_agent_task(
+    "scaffold my_module",
+    task_type=CodingTaskType.SCAFFOLD,
     language="python",
-    target_files=["my_module"]
+    target_files=["my_module"],
 )
 
 # Execute
@@ -45,41 +49,20 @@ print(artifact.content)  # Generated code
 
 ```python
 tasks = [
-    CodeTask(type=CodingTaskType.SCAFFOLD, target_files=["demo"]),
-    CodeTask(type=CodingTaskType.IMPLEMENT, target_files=["demo"]),
-    CodeTask(type=CodingTaskType.TEST, target_files=["demo"])
+    make_code_agent_task("scaffold demo", task_type=CodingTaskType.SCAFFOLD, target_files=["demo"]),
+    make_code_agent_task("implement demo", task_type=CodingTaskType.IMPLEMENT, target_files=["demo"]),
+    make_code_agent_task("test demo", task_type=CodingTaskType.TEST, target_files=["demo"]),
 ]
 
 artifacts = agent.run_multi_step_task(tasks)
 ```
 
-### API Usage
+### Runtime Entry Points
 
-```bash
-# Create a coding task
-curl -X POST http://localhost:5000/api/coding/task \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "type": "scaffold",
-    "language": "python",
-    "description": "Create a new module",
-    "target_files": ["my_module"]
-  }'
-
-# Multi-step task
-curl -X POST http://localhost:5000/api/coding/multi-step \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "plan_id": "plan_123",
-    "subtasks": [
-      {"subtask_id": "s1", "type": "scaffold", "target_files": ["demo"]},
-      {"subtask_id": "s2", "type": "implement", "target_files": ["demo"]},
-      {"subtask_id": "s3", "type": "test", "target_files": ["demo"]}
-    ]
-  }'
-```
+The live coding-agent surface is the in-process Python engine and the plan
+executor integration. This checkout does not expose HTTP coding-agent routes;
+callers must use `CodeAgentEngine` directly or route approved plan-mode
+subtasks through `PlanExecutor`.
 
 ## Configuration
 
@@ -88,9 +71,6 @@ Environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CODING_AGENT_ENABLED` | `true` | Enable the coding agent |
-| `CODING_AGENT_USE_BRIDGE` | `false` | Use external bridge instead of in-process |
-| `CODING_BRIDGE_ENDPOINT` | `http://localhost:4096` | External bridge URL |
-| `CODE_BRIDGE_ENABLED` | `false` | Enable external bridge |
 
 ## Task Types
 
@@ -103,7 +83,7 @@ Environment variables:
 
 ## Integration with Plan Mode
 
-The coding agent integrates with Vetinari's plan mode:
+The coding agent integrates with AM Workbench's plan mode:
 
 1. Plan includes coding subtasks
 2. Approval required for coding tasks (in Plan mode)
@@ -111,12 +91,12 @@ The coding agent integrates with Vetinari's plan mode:
 4. Artifacts logged to UnifiedMemoryStore
 
 ```python
-from vetinari.plan_mode import PlanModeEngine
+from vetinari.planning.plan_executor import PlanExecutor
 
-engine = PlanModeEngine()
+executor = PlanExecutor()
 
 # Execute coding task as part of plan
-result = engine.execute_coding_task(plan, subtask)
+result = executor.execute_coding_task(plan, subtask)
 print(result["artifact"])
 ```
 
@@ -132,4 +112,15 @@ Coding artifacts are logged to UnifiedMemoryStore (SQLite + FTS5):
 
 - Plan gating applies to all coding tasks
 - Approvals logged with audit trail
-- Sandbox execution for generated code (future)
+- Generated artifacts are validated and scoped to requested target files before
+  return; sandbox execution must not be claimed unless it is wired through the
+  current runtime path and covered by tests.
+
+## Runtime Ownership Notes
+
+The coding-agent runtime contract is owned by the coding-agent implementation
+and test surface: `vetinari/coding_agent/engine.py`,
+`vetinari/adapter_manager.py`, and `tests/test_coding_agent.py`. This reference
+page can describe the public shape, but stale behavior in those runtime/test
+anchors must be fixed in a coding-agent runtime pack rather than treated as a
+documentation-only closure.

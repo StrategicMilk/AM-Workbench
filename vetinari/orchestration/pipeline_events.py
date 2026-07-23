@@ -99,7 +99,7 @@ class PipelineEventHandler(Protocol):
         Args:
             event: The pipeline event to handle.
         """
-        ...  # noqa: VET032 — Protocol method body (not a stub)
+        ...
 
 
 class NullEventHandler:

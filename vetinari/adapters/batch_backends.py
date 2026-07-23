@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from typing import Any
 
+from vetinari.adapters.base import InferenceResponse
 from vetinari.constants import (
     ANTHROPIC_API_BASE_URL,
     INFERENCE_STATUS_OK,
@@ -26,16 +28,24 @@ logger = logging.getLogger(__name__)
 class _AnthropicBatchBackend:
     """Submits batches to Anthropic /v1/messages/batches."""
 
-    def __init__(self, api_key: str, api_version: str = "2023-06-01"):
+    def __init__(
+        self,
+        api_key: str,
+        api_version: str = "2023-06-01",
+        *,
+        monotonic_clock: Callable[[], float] | None = None,
+        sleep_fn: Callable[[float], None] | None = None,
+    ):
         self._api_key = api_key
         self._api_version = api_version
         self._base_url = ANTHROPIC_API_BASE_URL
+        self._monotonic_clock = monotonic_clock or time.monotonic
+        self._sleep = sleep_fn or time.sleep
 
     def _headers(self) -> dict[str, str]:
         return {
             "x-api-key": self._api_key,
             "anthropic-version": self._api_version,
-            "anthropic-beta": "message-batches-2024-09-24",
             "Content-Type": "application/json",
         }
 
@@ -117,11 +127,10 @@ class _AnthropicBatchBackend:
 
         import requests as _req
 
-        from vetinari.adapters.base import InferenceResponse  # local import
         from vetinari.adapters.batch_processor import BatchResult
 
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        deadline = self._monotonic_clock() + timeout
+        while self._monotonic_clock() < deadline:
             try:
                 resp = _req.get(
                     f"{ANTHROPIC_API_BASE_URL}/messages/batches/{batch_id}",
@@ -168,7 +177,7 @@ class _AnthropicBatchBackend:
             except Exception as poll_exc:
                 logger.warning("[Anthropic] Batch poll error: %s", poll_exc)
 
-            time.sleep(poll_interval)
+            self._sleep(poll_interval)
 
         # Timeout
         return {
@@ -179,15 +188,60 @@ class _AnthropicBatchBackend:
 class _OpenAIBatchBackend:
     """Submits batches to OpenAI /v1/batches."""
 
-    def __init__(self, api_key: str):
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        monotonic_clock: Callable[[], float] | None = None,
+        sleep_fn: Callable[[float], None] | None = None,
+    ):
         self._api_key = api_key
         self._base_url = OPENAI_API_BASE_URL
+        self._monotonic_clock = monotonic_clock or time.monotonic
+        self._sleep = sleep_fn or time.sleep
 
     def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
+
+    def _fetch_output_file_results(self, output_file_id: str) -> dict[str, Any]:
+        """Download and parse a completed OpenAI batch output file."""
+        import json
+
+        import requests as _req
+
+        from vetinari.adapters.batch_processor import BatchResult
+
+        file_resp = _req.get(
+            f"{self._base_url}/files/{output_file_id}/content",
+            headers={"Authorization": f"Bearer {self._api_key}"},
+            timeout=TIMEOUT_VERY_LONG,
+        )
+        file_resp.raise_for_status()
+
+        batch_results: dict[str, BatchResult] = {}
+        for line in file_resp.text.strip().splitlines():
+            item_result = json.loads(line)
+            item_id = item_result.get("custom_id", "")
+            resp_body = item_result.get("response", {}).get("body", {})
+            if resp_body.get("choices"):
+                output = resp_body["choices"][0].get("message", {}).get("content", "")
+                tokens = resp_body.get("usage", {}).get("total_tokens", 0)
+                cached = resp_body.get("usage", {}).get("prompt_tokens_details", {}).get("cached_tokens", 0) > 0
+                inf_resp = InferenceResponse(
+                    model_id=resp_body.get("model", ""),
+                    output=output,
+                    latency_ms=0,
+                    tokens_used=tokens,
+                    status=INFERENCE_STATUS_OK,
+                )
+                batch_results[item_id] = BatchResult(item_id=item_id, response=inf_resp, cached=cached)
+            else:
+                err = str(item_result.get("error", "unknown"))
+                batch_results[item_id] = BatchResult(item_id=item_id, response=None, error=err)
+        return batch_results
 
     def submit(self, items: list[Any]) -> dict[str, Any]:
         """Submit batch to OpenAI. Returns mapping item_id -> BatchResult.
@@ -288,15 +342,12 @@ class _OpenAIBatchBackend:
         Returns:
             Mapping from item_id to BatchResult.
         """
-        import json
-
         import requests as _req
 
-        from vetinari.adapters.base import InferenceResponse
         from vetinari.adapters.batch_processor import BatchResult
 
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        deadline = self._monotonic_clock() + timeout
+        while self._monotonic_clock() < deadline:
             try:
                 resp = _req.get(
                     f"{self._base_url}/batches/{batch_id}",
@@ -312,36 +363,7 @@ class _OpenAIBatchBackend:
                     if not output_file_id:
                         break
 
-                    file_resp = _req.get(
-                        f"{self._base_url}/files/{output_file_id}/content",
-                        headers={"Authorization": f"Bearer {self._api_key}"},
-                        timeout=TIMEOUT_VERY_LONG,
-                    )
-                    file_resp.raise_for_status()
-
-                    batch_results: dict[str, BatchResult] = {}
-                    for line in file_resp.text.strip().splitlines():
-                        item_result = json.loads(line)
-                        item_id = item_result.get("custom_id", "")
-                        resp_body = item_result.get("response", {}).get("body", {})
-                        if resp_body.get("choices"):
-                            output = resp_body["choices"][0].get("message", {}).get("content", "")
-                            tokens = resp_body.get("usage", {}).get("total_tokens", 0)
-                            cached = (
-                                resp_body.get("usage", {}).get("prompt_tokens_details", {}).get("cached_tokens", 0) > 0
-                            )
-                            inf_resp = InferenceResponse(
-                                model_id=resp_body.get("model", ""),
-                                output=output,
-                                latency_ms=0,
-                                tokens_used=tokens,
-                                status=INFERENCE_STATUS_OK,
-                            )
-                            batch_results[item_id] = BatchResult(item_id=item_id, response=inf_resp, cached=cached)
-                        else:
-                            err = str(item_result.get("error", "unknown"))
-                            batch_results[item_id] = BatchResult(item_id=item_id, response=None, error=err)
-                    return batch_results
+                    return self._fetch_output_file_results(output_file_id)
 
                 if status in (StatusEnum.FAILED.value, "expired", StatusEnum.CANCELLED.value):
                     break
@@ -349,7 +371,7 @@ class _OpenAIBatchBackend:
             except Exception as poll_exc:
                 logger.warning("[OpenAI] Batch poll error: %s", poll_exc)
 
-            time.sleep(poll_interval)
+            self._sleep(poll_interval)
 
         return {
             item_id: BatchResult(item_id=item_id, response=None, error="Batch poll timeout/failed")

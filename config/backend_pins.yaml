@@ -1,0 +1,91 @@
+schema_version: "1"
+generated_utc: "2026-04-25T00:00:00Z"
+inference_endpoint_capability_contract:
+  status: validated
+  capability_config: config/model_families.yaml
+  strict_checker: scripts/check_inference_endpoint_capabilities.py
+  default_routing_checker: scripts/check_default_routing_and_kaizen.py
+  fail_closed_inputs:
+    - missing capability
+    - malformed cascade tier
+    - unavailable provider
+    - stale support matrix
+    - unreadable route receipts
+backends:
+  am_engine:
+    version: "b10066"
+    commit: "86a9c79f866799eb0e7e89c03578ccfbcc5d808e"
+    source: "ggml-org/llama.cpp"
+    platform_constraint: "any"
+    last_validated_utc: 2026-07-18
+    pin_stale_after_utc: "2026-10-16T00:00:00Z"
+    validation_evidence:
+      - "vetinari/engine/binary.py PINNED_ASSETS sha256 matrix"
+      - "ENG-P11 am-engine-runtime-probe.json"
+    notes: "First-party AM Engine runtime; release assets and commit fail closed through binary.py."
+  vllm:
+    version: ">=0.15.1"
+    image: "vllm/vllm-openai:v0.15.1"
+    cuda_min: "12.8"
+    compute_capability_min: "12.0"
+    last_validated_utc: 2026-04-25
+    validation_evidence: ["vLLM PR #22131 - Block FP8 on SM120"]
+    upstream_image_required_for: ["mistralai/Devstral-Small-2-24B-Instruct-2512"]
+    ngc_image_known_unsupported_for: ["Mistral3ForConditionalGeneration"]
+    release_license_review:
+      status: "blocked"
+      model_id: "mistralai/Devstral-Small-2-24B-Instruct-2512"
+      license_ref: "review-required:mistral-ai-model-license"
+      source: "backend pin only; not release approval"
+    overlays:
+      allowed: true
+      manifest_path: "third_party_overlays/overlays.example.yaml"
+      approval_mode: "explicit"
+      required_rebase_status: "clean"
+    notes: "Use upstream vllm/vllm-openai image for Devstral Small 2."
+  sglang:
+    version: ">=0.4.4"
+    platform_constraint: "linux_only"
+    last_validated_utc: 2026-04-25
+    validation_evidence: ["ADR-0106-supersede-adr-0065-sglang-skip"]
+    overlays:
+      allowed: true
+      manifest_path: "third_party_overlays/overlays.example.yaml"
+      approval_mode: "explicit"
+      required_rebase_status: "clean"
+    notes: "Linux only; recommend WSL2 path."
+  llama_cpp:
+    version: ">=0.3.0"
+    platform_constraint: "any"
+    last_validated_utc: 2026-04-25
+    validation_evidence: ["Existing local extra"]
+    overlays:
+      allowed: true
+      manifest_path: "third_party_overlays/overlays.example.yaml"
+      approval_mode: "explicit"
+      required_rebase_status: "clean"
+    notes: "Existing default; supports CPU offload."
+  faster_whisper:
+    version: ">=1.1.0"
+    last_validated_utc: 2026-04-25
+    validation_evidence: ["ADR-0110-faster-whisper-backend-addition"]
+    notes: "CT2 backend; in-process adapter."
+  comfyui:
+    version: "git@pinned-2026-04-25"
+    last_validated_utc: 2026-04-25
+    pin_stale_after_utc: "2026-08-31T00:00:00Z"
+    validation_evidence: ["ADR-0108-comfyui-backend-addition"]
+    notes: "VRAM lease class = diffusion."
+  speculators:
+    version: ">=0.3.0"
+    last_validated_utc: 2026-04-25
+    validation_evidence: ["ADR-0111-speculators-vllm-addon"]
+    notes: "vLLM addon, not a separate backend."
+  openai_server:
+    status: pending_pin
+    parity_rubric_declared: true
+    notes: "Pin required before release gate; see FSA-9806"
+  cloud:
+    status: pending_pin
+    parity_rubric_declared: true
+    notes: "Pin required before release gate; see FSA-9806"

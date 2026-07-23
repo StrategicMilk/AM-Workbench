@@ -16,18 +16,45 @@ description.
 from __future__ import annotations
 
 import functools
-import json
 import logging
 import re
-import threading
 from enum import Enum
-from itertools import islice, permutations
 from pathlib import Path
 
-from vetinari.constants import VETINARI_STATE_DIR
+from vetinari.boundary_guards import require_nonempty
 from vetinari.exceptions import AgentError
 
+from . import prompt_mutator_maspob as _maspob_module
+from .prompt_mutator_maspob import _MAX_PERMUTATIONS, _MIN_SAMPLES, MASPOBAnalyzer
+
+__all__ = [
+    "_MAX_PERMUTATIONS",
+    "_MIN_SAMPLES",
+    "MASPOBAnalyzer",
+    "MutationOperator",
+    "PromptMutator",
+    "_maspob_analyzer",
+    "get_maspob_analyzer",
+]
+
 logger = logging.getLogger(__name__)
+_maspob_analyzer: MASPOBAnalyzer | None = None
+
+
+def get_maspob_analyzer(state_path: Path | None = None) -> MASPOBAnalyzer:
+    """Return the prompt-mutator MASPOB analyzer singleton.
+
+    Args:
+        state_path: Optional path for analyzer state.
+
+    Returns:
+        Shared MASPOB analyzer instance.
+    """
+    global _maspob_analyzer
+    if _maspob_analyzer is not None and state_path is None:
+        return _maspob_analyzer
+    _maspob_analyzer = _maspob_module.get_maspob_analyzer(state_path)
+    return _maspob_analyzer
 
 
 @functools.lru_cache(maxsize=128)
@@ -228,7 +255,7 @@ class PromptMutator:
             rephrased = "Important: follow these instructions precisely.\n\n" + target
 
         if section:
-            return prompt.replace(target, rephrased)
+            return self._replace_section_once(prompt, target, rephrased)
         return rephrased
 
     def _inject_constraint(self, prompt: str, section: str | None) -> str:
@@ -241,7 +268,7 @@ class PromptMutator:
 
         if section:
             target = self._extract_section(prompt, section)
-            return prompt.replace(target, target + constraint_line)
+            return self._replace_section_once(prompt, target, target + constraint_line)
 
         # Try to find an existing constraints section
         for kw in _CONSTRAINT_KEYWORDS:
@@ -266,7 +293,7 @@ class PromptMutator:
 
         if section:
             target = self._extract_section(prompt, section)
-            return prompt.replace(target, target + example_block)
+            return self._replace_section_once(prompt, target, target + example_block)
 
         # Insert before task section (MASPOB: examples before task description)
         for kw in _TASK_KEYWORDS:
@@ -345,12 +372,13 @@ class PromptMutator:
 
         if section:
             target = self._extract_section(prompt, section)
-            return prompt.replace(target, target + scaffold)
+            return self._replace_section_once(prompt, target, target + scaffold)
 
         # Add before the last section or at the end
         return prompt + scaffold
 
-    def _reinforce_role(self, prompt: str, section: str | None) -> str:
+    @staticmethod
+    def _reinforce_role(prompt: str, section: str | None) -> str:
         """Strengthen or refine the agent's identity/role description."""
         # Find existing role section
         for kw in _ROLE_KEYWORDS:
@@ -379,7 +407,7 @@ class PromptMutator:
 
         if section:
             target = self._extract_section(prompt, section)
-            return prompt.replace(target, target + schema)
+            return self._replace_section_once(prompt, target, target + schema)
 
         return prompt + schema
 
@@ -464,6 +492,12 @@ class PromptMutator:
         return prompt
 
     @staticmethod
+    def _replace_section_once(prompt: str, old_content: str, new_content: str) -> str:
+        """Replace one section body after validating the replacement content."""
+        replacement = require_nonempty(new_content, field_name="mutation_content")
+        return prompt.replace(old_content, replacement, 1)
+
+    @staticmethod
     def _imperative_to_declarative(text: str) -> str:
         """Convert imperative instructions to declarative framing.
 
@@ -508,202 +542,3 @@ class PromptMutator:
 
 # ---------------------------------------------------------------------------
 # MASPOB position-sensitivity analyzer
-# ---------------------------------------------------------------------------
-
-_DEFAULT_STATE_PATH = VETINARI_STATE_DIR / "maspob_state.json"
-_MIN_SAMPLES: int = 10
-_MAX_PERMUTATIONS: int = 24  # cap permutation generation for efficiency
-
-
-class MASPOBAnalyzer:
-    """Learns optimal prompt section ordering via position-sensitivity analysis.
-
-    Records quality scores for different section orderings and converges
-    on the best arrangement.  When sufficient data exists (>= 10 samples),
-    provides learned ordering to ``_restructure_format()`` instead of the
-    static MASPOB heuristic.
-
-    Args:
-        state_path: Path to the JSON file used for persistent state.
-    """
-
-    def __init__(self, state_path: Path | None = None) -> None:
-        self._state_path = state_path or _DEFAULT_STATE_PATH
-        # Maps section_name → {position_str → [quality_scores]}
-        self._position_stats: dict[str, dict[str, list[float]]] = {}
-        self._lock = threading.Lock()
-        self._load_state()
-
-    # ── Public methods ────────────────────────────────────────────────
-
-    def analyze_section_ordering(self, prompt: str) -> list[list[str]]:
-        """Generate candidate section orderings (permutations) from a prompt.
-
-        Parses section headers from *prompt* and returns up to
-        ``_MAX_PERMUTATIONS`` distinct orderings.
-
-        Args:
-            prompt: The prompt text containing markdown-style section headers.
-
-        Returns:
-            List of section-name lists representing candidate orderings.
-        """
-        # Reuse the module-level _SECTION_HEADER_RE (group 2 is the title text)
-        section_names = [m.group(2).strip() for m in _SECTION_HEADER_RE.finditer(prompt)]
-        if not section_names:
-            return []
-        # Cap permutations to avoid combinatorial explosion
-        all_perms = list(islice(permutations(section_names), _MAX_PERMUTATIONS))
-        return [list(p) for p in all_perms]
-
-    def record_quality(self, section_name: str, position: int, quality_score: float) -> None:
-        """Record an observed quality score for a section at a given position.
-
-        Args:
-            section_name: The name of the prompt section.
-            position: Zero-based position index in the ordering.
-            quality_score: Quality metric (higher is better, e.g. 0.0-1.0).
-        """
-        pos_key = str(position)
-        with self._lock:
-            if section_name not in self._position_stats:
-                self._position_stats[section_name] = {}
-            section_stats = self._position_stats[section_name]
-            if pos_key not in section_stats:
-                section_stats[pos_key] = []
-            section_stats[pos_key].append(quality_score)
-        self._save_state()
-
-    def get_optimal_ordering(self, section_names: list[str]) -> list[str]:
-        """Return the best section ordering based on accumulated quality data.
-
-        Uses a greedy Hungarian-style algorithm: iteratively assigns each
-        section to the available position with its highest average quality
-        score.
-
-        Args:
-            section_names: Sections to order.
-
-        Returns:
-            Ordered list of section names.  Falls back to input order if
-            insufficient data for any section.
-        """
-        if not self.has_sufficient_data(section_names):
-            return list(section_names)
-
-        n = len(section_names)
-        available_positions = set(range(n))
-        ordered: list[tuple[int, str]] = []  # (position, section_name)
-
-        with self._lock:
-            remaining = list(section_names)
-            while remaining and available_positions:
-                best_section: str | None = None
-                best_pos: int | None = None
-                best_avg: float = -1.0
-
-                for sec in remaining:
-                    stats = self._position_stats.get(sec, {})
-                    for pos in available_positions:
-                        scores = stats.get(str(pos), [])
-                        if scores:
-                            avg = sum(scores) / len(scores)
-                            if avg > best_avg:
-                                best_avg = avg
-                                best_section = sec
-                                best_pos = pos
-
-                if best_section is None or best_pos is None:
-                    # No data for any remaining pair — append in input order
-                    for sec in remaining:
-                        pos = min(available_positions)
-                        ordered.append((pos, sec))
-                        available_positions.discard(pos)
-                    break
-
-                ordered.append((best_pos, best_section))
-                remaining.remove(best_section)
-                available_positions.discard(best_pos)
-
-        ordered.sort(key=lambda x: x[0])
-        return [sec for _, sec in ordered]
-
-    def has_sufficient_data(self, section_names: list[str]) -> bool:
-        """Return True when every (section, position) slot has sufficient evidence.
-
-        The learned ordering is only used when *each* (section, position) pair has
-        at least ``_MIN_SAMPLES`` observations.  A section with many samples
-        concentrated at one position still lacks evidence for the others — the
-        greedy assignment in ``get_optimal_ordering()`` needs per-slot confidence
-        to produce a trustworthy result.
-
-        Args:
-            section_names: Section names to check. Position slots are
-                ``range(len(section_names))``, mirroring ``get_optimal_ordering()``.
-
-        Returns:
-            True when every (section, position) pair has ``_MIN_SAMPLES``
-            observations, False otherwise (falls back to heuristic ordering).
-        """
-        n = len(section_names)
-        with self._lock:
-            for name in section_names:
-                stats = self._position_stats.get(name, {})
-                for pos in range(n):
-                    if len(stats.get(str(pos), [])) < _MIN_SAMPLES:
-                        return False
-        return True
-
-    # ── Persistence ───────────────────────────────────────────────────
-
-    def _load_state(self) -> None:
-        """Load persisted position stats from disk, if available."""
-        try:
-            if self._state_path.exists():
-                with self._state_path.open("r", encoding="utf-8") as fh:
-                    self._position_stats = json.load(fh)
-        except Exception as exc:
-            logger.warning("MASPOBAnalyzer: failed to load state from %s: %s", self._state_path, exc)
-            self._position_stats = {}
-
-    def _save_state(self) -> None:
-        """Persist position stats to disk."""
-        try:
-            self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._lock:
-                data = dict(self._position_stats)
-            with self._state_path.open("w", encoding="utf-8") as fh:
-                json.dump(data, fh, indent=2)
-        except Exception as exc:
-            logger.warning("MASPOBAnalyzer: failed to save state to %s: %s", self._state_path, exc)
-
-
-# ---------------------------------------------------------------------------
-# Module-level singleton
-# ---------------------------------------------------------------------------
-
-_maspob_analyzer: MASPOBAnalyzer | None = None
-_maspob_lock: threading.Lock = threading.Lock()
-
-
-def get_maspob_analyzer(state_path: Path | None = None) -> MASPOBAnalyzer:
-    """Return the module-level singleton :class:`MASPOBAnalyzer`.
-
-    When ``state_path`` is provided the singleton is (re-)created with that
-    path.  This allows tests to inject a temporary directory without relying
-    on the process-wide default.
-
-    Args:
-        state_path: Optional override for the state file path.  Passing a
-            non-None value always creates a fresh instance, even if one
-            already exists.
-
-    Returns:
-        The singleton :class:`MASPOBAnalyzer` instance.
-    """
-    global _maspob_analyzer
-    if _maspob_analyzer is None or state_path is not None:
-        with _maspob_lock:
-            if _maspob_analyzer is None or state_path is not None:
-                _maspob_analyzer = MASPOBAnalyzer(state_path=state_path)
-    return _maspob_analyzer

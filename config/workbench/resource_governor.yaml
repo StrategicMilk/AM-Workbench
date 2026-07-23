@@ -1,0 +1,24 @@
+resource_governor:
+  profile_id: default-prosumer
+  hard_limits:
+    max_vram_gb: 20.0
+    max_ram_gb: 48.0
+    max_cpu_threads: 12
+    max_storage_gb: 250.0
+    max_queue_depth: 3
+    max_context_tokens: 128000
+    max_kv_cache_gb: 8.0
+    max_agent_slots: 4
+    max_rag_jobs: 2
+    max_downloads: 2
+    max_eval_jobs: 1
+    max_training_jobs: 1
+  interactive_reserve:
+    vram_gb: 2.0
+    ram_gb: 4.0
+  admission:
+    auto_admit_confidence_min: 0.75
+    unknown_state_policy: deny
+    small_specialist_default_placement: cpu_first
+    full_training_preemption: extension_point
+    kv_cache_enforcement: extension_point

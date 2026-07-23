@@ -1,0 +1,15 @@
+schema_version: 1
+default_profile: balanced
+profiles:
+  balanced:
+    min_quality_improvement: 0.01
+    max_latency_ratio: 1.30
+    max_error_rate_increase: 0.05
+    rollback_window_hours: 24
+    rollback_quality_margin: 0.05
+  conservative:
+    min_quality_improvement: 0.0
+    max_latency_ratio: 1.10
+    max_error_rate_increase: 0.01
+    rollback_window_hours: 24
+    rollback_quality_margin: 0.03

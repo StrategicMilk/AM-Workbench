@@ -14,7 +14,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class CostEfficiency:
     """Quality-per-dollar metric for a model+task_type pair."""
 
@@ -24,6 +24,8 @@ class CostEfficiency:
     avg_cost_usd: float
     quality_per_dollar: float
     total_uses: int
+    data_adequate: bool = True
+    missing_fields: tuple[str, ...] = ()
 
     def __repr__(self) -> str:
         return f"CostEfficiency(model_id={self.model_id!r}, task_type={self.task_type!r}, quality_per_dollar={self.quality_per_dollar!r})"
@@ -73,17 +75,30 @@ class CostOptimizer:
         min_quality = self.DEFAULT_MIN_QUALITY if min_quality is None else min_quality
         efficiencies = self._get_efficiencies(task_type, candidate_models)
 
-        # Filter by quality threshold
-        adequate = [e for e in efficiencies if e.avg_quality >= min_quality]
+        for efficiency in (e for e in efficiencies if not e.data_adequate):
+            logger.warning(
+                "Cost optimizer ignoring %s for %s because telemetry is incomplete: %s",
+                efficiency.model_id,
+                task_type,
+                ", ".join(efficiency.missing_fields),
+            )
+
+        # Filter by telemetry adequacy and quality threshold.
+        adequate = [e for e in efficiencies if e.data_adequate and e.avg_quality >= min_quality]
 
         # Further filter by max cost
         if max_cost_usd is not None:
             adequate = [e for e in adequate if e.avg_cost_usd <= max_cost_usd]
 
         if not adequate:
-            # No model meets criteria -- return the highest quality one
-            if efficiencies:
-                return max(efficiencies, key=lambda e: e.avg_quality).model_id
+            # Missing telemetry is not adequate routing evidence. Preserve the
+            # caller's first model as the conservative default instead of making
+            # a cost-optimized switch from priors.
+            if efficiencies and all(not e.data_adequate for e in efficiencies):
+                return candidate_models[0] if candidate_models else "default"
+            adequate_efficiencies = [e for e in efficiencies if e.data_adequate]
+            if adequate_efficiencies:
+                return max(adequate_efficiencies, key=lambda e: e.avg_quality).model_id
             return candidate_models[0] if candidate_models else "default"
 
         # Among adequate models, pick the cheapest
@@ -101,20 +116,23 @@ class CostOptimizer:
 
         for model_id in models:
             cost = 0.0
-            quality = 0.7  # Prior
+            quality = 0.7
+            cost_seen = False
+            quality_seen = False
 
             # Get cost from analytics — CostReport.by_model maps "provider:model" -> USD
             if tracker:
                 try:
                     report = tracker.get_report()
-                    # Search by_model for any key containing the model_id
                     for key, model_cost in report.by_model.items():
-                        if model_id in key:
+                        key_model_id = str(key).rsplit(":", 1)[-1]
+                        if key_model_id == model_id:
                             cost = float(model_cost)
+                            cost_seen = True
                             break
                 except Exception:
                     logger.warning(
-                        "Failed to get cost data for model %s — using default cost $0.00",
+                        "Failed to get cost data for model %s",
                         model_id,
                         exc_info=True,
                     )
@@ -129,10 +147,15 @@ class CostOptimizer:
                 from vetinari.learning.model_selector import get_thompson_selector
 
                 arm_state = get_thompson_selector().get_arm_state(model_id, task_type)
-                quality = arm_state.get("mean", 0.7)
+                if "mean" in arm_state:
+                    quality = float(arm_state["mean"])
+                    quality_seen = True
             except Exception:
                 logger.warning("Failed to get Thompson Sampling quality for model %s", model_id, exc_info=True)
 
+            missing_fields = tuple(
+                field for field, present in (("cost", cost_seen), ("quality", quality_seen)) if not present
+            )
             qpd = quality / max(cost, 0.001)  # Avoid division by zero
             efficiencies.append(
                 CostEfficiency(
@@ -142,6 +165,8 @@ class CostOptimizer:
                     avg_cost_usd=cost,
                     quality_per_dollar=qpd,
                     total_uses=0,
+                    data_adequate=not missing_fields,
+                    missing_fields=missing_fields,
                 ),
             )
 

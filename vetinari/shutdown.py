@@ -22,12 +22,18 @@ import threading
 
 logger = logging.getLogger(__name__)
 
+
 # Guards against running shutdown logic more than once
 _shutdown_started = threading.Event()
 _handlers_registered = threading.Event()
 _signals_registered = threading.Event()
 _callbacks: list[tuple[str, collections.abc.Callable[[], None]]] = []
 _callbacks_lock = threading.Lock()
+_logging_raise_exceptions_before_shutdown: bool | None = None
+
+
+def _ignore_logging_error(_record: logging.LogRecord) -> None:
+    """Suppress handler errors during interpreter shutdown."""
 
 
 def register_callback(name: str, fn: collections.abc.Callable[[], None]) -> None:
@@ -97,8 +103,18 @@ def _install_safe_handlers() -> None:
     This replaces ``handleError`` on every root handler with a no-op so
     those tracebacks are silently swallowed.
     """
-    for handler in logging.root.handlers:
-        handler.handleError = lambda _record: None  # type: ignore[method-assign]
+    global _logging_raise_exceptions_before_shutdown
+    if _logging_raise_exceptions_before_shutdown is None:
+        _logging_raise_exceptions_before_shutdown = logging.raiseExceptions
+    logging.raiseExceptions = False
+
+    loggers: list[logging.Logger] = [logging.root]
+    loggers.extend(
+        candidate for candidate in logging.root.manager.loggerDict.values() if isinstance(candidate, logging.Logger)
+    )
+    for current_logger in loggers:
+        for handler in current_logger.handlers:
+            handler.__dict__["handleError"] = _ignore_logging_error
 
 
 def shutdown() -> None:
@@ -197,6 +213,10 @@ def register_shutdown_handlers() -> None:
 
 def reset() -> None:
     """Reset shutdown state.  For testing only."""
+    global _logging_raise_exceptions_before_shutdown
+    if _logging_raise_exceptions_before_shutdown is not None:
+        logging.raiseExceptions = _logging_raise_exceptions_before_shutdown
+        _logging_raise_exceptions_before_shutdown = None
     _shutdown_started.clear()
     _handlers_registered.clear()
     _signals_registered.clear()

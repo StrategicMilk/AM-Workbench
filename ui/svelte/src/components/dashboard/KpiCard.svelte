@@ -37,19 +37,24 @@
     safeTrend > 0 ? 'fa-arrow-up' :
     safeTrend < 0 ? 'fa-arrow-down' : 'fa-minus'
   );
+
+  let trendLabel = $derived(
+    safeTrend == null ? '' :
+    `, trend ${safeTrend > 0 ? 'up' : safeTrend < 0 ? 'down' : 'flat'} ${Math.abs(safeTrend).toFixed(1)}%`
+  );
 </script>
 
-<div class="kpi-card">
+<div class="kpi-card" role="group" aria-label={`${label}: ${value}${trendLabel}`}>
   <div class="kpi-icon" style="color: var(--{color});">
-    <i class={icon}></i>
+    <i class={icon} aria-hidden="true"></i>
   </div>
   <div class="kpi-body">
     <div class="kpi-value">{value}</div>
     <div class="kpi-label">{label}</div>
   </div>
   {#if safeTrend != null}
-    <div class="kpi-trend {trendClass}">
-      <i class="fas {trendIcon}"></i>
+    <div class="kpi-trend {trendClass}" role="status" aria-label={trendLabel.trim()}>
+      <i class="fas {trendIcon}" aria-hidden="true"></i>
       <span>{Math.abs(safeTrend).toFixed(1)}%</span>
     </div>
   {/if}
@@ -68,7 +73,7 @@
   }
 
   .kpi-card:hover {
-    border-color: var(--border-hover, rgba(255, 255, 255, 0.12));
+    border-color: var(--border-strong);
   }
 
   .kpi-icon {
@@ -79,7 +84,7 @@
     align-items: center;
     justify-content: center;
     border-radius: 10px;
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--surface-hover);
     flex-shrink: 0;
   }
 
@@ -113,16 +118,16 @@
 
   .trend-up {
     color: var(--success);
-    background: rgba(56, 211, 159, 0.1);
+    background: var(--success-muted);
   }
 
   .trend-down {
     color: var(--danger);
-    background: rgba(240, 98, 98, 0.1);
+    background: var(--danger-muted);
   }
 
   .trend-flat {
     color: var(--text-muted);
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--surface-hover);
   }
 </style>

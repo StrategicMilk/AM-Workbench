@@ -14,10 +14,13 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-# Number of days per ISO week — used for empty-week filling arithmetic.
-_DAYS_PER_WEEK = 7
+from vetinari.security.redaction import redact_text
 
 logger = logging.getLogger(__name__)
+
+
+# Number of days per ISO week — used for empty-week filling arithmetic.
+_DAYS_PER_WEEK = 7
 
 
 def record_defect(
@@ -42,19 +45,27 @@ def record_defect(
         confidence: RCA confidence score in [0.0, 1.0].
     """
     now = datetime.now(timezone.utc).isoformat()
+    task_ref = _task_ref(task_id)
     conn.execute(
         "INSERT INTO defect_occurrences "
         "(occurred_at, category, agent_type, mode, task_id, confidence) "
         "VALUES (?, ?, ?, ?, ?, ?)",
-        (now, category, agent_type, mode, task_id, confidence),
+        (now, category, agent_type, mode, task_ref, confidence),
     )
     logger.info(
         "Defect recorded: category=%s, agent=%s, mode=%s, task=%s",
         category,
         agent_type,
         mode,
-        task_id,
+        task_ref,
     )
+
+
+def _task_ref(task_id: str) -> str:
+    """Store only a redacted task identifier reference."""
+    if not task_id:
+        return ""
+    return redact_text(task_id)
 
 
 def get_weekly_defect_counts(conn: object, weeks: int = 4) -> list[dict[str, int]]:
@@ -175,9 +186,7 @@ def get_defect_hotspots(conn: object, days: int = 28) -> list[dict[str, Any]]:
         "GROUP BY agent_type, mode",
         (cutoff,),
     ).fetchall()
-    totals: dict[tuple[str, str], int] = {
-        (r["agent_type"], r["mode"]): r["total"] for r in totals_rows
-    }
+    totals: dict[tuple[str, str], int] = {(r["agent_type"], r["mode"]): r["total"] for r in totals_rows}
 
     return [
         {

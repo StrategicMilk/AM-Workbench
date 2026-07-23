@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2024-2026 Vetinari Contributors
+# SPDX-License-Identifier: Apache-2.0
 """Remote model discovery and download helpers for the packaging CLI."""
 
 from __future__ import annotations
@@ -17,6 +19,11 @@ logger = logging.getLogger(__name__)
 def _write_line(text: object = "") -> None:
     """Write one CLI output line to standard output."""
     sys.stdout.write(f"{text}\n")
+
+
+def _write_error(text: object = "") -> None:
+    """Write one diagnostic CLI output line to standard error."""
+    sys.stderr.write(f"{text}\n")
 
 
 _NATIVE_BACKENDS = {"vllm", "nim"}
@@ -95,6 +102,17 @@ def _download_with_progress(
     Returns:
         ``Path`` to the downloaded file as returned by ``hf_hub_download``.
     """
+    models_dir_text = str(models_dir)
+    # GDPR Art. 46: log the external host before each cross-border CLI model
+    # fetch so the transfer is auditable and downstream policy can verify the
+    # standard contractual clause / equivalent safeguard is in place.
+    logger.info(
+        "Downloading model %s/%s from external host huggingface.co — "
+        "transfer governed by GDPR Art. 46 standard contractual clauses "
+        "or equivalent safeguard",
+        repo,
+        filename,
+    )
     if _RICH_AVAILABLE and _console is not None:
         with Progress(
             SpinnerColumn(),
@@ -107,20 +125,20 @@ def _download_with_progress(
         ) as progress:
             task_id = progress.add_task(f"Downloading {filename}", total=None)
             progress.update(task_id, description=f"Downloading {filename} from {repo}")
-            local = hf_hub_download(  # noqa: VET305 — operator-supplied revision
+            local = hf_hub_download(
                 repo_id=repo,
                 filename=filename,
-                local_dir=str(models_dir),
+                local_dir=models_dir_text,
                 resume_download=True,
                 revision=revision,
             )
             progress.update(task_id, description=f"Completed {filename}", completed=1, total=1)
     else:
         _write_line(f"Downloading {filename} from {repo}...")
-        local = hf_hub_download(  # noqa: VET305 — operator-supplied revision
+        local = hf_hub_download(
             repo_id=repo,
             filename=filename,
-            local_dir=str(models_dir),
+            local_dir=models_dir_text,
             resume_download=True,
             revision=revision,
         )
@@ -152,20 +170,19 @@ def _models_download(
     """
     backend_normalized = _infer_cli_backend(backend, filename=filename, model_format=model_format, action="download")
     if not repo:
-        _write_line("Error: --repo is required for download.")
-        _write_line(
-            "  GGUF example: vetinari models download --repo TheBloke/Mistral-7B-v0.1-GGUF "
-            "--filename mistral-7b-v0.1.Q4_K_M.gguf"
+        _write_error("Error: --repo is required for download.")
+        _write_error(
+            "  GGUF example: vetinari models download --repo <recommended-gguf-repo> --filename <recommended-gguf-file>"
         )
-        _write_line("  Native example: vetinari models download --repo Qwen/Qwen2.5-Coder-7B --format safetensors")
+        _write_error("  Native example: vetinari models download --repo <recommended-native-repo> --format safetensors")
         return 1
     if backend_normalized in {"llama_cpp", "local", "llama"} and not filename:
-        _write_line("Error: --filename is required for llama.cpp GGUF downloads.")
+        _write_error("Error: --filename is required for llama.cpp GGUF downloads.")
         return 1
 
     if not _module_available("huggingface_hub"):
-        _write_line("huggingface_hub is not installed — cannot download automatically.")  # noqa: VET301 — user guidance string
-        _write_line("Install with:  pip install huggingface_hub")  # noqa: VET301 — user guidance string
+        _write_error("huggingface_hub is not installed; automatic model download is unavailable.")
+        _write_error("Install with: python -m pip install huggingface_hub")
         logger.warning("huggingface_hub not installed — model download unavailable")
         return 1
 
@@ -197,7 +214,8 @@ def _models_download(
 
         return 0
     except Exception as exc:
-        _write_line(f"Download failed: {exc}")
+        _write_error(f"Download failed: {exc}")
+        _write_error("Check the repository name, filename, revision, and network access, then retry.")
         logger.warning("Model download from %s failed: %s", repo, exc)
         return 1
 
@@ -218,7 +236,7 @@ def _models_files(
 ) -> int:
     """List downloadable Hugging Face repo artifacts with optional filters."""
     if not repo:
-        _write_line("Error: --repo is required for files.")
+        _write_error("Error: --repo is required for files.")
         return 1
     backend_normalized = _infer_cli_backend(backend, model_format=model_format, action="files")
     try:
@@ -238,7 +256,8 @@ def _models_files(
             max_size_gb=max_size_gb,
         )
     except Exception as exc:
-        _write_line(f"File listing failed: {exc}")
+        _write_error(f"File listing failed: {exc}")
+        _write_error("Check the repository name, revision, and network access, then retry.")
         logger.warning("Model file listing from %s failed: %s", repo, exc)
         return 1
 
@@ -256,26 +275,20 @@ def _models_files(
         type_text = str(item.get("file_type") or item.get("format") or "")
         quant_text = str(item.get("quantization") or "")
         revision_text = str(item.get("revision") or "")
-        _write_line(
-            f"{filename:<58} "
-            f"{type_text:<12} "
-            f"{size_text:>9} "
-            f"{quant_text:<10} "
-            f"{revision_text}"
-        )
+        _write_line(f"{filename:<58} {type_text:<12} {size_text:>9} {quant_text:<10} {revision_text}")
     return 0
 
 
 def _models_status(download_id: str | None) -> int:
     """Print persisted model download status."""
     if not download_id:
-        _write_line("Error: --download-id is required for status.")
+        _write_error("Error: --download-id is required for status.")
         return 1
     from vetinari.model_discovery import ModelDiscovery
 
     status = ModelDiscovery().get_download_status(download_id)
     if status is None:
-        _write_line(f"No tracked download found for {download_id}")
+        _write_error(f"No tracked download found for {download_id}")
         return 1
     _write_line(json.dumps(status, indent=2, sort_keys=True))
     return 0

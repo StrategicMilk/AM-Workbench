@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2024-2026 Vetinari Contributors
+# SPDX-License-Identifier: Apache-2.0
 """Log Aggregation Backend Implementations for the Vetinari Dashboard.
 
 Contains all concrete backend classes that ship log records to external
@@ -18,6 +20,7 @@ call returns False rather than raising.
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 from collections import deque
@@ -29,6 +32,46 @@ from vetinari.dashboard.log_aggregator import BackendBase, LogRecord
 from vetinari.http import create_session
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_FILE_BACKEND_MAX_BYTES = 10 * 1024 * 1024  # Rotate dashboard JSONL logs before 10 MiB.
+DEFAULT_FILE_BACKEND_BACKUP_COUNT = 5  # Keep five bounded dashboard log backups.
+
+# GDPR Art. 17 retention window for log records that may carry request bodies
+# or user-identifying fields. Configured via VETINARI_LOG_PII_TTL_DAYS; default
+# 30 days. Backends that surface this value to downstream retention policies
+# (file rotation, Datadog ingestion tagging, webhook receiver) MUST attach it
+# to records that contain PII so the GDPR-compliant erasure window is honored.
+LOG_PII_TTL_DAYS = int(os.environ.get("VETINARI_LOG_PII_TTL_DAYS", "30"))  # GDPR Art. 17 retention bound
+
+DATADOG_LOGS_URLS_BY_SITE = {
+    "us1": DATADOG_LOGS_URL,
+    "us3": "https://http-intake.logs.us3.datadoghq.com/api/v2/logs",
+    "us5": "https://http-intake.logs.us5.datadoghq.com/api/v2/logs",
+    "eu": "https://http-intake.logs.datadoghq.eu/api/v2/logs",
+    "ap1": "https://http-intake.logs.ap1.datadoghq.com/api/v2/logs",
+    "ap2": "https://http-intake.logs.ap2.datadoghq.com/api/v2/logs",
+    "gov": "https://http-intake.logs.ddog-gov.com/api/v2/logs",
+}
+DATADOG_SITE_JURISDICTIONS = {
+    "us1": "US",
+    "us3": "US",
+    "us5": "US",
+    "gov": "US",
+    "eu": "EU",
+    "ap1": "AP",
+    "ap2": "AP",
+}
+
+
+def _jurisdiction_family(jurisdiction: str) -> str:
+    normalized = jurisdiction.strip().upper()
+    if normalized.startswith(("US", "CA-US")) or normalized in {"USA", "UNITED STATES"}:
+        return "US"
+    if normalized.startswith(("EU", "EEA")):
+        return "EU"
+    if normalized.startswith(("AP", "ASIA", "JP", "AU", "SG")):
+        return "AP"
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -43,17 +86,36 @@ class FileBackend(BackendBase):
 
     def __init__(self) -> None:
         self._path: str | None = None
+        self._max_bytes = DEFAULT_FILE_BACKEND_MAX_BYTES
+        self._backup_count = DEFAULT_FILE_BACKEND_BACKUP_COUNT
         self._lock = threading.Lock()
 
-    def configure(self, path: str = str(LOGS_DIR / "vetinari_audit.jsonl"), **_: Any) -> None:
+    def configure(
+        self,
+        path: str = str(LOGS_DIR / "vetinari_audit.jsonl"),
+        max_bytes: int = DEFAULT_FILE_BACKEND_MAX_BYTES,
+        backup_count: int = DEFAULT_FILE_BACKEND_BACKUP_COUNT,
+        **_: Any,
+    ) -> None:
         """Configure the file backend.
 
         Args:
             path: Filesystem path of the output JSONL file.  Parent
                 directories are created automatically.
+            max_bytes: Maximum active JSONL size before rotation.
+            backup_count: Number of rotated backups to retain.
             **_: Ignored extra keyword arguments.
+
+        Raises:
+            ValueError: If ``max_bytes`` or ``backup_count`` is not positive.
         """
+        if max_bytes <= 0:
+            raise ValueError("max_bytes must be positive")
+        if backup_count <= 0:
+            raise ValueError("backup_count must be positive")
         self._path = path
+        self._max_bytes = max_bytes
+        self._backup_count = backup_count
         Path(path).resolve().parent.mkdir(parents=True, exist_ok=True)
 
     def send(self, records: list[LogRecord]) -> bool:
@@ -69,9 +131,18 @@ class FileBackend(BackendBase):
         if not self._path:
             logger.warning("FileBackend not configured (no path set).")
             return False
+        payload = "".join(rec.to_json() + "\n" for rec in records)
         try:
-            with self._lock, Path(self._path).open("a", encoding="utf-8") as fh:
-                fh.writelines(rec.to_json() + "\n" for rec in records)
+            with self._lock:
+                path = Path(self._path)
+                _rotate_jsonl_if_needed(
+                    path,
+                    len(payload.encode("utf-8")),
+                    max_bytes=self._max_bytes,
+                    backup_count=self._backup_count,
+                )
+                with path.open("a", encoding="utf-8") as fh:
+                    fh.write(payload)
             return True
         except OSError as exc:
             logger.error("FileBackend.send failed: %s", exc)
@@ -83,7 +154,36 @@ class FileBackend(BackendBase):
         File handles are opened and closed per ``send()`` call, so there is
         nothing to release here.
         """
-        # noqa: VET031  (intentional: file opened/closed per send call — nothing to release)
+        return None
+
+
+def _rotate_jsonl_if_needed(path: Path, incoming_bytes: int, *, max_bytes: int, backup_count: int) -> None:
+    """Rotate a dashboard JSONL log before the next append exceeds its cap."""
+    try:
+        current_size = path.stat().st_size
+    except FileNotFoundError:
+        logger.warning("Exception handled by  rotate jsonl if needed fallback", exc_info=True)
+        return
+    if current_size + incoming_bytes <= max_bytes:
+        return
+    oldest = path.with_name(f"{path.name}.{backup_count}")
+    if _path_exists_strict(oldest):
+        oldest.unlink()
+    for index in range(backup_count - 1, 0, -1):
+        source = path.with_name(f"{path.name}.{index}")
+        if _path_exists_strict(source):
+            source.replace(path.with_name(f"{path.name}.{index + 1}"))
+    path.replace(path.with_name(f"{path.name}.1"))
+
+
+def _path_exists_strict(path: Path) -> bool:
+    """Return whether a path exists without hiding unreadable state."""
+    try:
+        path.stat()
+    except FileNotFoundError:
+        logger.warning("Exception handled by  path exists strict fallback", exc_info=True)
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +202,8 @@ class DatadogBackend(BackendBase):
         self._service: str = "vetinari"
         self._ddsource: str = "python"
         self._ddtags: str = ""
+        self._logs_url: str = DATADOG_LOGS_URLS_BY_SITE["us1"]
+        self._site: str = "us1"
 
     def configure(
         self,
@@ -109,6 +211,10 @@ class DatadogBackend(BackendBase):
         service: str = "vetinari",
         ddsource: str = "python",
         ddtags: str = "",
+        site: str = "us1",
+        endpoint_url: str | None = None,
+        jurisdiction: str = "",
+        allow_cross_border: bool = False,
         **_: Any,
     ) -> None:
         """Configure the Datadog backend.
@@ -118,12 +224,37 @@ class DatadogBackend(BackendBase):
             service: Service name tag applied to every log entry.
             ddsource: Source tag (language / integration name).
             ddtags: Comma-separated key:value tag string.
+            site: Datadog site key controlling the regional intake endpoint.
+            endpoint_url: Optional custom logs intake endpoint. Requires an
+                explicit cross-border override when a jurisdiction is provided.
+            jurisdiction: Data-residency family for log export requests.
+            allow_cross_border: Explicit override for custom or mismatched
+                external log shipping destinations.
             **_: Ignored extra keyword arguments.
+
+        Raises:
+            ValueError: If site or jurisdiction settings are unsupported.
         """
+        normalized_site = site.strip().lower() or "us1"
+        if normalized_site not in DATADOG_LOGS_URLS_BY_SITE:
+            raise ValueError(f"Unsupported Datadog site: {site!r}")
+
+        expected_family = DATADOG_SITE_JURISDICTIONS[normalized_site]
+        requested_family = _jurisdiction_family(jurisdiction) if jurisdiction else expected_family
+        if requested_family != expected_family and not allow_cross_border:
+            raise ValueError(
+                "Datadog jurisdiction mismatch: "
+                f"{jurisdiction!r} requires {requested_family}, site {normalized_site!r} is {expected_family}"
+            )
+        if endpoint_url and jurisdiction and not allow_cross_border:
+            raise ValueError("Custom Datadog endpoint requires explicit cross-border authorization.")
+
         self._api_key = api_key
         self._service = service
         self._ddsource = ddsource
         self._ddtags = ddtags
+        self._site = normalized_site
+        self._logs_url = endpoint_url or DATADOG_LOGS_URLS_BY_SITE[normalized_site]
 
     def send(self, records: list[LogRecord]) -> bool:
         """Send records to Datadog Logs Intake API.
@@ -156,7 +287,7 @@ class DatadogBackend(BackendBase):
         try:
             with create_session() as session:
                 resp = session.post(
-                    self._DD_URL,
+                    self._logs_url,
                     json=payload,
                     headers=headers,
                     timeout=LOG_BACKEND_TIMEOUT,
@@ -384,3 +515,19 @@ def reset_sse_backend() -> None:
         if _sse_backend_instance is not None:
             _sse_backend_instance.close()
         _sse_backend_instance = None
+
+
+def webhook_trigger_backend_snapshot() -> dict[str, int]:
+    """Snapshot of per-event webhook trigger counts (FSA-0396).
+
+    Thin pass-through to ``vetinari.notifications.webhook.webhook_event_trigger_counts``
+    that lets dashboard backends and operator-status routes surface how
+    many times each event has fired without importing the registry directly.
+
+    Returns:
+        Mapping of event name to trigger count.  Empty dict when no events
+        have fired (or when ``clear_webhook_event_callbacks`` has just run).
+    """
+    from vetinari.notifications.webhook import webhook_event_trigger_counts
+
+    return webhook_event_trigger_counts()

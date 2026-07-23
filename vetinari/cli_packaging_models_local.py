@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from vetinari.cli_packaging_data import _RICH_AVAILABLE, _console, _get_recommended_models
+from vetinari.utils.bounded_collections import BoundedList
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +21,11 @@ def _write_line(text: object = "") -> None:
 
 
 _MAX_MODEL_SCAN_FILES = 5000
+_MAX_MODEL_SCAN_RESULTS = 5000
 _MAX_MODEL_SCAN_DEPTH = 8
 _LOCAL_MODEL_SUFFIXES = {".gguf", ".safetensors"}
 _NATIVE_BACKENDS = {"vllm", "nim"}
+_SAFE_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._ -]{1,160}$")
 
 
 def _guess_model_file_type(path: Path) -> str:
@@ -103,7 +107,7 @@ def _iter_model_files(
     if not models_dir.is_dir():
         return []
     root = models_dir.resolve()
-    found: list[Path] = []
+    found = BoundedList[Path](_MAX_MODEL_SCAN_RESULTS)
     scanned = 0
     for dirpath, dirnames, filenames in os.walk(root):
         current = Path(dirpath)
@@ -135,6 +139,24 @@ def _iter_model_files(
     return sorted(found)
 
 
+def _model_name_query(name: str | None) -> str | None:
+    """Return a safe model filename query or None when the query is unsafe."""
+    if not name:
+        return None
+    query = name.strip()
+    if not query or "/" in query or "\\" in query or ".." in query or not _SAFE_MODEL_NAME_RE.fullmatch(query):
+        return None
+    return query.casefold()
+
+
+def _find_model_candidates(name: str | None, models_dir: Path) -> list[Path] | None:
+    """Find model files using the bounded scanner rather than recursive glob patterns."""
+    query = _model_name_query(name)
+    if query is None:
+        return None
+    return [path for path in _iter_model_files(models_dir) if query in path.name.casefold()]
+
+
 def _find_models_dir() -> Path:
     """Return the first models directory that exists, preferring the user dir.
 
@@ -142,14 +164,14 @@ def _find_models_dir() -> Path:
         The models directory ``Path``.  May not yet exist on disk.
     """
     from vetinari.constants import (
-        DEFAULT_MODELS_DIR,  # noqa: VET306 - constant read is config/test contract, not a write target
-        OPERATOR_MODELS_CACHE_DIR,  # noqa: VET306 - constant read is config/test contract, not a write target
+        DEFAULT_MODELS_DIR,
+        OPERATOR_MODELS_CACHE_DIR,
     )
 
     operator_models = Path(OPERATOR_MODELS_CACHE_DIR)
     if operator_models.exists() and _iter_model_files(operator_models):
         return operator_models
-    project_models = Path(DEFAULT_MODELS_DIR)  # noqa: VET306 — config default, diagnostic read-only
+    project_models = Path(DEFAULT_MODELS_DIR)
     if project_models.exists():
         return project_models
     if operator_models.exists():
@@ -160,7 +182,7 @@ def _find_models_dir() -> Path:
 def _find_native_models_dir() -> Path:
     """Return the native Hugging Face-format model root for vLLM/NIM."""
     from vetinari.constants import (
-        DEFAULT_NATIVE_MODELS_DIR,  # noqa: VET306 - constant read is config/test contract, not a write target
+        DEFAULT_NATIVE_MODELS_DIR,
     )
 
     return Path(DEFAULT_NATIVE_MODELS_DIR)
@@ -332,7 +354,10 @@ def _models_remove(name: str | None, models_dir: Path) -> int:
         _write_line("Error: --name is required for remove.")
         return 1
 
-    candidates = list(models_dir.rglob(f"*{name}*"))
+    candidates = _find_model_candidates(name, models_dir)
+    if candidates is None:
+        _write_line("Error: --name must be a safe model filename fragment.")
+        return 1
     if not candidates:
         _write_line(f"No model matching '{name}' found in {models_dir}")
         return 1
@@ -379,7 +404,10 @@ def _models_info(name: str | None, models_dir: Path) -> int:
         _write_line("Error: --name is required for info.")
         return 1
 
-    candidates = list(models_dir.rglob(f"*{name}*"))
+    candidates = _find_model_candidates(name, models_dir)
+    if candidates is None:
+        _write_line("Error: --name must be a safe model filename fragment.")
+        return 1
     if not candidates:
         _write_line(f"No model matching '{name}' found in {models_dir}")
         return 1
@@ -397,8 +425,8 @@ def _models_info(name: str | None, models_dir: Path) -> int:
     try:
         with target.open("rb") as fh:
             gguf_valid = fh.read(4) == b"GGUF"
-    except OSError:  # noqa: VET022 — file may not be readable; gguf_valid stays False
-        pass
+    except OSError:
+        gguf_valid = False
 
     _write_line(f"Model: {target.name}")
     _write_line(f"  Path         : {target}")
@@ -436,7 +464,9 @@ def _models_recommend(vram_gb: float) -> int:
                 f"--backend {model['backend']} --format {model.get('format', 'safetensors')}"
             )
         else:
-            _write_line(f"    Download : vetinari models download --repo {model['repo']} --filename {model['filename']}")
+            _write_line(
+                f"    Download : vetinari models download --repo {model['repo']} --filename {model['filename']}"
+            )
         _write_line()
     return 0
 
@@ -452,7 +482,7 @@ def _models_scan() -> int:
     """
     from vetinari.setup.init_wizard import _scan_for_models
 
-    _write_line("[Vetinari] Scanning for model files...")
+    _write_line("[AM Workbench] Scanning for model files...")
     found = _scan_for_models()
     if not found:
         _write_line("  No .gguf or .awq files found.")
@@ -482,15 +512,15 @@ def _models_check() -> int:
     upgrades = checker.get_cached_upgrades()
 
     if not upgrades:
-        _write_line("[Vetinari] No cached model check results found. Running fresh check...")
+        _write_line("[AM Workbench] No cached model check results found. Running fresh check...")
         _write_line("  This may take a moment (searching HuggingFace, benchmarks, sentiment)...")
         upgrades = checker.check_for_upgrades()
 
     if not upgrades:
-        _write_line("[Vetinari] Your models are up to date — no better alternatives found.")
+        _write_line("[AM Workbench] Your models are up to date — no better alternatives found.")
         return 0
 
-    _write_line(f"[Vetinari] Found {len(upgrades)} potential upgrade(s):\n")
+    _write_line(f"[AM Workbench] Found {len(upgrades)} potential upgrade(s):\n")
 
     for i, u in enumerate(upgrades, 1):
         _write_line(f"  {i}. {u.candidate_name}")
@@ -512,7 +542,9 @@ def _models_check() -> int:
                 )
             else:
                 _write_line("     Download:  choose a GGUF filename from the repo, then run:")
-                _write_line(f"                vetinari models download --repo {u.candidate_repo_id} --filename <file.gguf>")
+                _write_line(
+                    f"                vetinari models download --repo {u.candidate_repo_id} --filename <file.gguf>"
+                )
         _write_line()
 
     return 0

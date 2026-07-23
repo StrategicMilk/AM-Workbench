@@ -39,6 +39,7 @@ from .cost import (
 from .cost_predictor import (
     CostEstimate,
     CostPredictor,
+    reset_cost_predictor_records,
 )
 from .failure_registry import (
     FailureRegistry,
@@ -81,7 +82,7 @@ from .sla import (
     get_sla_tracker,
     reset_sla_tracker,
 )
-from .wiring import (  # noqa: VET123 — reset_wiring tested via analytics.__all__ in test_analytics_wiring.py
+from .wiring import (
     predict_cost,
     record_actual_cost,
     record_failure,
@@ -145,6 +146,7 @@ __all__ = [
     "record_task_metrics",
     "record_unknown_family_task_result",
     "reset_anomaly_detector",
+    "reset_cost_predictor_records",
     "reset_cost_tracker",
     "reset_failure_registry",
     "reset_failure_tracker",

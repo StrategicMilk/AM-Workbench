@@ -18,6 +18,7 @@ from vetinari.types import PromptVersionStatus
 
 logger = logging.getLogger(__name__)
 
+
 __all__ = [
     "evolve_per_level",
     "generate_variant_from_trace",
@@ -43,7 +44,7 @@ def generate_variant_llm(evolver: PromptEvolver, agent_type: str, baseline_promp
     Returns:
         The generated variant text, or None on failure.
     """
-    from vetinari.learning.prompt_evolver import PromptVariant
+    from vetinari.learning.prompt_evolver_models import PromptVariant
 
     if not evolver._adapter_manager:
         return None
@@ -51,8 +52,17 @@ def generate_variant_llm(evolver: PromptEvolver, agent_type: str, baseline_promp
     try:
         from vetinari.adapters.base import InferenceRequest
 
+        model_id = str(
+            getattr(evolver._adapter_manager, "prompt_mutation_model_id", "")
+            or getattr(evolver._adapter_manager, "default_model_id", "")
+            or getattr(evolver, "_prompt_mutation_model_id", "")
+            or ""
+        ).strip()
+        if not model_id:
+            logger.warning("LLM variant generation skipped for %s: no prompt mutation model configured", agent_type)
+            return None
         req = InferenceRequest(
-            model_id="default",
+            model_id=model_id,
             prompt=f"""You are a prompt engineer. Improve this agent system prompt to be more effective.
 
 AGENT TYPE: {agent_type}
@@ -339,10 +349,7 @@ def synthesize_scope_guidelines(evolver: PromptEvolver, agent_type: str, mode: s
         # get_recent_traces only accepts (limit, failed_only) — filter by
         # agent_type and mode from the returned dicts afterwards.
         raw_traces = collector.get_recent_traces(limit=50, failed_only=True)
-        traces = [
-            t for t in raw_traces
-            if t.get("agent_type") == agent_type and t.get("mode", "default") == mode
-        ]
+        traces = [t for t in raw_traces if t.get("agent_type") == agent_type and t.get("mode", "default") == mode]
     except Exception as exc:
         logger.warning(
             "Could not load recent traces for %s/%s — returning empty guidelines: %s",

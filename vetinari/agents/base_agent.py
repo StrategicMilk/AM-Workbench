@@ -14,6 +14,15 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any
 
+from vetinari.agents._context import AgentContext
+from vetinari.agents.base_agent_dependencies import (
+    _get_agent_constraints,
+    _get_complete_task_fn,
+    _get_execute_safely_fn,
+    _get_execution_context_mod,
+    _get_log_event,
+    _get_prompt_evolver,
+)
 from vetinari.agents.base_agent_prompts import (
     BASE_PROMPT_FRAMEWORK,
     COMPACT_PROMPT_FRAMEWORK,
@@ -27,13 +36,17 @@ from vetinari.agents.collaboration import (
     NEEDS_INFO,
     NEEDS_USER_INPUT,
     QUESTION,
-    CollaborationMixin,
+    CollaborationBehavior,
 )
 from vetinari.agents.contracts import AgentResult, AgentTask, VerificationResult, get_agent_spec
-from vetinari.agents.inference import InferenceMixin
+from vetinari.agents.inference import InferenceBehavior
 from vetinari.agents.observability import _ObservabilitySpan
-from vetinari.agents.tools_mixin import ToolsMixin
+from vetinari.agents.tools_mixin import AgentToolAccess
+from vetinari.exceptions import OutputBudgetExceededError
 from vetinari.types import AgentType
+
+logger = logging.getLogger(__name__)
+
 
 # Re-export symbols so existing imports from base_agent keep working.
 __all__ = [
@@ -42,11 +55,12 @@ __all__ = [
     "NEEDS_INFO",
     "NEEDS_USER_INPUT",
     "QUESTION",
+    "AgentContext",
     "BaseAgent",
     "_ObservabilitySpan",
+    "check_output_budget",
 ]
 
-logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Module-level lazy getters — used by hot-path functions to avoid per-call
@@ -57,20 +71,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _cached_shared_memory_cls = None
-_cached_current_context = None
-_cached_execution_context_mod = None
-_cached_genai_tracer_fn = None
-_cached_security_error_cls = None
-_cached_guardrails_mod = None
-_cached_skill_contract_mod = None
-_cached_meta_adapter_mod = None
-_cached_quality_scorer_fn = None
-_cached_feedback_loop_fn = None
-_cached_constraint_registry_fn = None
-_cached_prompt_evolver_fn = None
-_cached_training_collector_fn = None
-_cached_episode_memory_fn = None
-_cached_structured_logging_fn = None
 
 
 def _get_unified_memory_store_fn():
@@ -83,214 +83,6 @@ def _get_unified_memory_store_fn():
     return _cached_shared_memory_cls
 
 
-def _get_current_context():
-    """Return the current_context callable, importing once on first call."""
-    global _cached_current_context
-    if _cached_current_context is None:
-        from vetinari.execution_context import current_context
-
-        _cached_current_context = current_context
-    return _cached_current_context
-
-
-def _get_execution_context_mod():
-    """Return a namespace with ToolPermission, enforce_agent_permissions, and get_context_manager."""
-    global _cached_execution_context_mod
-    if _cached_execution_context_mod is None:
-        import vetinari.execution_context as _ec_mod
-
-        _cached_execution_context_mod = _ec_mod
-    return _cached_execution_context_mod
-
-
-def _get_genai_tracer():
-    """Return get_genai_tracer callable, importing once on first call."""
-    global _cached_genai_tracer_fn
-    if _cached_genai_tracer_fn is None:
-        from vetinari.observability.otel_genai import get_genai_tracer
-
-        _cached_genai_tracer_fn = get_genai_tracer
-    return _cached_genai_tracer_fn
-
-
-def _get_security_error_cls():
-    """Return the SecurityError exception class, importing once on first call."""
-    global _cached_security_error_cls
-    if _cached_security_error_cls is None:
-        from vetinari.exceptions import SecurityError
-
-        _cached_security_error_cls = SecurityError
-    return _cached_security_error_cls
-
-
-def _get_guardrails_mod():
-    """Return a namespace with RailContext and get_guardrails, importing once on first call."""
-    global _cached_guardrails_mod
-    if _cached_guardrails_mod is None:
-        import vetinari.safety.guardrails as _gr_mod
-
-        _cached_guardrails_mod = _gr_mod
-    return _cached_guardrails_mod
-
-
-def _get_skill_contract_mod():
-    """Return a namespace with SkillOutput and self_check, importing once on first call."""
-    global _cached_skill_contract_mod
-    if _cached_skill_contract_mod is None:
-        import vetinari.agents.skill_contract as _sc_mod
-
-        _cached_skill_contract_mod = _sc_mod
-    return _cached_skill_contract_mod
-
-
-def _get_meta_adapter_mod():
-    """Return a namespace with StrategyBundle and get_meta_adapter, importing once on first call."""
-    global _cached_meta_adapter_mod
-    if _cached_meta_adapter_mod is None:
-        import vetinari.learning.meta_adapter as _ma_mod
-
-        _cached_meta_adapter_mod = _ma_mod
-    return _cached_meta_adapter_mod
-
-
-def _get_quality_scorer():
-    """Return the get_quality_scorer callable, importing once on first call."""
-    global _cached_quality_scorer_fn
-    if _cached_quality_scorer_fn is None:
-        from vetinari.learning.quality_scorer import get_quality_scorer
-
-        _cached_quality_scorer_fn = get_quality_scorer
-    return _cached_quality_scorer_fn
-
-
-def _get_feedback_loop():
-    """Return the get_feedback_loop callable, importing once on first call."""
-    global _cached_feedback_loop_fn
-    if _cached_feedback_loop_fn is None:
-        from vetinari.learning.feedback_loop import get_feedback_loop
-
-        _cached_feedback_loop_fn = get_feedback_loop
-    return _cached_feedback_loop_fn
-
-
-def _get_constraint_registry():
-    """Return the get_constraint_registry callable, importing once on first call."""
-    global _cached_constraint_registry_fn
-    if _cached_constraint_registry_fn is None:
-        from vetinari.constraints.registry import get_constraint_registry
-
-        _cached_constraint_registry_fn = get_constraint_registry
-    return _cached_constraint_registry_fn
-
-
-def _get_prompt_evolver():
-    """Return the get_prompt_evolver callable, importing once on first call."""
-    global _cached_prompt_evolver_fn
-    if _cached_prompt_evolver_fn is None:
-        from vetinari.learning.prompt_evolver import get_prompt_evolver
-
-        _cached_prompt_evolver_fn = get_prompt_evolver
-    return _cached_prompt_evolver_fn
-
-
-def _get_training_collector():
-    """Return the get_training_collector callable, importing once on first call."""
-    global _cached_training_collector_fn
-    if _cached_training_collector_fn is None:
-        from vetinari.learning.training_data import get_training_collector
-
-        _cached_training_collector_fn = get_training_collector
-    return _cached_training_collector_fn
-
-
-def _get_episode_memory():
-    """Return the get_episode_memory callable, importing once on first call."""
-    global _cached_episode_memory_fn
-    if _cached_episode_memory_fn is None:
-        from vetinari.learning.episode_memory import get_episode_memory
-
-        _cached_episode_memory_fn = get_episode_memory
-    return _cached_episode_memory_fn
-
-
-def _get_log_event():
-    """Return the log_event callable from structured_logging, importing once on first call."""
-    global _cached_structured_logging_fn
-    if _cached_structured_logging_fn is None:
-        from vetinari.structured_logging import log_event
-
-        _cached_structured_logging_fn = log_event
-    return _cached_structured_logging_fn
-
-
-_cached_execute_safely_fn = None
-_cached_complete_task_fn = None
-_cached_practices_fn = None
-_cached_standards_loader_fn = None
-_cached_rules_manager_fn = None
-_cached_knowledge_base_fn = None
-
-
-def _get_execute_safely_fn():
-    """Return the execute_safely callable from base_agent_execution, importing once on first call."""
-    global _cached_execute_safely_fn
-    if _cached_execute_safely_fn is None:
-        from vetinari.agents.base_agent_execution import execute_safely
-
-        _cached_execute_safely_fn = execute_safely
-    return _cached_execute_safely_fn
-
-
-def _get_complete_task_fn():
-    """Return the complete_task callable from base_agent_completion, importing once on first call."""
-    global _cached_complete_task_fn
-    if _cached_complete_task_fn is None:
-        from vetinari.agents.base_agent_completion import complete_task
-
-        _cached_complete_task_fn = complete_task
-    return _cached_complete_task_fn
-
-
-def _get_practices_for_mode():
-    """Return the get_practices_for_mode callable, importing once on first call."""
-    global _cached_practices_fn
-    if _cached_practices_fn is None:
-        from vetinari.agents.practices import get_practices_for_mode
-
-        _cached_practices_fn = get_practices_for_mode
-    return _cached_practices_fn
-
-
-def _get_standards_loader():
-    """Return the get_standards_loader callable, importing once on first call."""
-    global _cached_standards_loader_fn
-    if _cached_standards_loader_fn is None:
-        from vetinari.config.standards_loader import get_standards_loader
-
-        _cached_standards_loader_fn = get_standards_loader
-    return _cached_standards_loader_fn
-
-
-def _get_rules_manager():
-    """Return the get_rules_manager callable, importing once on first call."""
-    global _cached_rules_manager_fn
-    if _cached_rules_manager_fn is None:
-        from vetinari.rules_manager import get_rules_manager
-
-        _cached_rules_manager_fn = get_rules_manager
-    return _cached_rules_manager_fn
-
-
-def _get_knowledge_base():
-    """Return the get_knowledge_base callable, importing once on first call."""
-    global _cached_knowledge_base_fn
-    if _cached_knowledge_base_fn is None:
-        from vetinari.rag import get_knowledge_base
-
-        _cached_knowledge_base_fn = get_knowledge_base
-    return _cached_knowledge_base_fn
-
-
 # Regex: match a number (int or float) immediately followed by "b" (e.g. "7b", "13b", "0.5b")
 _MODEL_SIZE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*b", re.IGNORECASE)
 
@@ -300,6 +92,29 @@ _TOKEN_BUDGETS: dict[str, int] = {
     AgentType.WORKER.value: 32768,
     AgentType.INSPECTOR.value: 16384,
 }
+
+
+def check_output_budget(user_id: str, tokens_requested: int, budget: int) -> None:
+    """Enforce an output-token budget cap per user or agent session.
+
+    Raises OutputBudgetExceededError when tokens_requested exceeds budget,
+    implementing the LLM10 (Model Theft / Excessive Output) mitigation from
+    OWASP LLM Top 10 2025. Fails closed — an unknown or zero budget is not
+    treated as unlimited.
+
+    Args:
+        user_id: Identifier of the requesting user or agent (used in the error message).
+        tokens_requested: Number of output tokens the caller intends to generate.
+        budget: Maximum tokens permitted for this user/session.
+
+    Raises:
+        OutputBudgetExceededError: If tokens_requested > budget or budget is not positive.
+    """
+    if budget <= 0 or tokens_requested > budget:
+        raise OutputBudgetExceededError(
+            f"output budget exceeded for {user_id!r}: requested {tokens_requested} tokens "
+            f"but budget is {budget}; reduce requested tokens or raise the session budget"
+        )
 
 
 @lru_cache(maxsize=256)
@@ -326,24 +141,7 @@ def _parse_model_size_b(model_id: str) -> float:
     return max(float(m) for m in matches)
 
 
-# ---------------------------------------------------------------------------
-# Constraint-aware helpers (Phase 8.10)
-# ---------------------------------------------------------------------------
-
-
-def _get_agent_constraints(agent_type_value: str, mode: str | None = None):
-    """Load constraints for an agent via the cached registry getter. Returns None on import failure."""
-    try:
-        return _get_constraint_registry()().get_constraints_for_agent(
-            agent_type_value,
-            mode=mode,
-        )
-    except Exception as exc:
-        logger.warning("Constraint registry unavailable for agent %s: %s", agent_type_value, exc)
-        return None
-
-
-class BaseAgent(InferenceMixin, ToolsMixin, CollaborationMixin, ABC):  # noqa: VET109 -- intended extension point; MultiModeAgent and future agent types inherit from this
+class BaseAgent(InferenceBehavior, AgentToolAccess, CollaborationBehavior, ABC):
     """Base class for all Vetinari agents.
 
     All agents must inherit from this class and implement:
@@ -360,7 +158,7 @@ class BaseAgent(InferenceMixin, ToolsMixin, CollaborationMixin, ABC):  # noqa: V
             config: Optional per-instance configuration overrides; merged with defaults.
         """
         self.agent_type = agent_type
-        self._config = config or {}  # noqa: VET112 - empty fallback preserves optional request metadata contract
+        self._config = config or {}
         self._spec = get_agent_spec(agent_type)
         self.is_initialized = False
         self._context: dict[str, Any] = {}
@@ -368,6 +166,7 @@ class BaseAgent(InferenceMixin, ToolsMixin, CollaborationMixin, ABC):  # noqa: V
         self._adapter_manager = None
         self._web_search = None
         self._tool_registry = None
+        self._last_memory_recall_status: dict[str, Any] = {"status": "not_attempted"}
         # Actual model_id from the most recent inference response (set by _call_inference)
         self._last_inference_model_id: str = ""
         # Budget enforcement (ADR-0075) — constructed from spec with safe defaults
@@ -391,7 +190,7 @@ class BaseAgent(InferenceMixin, ToolsMixin, CollaborationMixin, ABC):  # noqa: V
     def thinking_variant(self) -> str:
         return self._spec.thinking_variant if self._spec else "medium"
 
-    def initialize(self, context: dict[str, Any]) -> None:
+    def initialize(self, context: AgentContext | dict[str, Any]) -> None:
         """Initialize the agent with context.
 
         Args:
@@ -401,6 +200,9 @@ class BaseAgent(InferenceMixin, ToolsMixin, CollaborationMixin, ABC):  # noqa: V
                 - tool_registry: ToolRegistry for registered tools
                 - Any agent-specific configuration
         """
+        if not isinstance(context, AgentContext):
+            context = AgentContext(context)
+
         self._context = context
         # Extract key shared services from context
         self._adapter_manager = context.get("adapter_manager")
@@ -484,9 +286,21 @@ class BaseAgent(InferenceMixin, ToolsMixin, CollaborationMixin, ABC):  # noqa: V
                 agent=self.agent_type.value,
                 limit=5,
             )
-            return [e.to_dict() for e in entries] if entries else []
+            recalled = [e.to_dict() for e in entries] if entries else []
+            self._last_memory_recall_status = {
+                "status": "ok",
+                "count": len(recalled),
+                "query_present": bool(task_description),
+            }
+            return recalled
         except Exception as exc:
             logger.warning("Memory recall failed (non-fatal): %s", exc)
+            self._last_memory_recall_status = {
+                "status": "failed",
+                "count": 0,
+                "query_present": bool(task_description),
+                "error_type": type(exc).__name__,
+            }
         return []
 
     def _execute_safely(self, task: AgentTask, execute_fn: Callable) -> AgentResult:
@@ -592,11 +406,19 @@ class BaseAgent(InferenceMixin, ToolsMixin, CollaborationMixin, ABC):  # noqa: V
             self._log("warning", "Agent not initialized, initializing with default context")
             self.initialize({})
 
-        # Enforce MODEL_INFERENCE permission
+        self._enforce_model_inference_permission()
+        task.started_at = datetime.now(timezone.utc).isoformat()
+        self._initialize_token_budget()
+        self._apply_resource_constraints(task)
+        self._emit_task_started(task)
+        self._register_prompt_baseline()
+        return task
+
+    def _enforce_model_inference_permission(self) -> None:
         try:
             _ec = _get_execution_context_mod()
             _ec.get_context_manager().enforce_permission(_ec.ToolPermission.MODEL_INFERENCE, "agent_execute")
-        except (ImportError, AttributeError):  # noqa: VET022 - best-effort optional path must not fail the primary flow
+        except (ImportError, AttributeError):
             # Permission system unavailable — flag degraded safety so callers
             # can inspect state; execution is not silently promoted to permitted.
             logger.warning(
@@ -607,15 +429,19 @@ class BaseAgent(InferenceMixin, ToolsMixin, CollaborationMixin, ABC):  # noqa: V
         except PermissionError:
             raise  # Permission denied — propagate to caller
 
-        task.started_at = datetime.now(timezone.utc).isoformat()
-
-        # ── C5: Initialize per-agent token budget ─────────────────────
+    def _initialize_token_budget(self) -> None:
         _budget = _TOKEN_BUDGETS.get(self.agent_type.value, 16384)
         if not hasattr(self, "_token_budget_remaining") or self._token_budget_remaining is None:
             self._token_budget_total = _budget
             self._token_budget_remaining = _budget
+        # LLM10 (Model Theft / Output Budget) mitigation: enforce the budget as a hard cap.
+        check_output_budget(
+            user_id=getattr(self, "user_id", "agent"),
+            tokens_requested=_budget,
+            budget=_budget,
+        )
 
-        # ----- Phase 8.10: Enforce resource constraints -----
+    def _apply_resource_constraints(self, task: AgentTask) -> None:
         constraints = _get_agent_constraints(self.agent_type.value)
         if constraints and constraints.resources:
             rc = constraints.resources
@@ -649,7 +475,7 @@ class BaseAgent(InferenceMixin, ToolsMixin, CollaborationMixin, ABC):  # noqa: V
             if not hasattr(task, "_constraint_timeout"):
                 task._constraint_timeout = 120
 
-        # Emit structured trace span for this task
+    def _emit_task_started(self, task: AgentTask) -> None:
         try:
             _get_log_event()(
                 "info",
@@ -661,14 +487,12 @@ class BaseAgent(InferenceMixin, ToolsMixin, CollaborationMixin, ABC):  # noqa: V
         except Exception:
             logger.warning("Failed to emit structured trace span for task_started", exc_info=True)
 
-        # Register prompt variant if evolver is available
+    def _register_prompt_baseline(self) -> None:
         try:
             evolver = _get_prompt_evolver()()
             evolver.register_baseline(self.agent_type.value, self.get_system_prompt())
         except Exception:
             logger.warning("Failed to register prompt baseline for %s", self.agent_type.value, exc_info=True)
-
-        return task
 
     # ------------------------------------------------------------------
     # Phase 7.9I: Dependency results incorporation

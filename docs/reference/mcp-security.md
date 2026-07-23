@@ -1,23 +1,23 @@
 # MCP Security Model
 
-This document describes how Vetinari controls access to MCP (Model Context Protocol)
-tools — both the built-in tools exposed by Vetinari's own MCP server and the external
+This document describes how AM Workbench controls access to MCP (Model Context Protocol)
+tools — both the built-in tools exposed by AM Workbench's own MCP server and the external
 tools loaded from third-party MCP servers.
 
 ---
 
 ## Which MCP Tools Are Allowed
 
-### Built-in Vetinari tools
+### Built-in AM Workbench tools
 
-Five tools are always available through Vetinari's own MCP server.  They are
+Five tools are always available through AM Workbench's own MCP server.  They are
 registered unconditionally in `MCPToolRegistry.register_defaults()`:
 
 | Tool name | Capability |
 |---|---|
 | `vetinari_plan` | Generate an execution plan from a goal description |
 | `vetinari_search` | Semantic codebase search via CocoIndexAdapter |
-| `vetinari_execute` | Execute a task through the Vetinari pipeline |
+| `vetinari_execute` | Execute a task through the AM Workbench pipeline |
 | `vetinari_memory` | Query or store entries in the dual memory system |
 | `vetinari_benchmark` | Run a named benchmark suite and return a summary |
 
@@ -32,11 +32,11 @@ client-side bridge. Those tools are not automatically exposed through the
 served `/mcp/tools` or JSON-RPC `tools/list` registry unless the server-side
 `MCPToolRegistry.register_external_server()` path is explicitly wired for that
 running client. Document this as a split between Worker-consumed external MCP
-tools and tools exposed to remote MCP clients until public proof establishes a
+tools and tools exposed to remote MCP clients until Session 34F2 proves a
 single shared runtime registry.
 
 To add, remove, or disable an external server, edit `config/mcp_servers.yaml`
-and restart the Vetinari server.  No code changes are required.
+and restart the AM Workbench server.  No code changes are required.
 
 **Example — disabling the filesystem server:**
 
@@ -76,8 +76,8 @@ before dispatching:
 3. Valid JSON but not an object (string, array, number) → `400 {"error": "Request body must be a JSON object"}`
 4. Valid JSON object → dispatched to `MCPServer.handle_message()`
 
-This prevents Litestar's internal validation from surfacing as an unstructured
-500 when callers send non-object JSON bodies.
+This keeps MCP request validation inside the `POST /mcp/message` handler and
+returns structured 400 errors when callers send non-object JSON bodies.
 
 ---
 
@@ -100,20 +100,25 @@ caller's responsibility to validate.
 
 ---
 
-## Admin Guard on MCP Endpoints
+## Local-User Guard on MCP Endpoints
 
-Both HTTP endpoints in `vetinari/web/litestar_mcp_transport.py` are protected
-by the `admin_guard` Litestar guard:
+HTTP endpoints in `crates/amw-kernel/src/api/routes/workbench_domains.rs` are
+owned by the Rust kernel. Framework-neutral MCP support remains in
+`vetinari/mcp/http_transport.py`:
 
 | Endpoint | Method | Guard |
 |---|---|---|
-| `/mcp/message` | POST | `admin_guard` |
-| `/mcp/tools` | GET | `admin_guard` |
+| `/mcp/message` | POST | `local_user_guard` |
+| `/mcp/tools` | GET | `local_user_guard` |
+| `/mcp/resources` | GET | `local_user_guard` |
+| `/mcp/resources/read` | GET | `local_user_guard` |
+| `/mcp/resources/stream` | GET | `local_user_guard` |
 
-The `admin_guard` checks `VETINARI_ADMIN_TOKEN` using `X-Admin-Token` or
-`Authorization: Bearer <token>` and falls back to localhost IP only when no
-token is configured. Treat this as a local trusted-operator boundary, not a
-multi-user or internet-facing authorization model.
+The `local_user_guard` permits loopback callers for local-first use. Remote
+callers must authenticate with the same `VETINARI_ADMIN_TOKEN` accepted by
+`admin_guard`, using `X-Admin-Token` or `Authorization: Bearer <token>`. Treat
+this as a local trusted-operator boundary, not a multi-user or internet-facing
+authorization model.
 
 The stdio transport (`vetinari mcp --transport stdio`) runs as a subprocess
 with the same privileges as the parent process.  It should only be connected

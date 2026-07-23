@@ -12,6 +12,9 @@ construction time via ``_load_domain_templates()`` and
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
+from vetinari.boundary_guards import require_nonempty
 from vetinari.planning.plan_types import (
     DefinitionOfDone,
     DefinitionOfReady,
@@ -317,10 +320,22 @@ AGENT_TEMPLATES: dict[str, list[dict]] = {
         {"description": "Summarize decision justification", "agent": "explainer"},
     ],
     "memory": [
-        {"description": "Log plan outcome to memory store", "agent": "memory"},
-        {"description": "Record model performance metrics", "agent": "memory"},
-        {"description": "Archive plan rationale for future reference", "agent": "memory"},
-        {"description": "Update success rates based on outcome", "agent": "memory"},
-        {"description": "Prune old plans per retention policy", "agent": "memory"},
+        {"description": "Log plan outcome to memory store", "agent": "memory", "runtime_agent": "FOREMAN"},
+        {"description": "Record model performance metrics", "agent": "memory", "runtime_agent": "FOREMAN"},
+        {"description": "Archive plan rationale for future reference", "agent": "memory", "runtime_agent": "FOREMAN"},
+        {"description": "Update success rates based on outcome", "agent": "memory", "runtime_agent": "FOREMAN"},
+        {"description": "Prune old plans per retention policy", "agent": "memory", "runtime_agent": "FOREMAN"},
     ],
 }
+
+
+def _validate_template_catalog(catalog: Mapping[object, Sequence[Mapping[str, object]]]) -> None:
+    """Fail closed if static planning templates contain empty prompt text."""
+    for template_rows in catalog.values():
+        for row in template_rows:
+            template_str = str(row.get("description", ""))
+            require_nonempty(template_str, field_name="prompt_template")
+
+
+_validate_template_catalog(DOMAIN_TEMPLATES)
+_validate_template_catalog(AGENT_TEMPLATES)

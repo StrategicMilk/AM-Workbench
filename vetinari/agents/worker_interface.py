@@ -128,9 +128,13 @@ WORKER_INTERFACE = AgentInterface(
                 "properties": {
                     "requirements": {"type": "string"},
                     "framework": {"type": "string"},
-                    "accessibility_level": {"type": "string"},
+                    "accessibility_level": {
+                        "type": "string",
+                        "enum": ["wcag2.2-aa", "wcag2.2-aaa"],
+                        "description": "Required accessibility target for generated UI specifications.",
+                    },
                 },
-                "required": ["requirements"],
+                "required": ["requirements", "accessibility_level"],
             },
             output_schema={
                 "type": "object",
@@ -138,7 +142,11 @@ WORKER_INTERFACE = AgentInterface(
                     "ui_spec": {"type": "object"},
                     "components": {"type": "array"},
                     "design_tokens": {"type": "object"},
+                    "accessibility_notes": {"type": "array", "items": {"type": "string"}},
+                    "keyboard_interactions": {"type": "array", "items": {"type": "string"}},
+                    "aria_contracts": {"type": "array", "items": {"type": "string"}},
                 },
+                "required": ["ui_spec", "components", "accessibility_notes", "keyboard_interactions", "aria_contracts"],
             },
         ),
         Capability(
@@ -478,15 +486,18 @@ WORKER_INTERFACE = AgentInterface(
                     "prompt": {"type": "string"},
                     "style": {"type": "string"},
                     "dimensions": {"type": "object"},
+                    "alt_text": {"type": "string"},
                 },
-                "required": ["prompt"],
+                "required": ["prompt", "alt_text"],
             },
             output_schema={
                 "type": "object",
                 "properties": {
                     "file_path": {"type": "string"},
                     "format": {"type": "string"},
+                    "alt_text": {"type": "string"},
                 },
+                "required": ["file_path", "format", "alt_text"],
             },
         ),
     ],

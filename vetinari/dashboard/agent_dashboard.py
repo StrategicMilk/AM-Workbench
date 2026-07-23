@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from vetinari.boundary_guards import assert_dependency_success
 from vetinari.types import AgentType
 from vetinari.utils.serialization import dataclass_to_dict
 
@@ -135,6 +136,15 @@ class AgentDashboard:
     def __init__(self) -> None:
         self._start_time = time.monotonic()
 
+    @staticmethod
+    def _mark_health_degraded(health: SystemHealth, source: str, exc: BaseException) -> None:
+        try:
+            assert_dependency_success(False, dependency_id=source)
+        except RuntimeError:
+            logger.warning("Dashboard health source %s failed: %s", source, exc)
+        if health.status == "healthy":
+            health.status = "degraded"
+
     def get_agent_metrics(self, agent_type: str) -> AgentMetrics:
         """Return system-wide adapter metrics associated with the given agent type slot.
 
@@ -162,7 +172,6 @@ class AgentDashboard:
             active_modes=_AGENT_MODES.get(agent_type, []),
         )
 
-        # Pull circuit breaker state (this IS agent-specific)
         try:
             from vetinari.resilience import get_circuit_breaker_registry
 
@@ -171,7 +180,6 @@ class AgentDashboard:
         except Exception:
             logger.warning("Circuit breaker state unavailable for agent %s", agent_type, exc_info=True)
 
-        # Pull cost data from CostTracker report filtered by agent
         try:
             from vetinari.analytics.cost import get_cost_tracker
 
@@ -184,37 +192,22 @@ class AgentDashboard:
         except Exception:
             logger.warning("Cost data unavailable for agent %s", agent_type, exc_info=True)
 
-        # Pull execution counts and latency from telemetry (system-wide scope).
-        # Adapter keys are named after the adapter type (e.g. "llama_cpp",
-        # "openai"), not after agent types, so we aggregate all adapters.
-        # All agent slots receive the same system totals; callers should treat
-        # this as a system-level view until per-agent telemetry is implemented.
         try:
             from vetinari.telemetry import get_telemetry_collector
 
             tel = get_telemetry_collector()
             adapter_metrics = tel.get_adapter_metrics()
-            # Aggregate across ALL adapters — adapter keys are named after the adapter
-            # type (e.g. "llama_cpp", "openai"), not agent types, so substring matching
-            # against agent_type would silently drop most adapters and return zero metrics.
-            # Use weighted latency average so a high-volume adapter with low latency
-            # isn't dominated by a single-request high-latency adapter.
             total_latency_sum = 0.0
             total_successful_for_latency = 0
             for _key, am in adapter_metrics.items():
                 metrics.successful += am.successful_requests
                 metrics.failed += am.failed_requests
-                # Sum total_executions so that successful + failed <= total_executions
-                # (max() would allow successful+failed to exceed total, giving
-                # success_rate > 1.0 when multiple adapters match the agent)
                 metrics.total_executions += am.total_requests
-                # Accumulate for weighted-average latency across adapters
                 total_latency_sum += am.total_latency_ms
                 total_successful_for_latency += am.successful_requests
                 metrics.total_tokens += am.total_tokens_used
                 if am.last_request_time and am.last_request_time > metrics.last_execution:
                     metrics.last_execution = am.last_request_time
-            # Weighted avg latency — only meaningful when there are successful calls
             if total_successful_for_latency > 0:
                 metrics.avg_latency_ms = total_latency_sum / total_successful_for_latency
         except Exception:
@@ -267,7 +260,8 @@ class AgentDashboard:
                 cb = registry.get(at)
                 if cb.state.value == "open":
                     health.open_circuit_breakers.append(at)
-        except Exception:
+        except Exception as exc:
+            self._mark_health_degraded(health, "circuit_breaker_registry", exc)
             logger.warning("Circuit breaker registry unavailable; skipping open-breaker check", exc_info=True)
 
         health.healthy_agents = health.total_agents - len(health.open_circuit_breakers)
@@ -283,7 +277,8 @@ class AgentDashboard:
             report = get_cost_tracker().get_report(since=time.time() - 86400)
             health.total_cost_24h = report.total_cost_usd
             health.total_tokens_24h = report.total_tokens
-        except Exception:
+        except Exception as exc:
+            self._mark_health_degraded(health, "cost_tracker", exc)
             logger.warning("Cost tracker summary unavailable; 24h totals will be zero", exc_info=True)
 
         return health

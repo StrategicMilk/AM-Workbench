@@ -12,12 +12,12 @@ through a Plan DAG, managing:
 This is step 3 of the pipeline: Intake → Planning → **Execution** → Quality Gate → Assembly.
 
 Split layout:
-    graph_planner.py     — GraphPlannerMixin: plan creation, topological sort, pipeline builder
-    graph_executor.py    — GraphExecutorMixin: execute_plan, execute_subgraph, execute_plan_async
-    graph_task_runner.py — GraphTaskRunnerMixin: per-task execution with WIP/safety/retry
-    graph_recovery.py    — GraphRecoveryMixin: maker-checker, error recovery, delegation, inject_task
-    graph_validator.py   — GraphValidatorMixin: output schema validation
-    replan_engine.py     — ReplanMixin: mid-execution DAG replanning
+    graph_planner.py     — GraphPlanningEngine: plan creation, topological sort, pipeline builder
+    graph_executor.py    — GraphExecutionEngine: execute_plan, execute_subgraph, execute_plan_async
+    graph_task_runner.py — GraphTaskRunner: per-task execution with WIP/safety/retry
+    graph_recovery.py    — GraphRecoveryEngine: maker-checker, error recovery, delegation, inject_task
+    graph_validator.py   — GraphValidationEngine: output schema validation
+    replan_engine.py     — ReplanEngine: mid-execution DAG replanning
 """
 
 from __future__ import annotations
@@ -26,10 +26,10 @@ import logging
 import threading
 from typing import Any
 
-from vetinari.orchestration.graph_executor import GraphExecutorMixin
-from vetinari.orchestration.graph_planner import GraphPlannerMixin
-from vetinari.orchestration.graph_recovery import GraphRecoveryMixin
-from vetinari.orchestration.graph_task_runner import GraphTaskRunnerMixin
+from vetinari.orchestration.graph_executor import GraphExecutionEngine
+from vetinari.orchestration.graph_planner import GraphPlanningEngine
+from vetinari.orchestration.graph_recovery import GraphRecoveryEngine
+from vetinari.orchestration.graph_task_runner import GraphTaskRunner
 from vetinari.orchestration.graph_types import (
     ConditionalEdge,
     CycleDetector,
@@ -39,12 +39,14 @@ from vetinari.orchestration.graph_types import (
     ReplanResult,
     TaskNode,
 )
-from vetinari.orchestration.graph_validator import GraphValidatorMixin
-from vetinari.orchestration.replan_engine import ReplanMixin
+from vetinari.orchestration.graph_validator import GraphValidationEngine
+from vetinari.orchestration.plan_diff import PlanDiff
+from vetinari.orchestration.replan_engine import ReplanEngine
 from vetinari.structured_logging import log_event
 from vetinari.types import AgentType
 
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Cached lazy getters for vetinari sub-modules used by AgentGraph accessors
@@ -86,21 +88,25 @@ def _get_skills_fns() -> dict[str, Any] | None:
         and 'get_all_skills' if the module is available, otherwise None.
     """
     global _cached_skills_fns, _skills_fns_loaded
+    if _skills_fns_loaded and _cached_skills_fns is not None:
+        return _cached_skills_fns
     if not _skills_fns_loaded:
         try:
-            from vetinari.skills.skill_registry import (
-                get_all_skills,
-                get_skill_for_agent_type,
-                get_skills_by_capability,
-            )
+            from vetinari.skills import skill_registry as registry_module
+
+            if not getattr(registry_module, "__file__", None):
+                raise ImportError("skill registry resolved to a non-file-backed module")
 
             _cached_skills_fns = {
-                "get_skills_by_capability": get_skills_by_capability,
-                "get_skill_for_agent_type": get_skill_for_agent_type,
-                "get_all_skills": get_all_skills,
+                "get_skills_by_capability": registry_module.get_skills_by_capability,
+                "get_skill_for_agent_type": registry_module.get_skill_for_agent_type,
+                "get_all_skills": registry_module.get_all_skills,
             }
         except Exception:
+            logger.warning("Could not load skill registry functions", exc_info=True)
             _cached_skills_fns = None
+            _skills_fns_loaded = False
+            return None
         _skills_fns_loaded = True
     return _cached_skills_fns
 
@@ -125,12 +131,12 @@ __all__ = [
 
 
 class AgentGraph(
-    GraphExecutorMixin,
-    GraphPlannerMixin,
-    GraphRecoveryMixin,
-    GraphTaskRunnerMixin,
-    GraphValidatorMixin,
-    ReplanMixin,
+    GraphExecutionEngine,
+    GraphPlanningEngine,
+    GraphRecoveryEngine,
+    GraphTaskRunner,
+    GraphValidationEngine,
+    ReplanEngine,
 ):
     """Orchestration engine for Vetinari's 3-agent factory pipeline.
 
@@ -145,6 +151,7 @@ class AgentGraph(
     - Self-correction loop: failed verification triggers one guided retry
     - Delegates unresolvable failures to Worker(error_recovery)
     - Constraint enforcement (delegation rules, resource limits)
+    - Per-instance ``_graph_lock`` guards runtime plan edits and cancellation walks
     """
 
     def __init__(
@@ -158,6 +165,12 @@ class AgentGraph(
         self._max_workers = max_workers
         self._agents: dict[AgentType, Any] = {}
         self._execution_plans: dict[str, ExecutionDAG] = {}
+        # Re-entrant because runtime-diff drains may re-enter cancellation
+        # propagation while holding the graph-state lock.
+        self._graph_lock: threading.RLock = threading.RLock()
+        # Written by GraphExecutionEngine._enqueue_runtime_diff and drained only
+        # at layer boundaries by GraphExecutionEngine._drain_runtime_diff_queue.
+        self._runtime_diff_queues: dict[str, list[PlanDiff]] = {}
         self._initialized = False
         self._goal_tracker: Any | None = None
         self._milestone_manager = None
@@ -186,7 +199,7 @@ class AgentGraph(
     # ------------------------------------------------------------------
 
     def initialize(self) -> None:
-        """Initialize the 3 factory-pipeline agents and mark the graph as ready."""
+        """Load factory-pipeline agents and mark the graph as ready."""
         if self._initialized:
             return
 
@@ -254,6 +267,18 @@ class AgentGraph(
         )
         self._initialized = True
 
+    def _validate_output_schema(self, agent_type: AgentType, output: Any) -> list[str]:
+        """Validate agent output while treating scalar payloads as type failures only."""
+        if not isinstance(output, dict):
+            spec = self.get_skill_spec(agent_type)
+            if spec is None:
+                return [f"Missing SkillSpec for agent type: {agent_type.value}"]
+            if not spec.output_schema:
+                return [f"Missing output schema for agent type: {agent_type.value}"]
+            return [f"Output for {agent_type.value} must be an object, got {type(output).__name__}"]
+
+        return super()._validate_output_schema(agent_type, output)
+
     # ------------------------------------------------------------------
     # Accessors
     # ------------------------------------------------------------------
@@ -288,7 +313,7 @@ class AgentGraph(
         """
         return list(self._agents.keys())
 
-    def get_agent_by_capability(self, capability: str) -> Any | None:  # noqa: VET094 — internal raises are caught; never propagates
+    def get_agent_by_capability(self, capability: str) -> Any | None:
         """Find the best registered agent that declares a given capability.
 
         Consults the programmatic SkillSpec registry to map capabilities
@@ -333,7 +358,7 @@ class AgentGraph(
             logger.warning("[AgentGraph] Capability lookup for '%s' failed: %s", capability, e)
         return None
 
-    def get_skill_spec(self, agent_type: AgentType) -> Any | None:  # noqa: VET094 — internal raises are caught; never propagates
+    def get_skill_spec(self, agent_type: AgentType) -> Any | None:
         """Return the SkillSpec for a given agent type, if one exists.
 
         Args:
@@ -351,7 +376,7 @@ class AgentGraph(
             logger.warning("Skill spec lookup failed for agent type %s", agent_type, exc_info=True)
             return None
 
-    def get_agents_for_task_type(self, task_type: str) -> list[AgentType]:  # noqa: VET094 — internal raises are caught; never propagates
+    def get_agents_for_task_type(self, task_type: str) -> list[AgentType]:
         """Return agent types whose SkillSpec modes include the given task type.
 
         Args:
@@ -415,6 +440,7 @@ class AgentGraph(
 # ---------------------------------------------------------------------------
 
 _agent_graph: AgentGraph | None = None
+# Singleton-construction lock only; distinct from AgentGraph._graph_lock.
 _graph_lock = threading.Lock()
 
 

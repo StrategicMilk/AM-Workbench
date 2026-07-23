@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vetinari - Monitoring Dashboard</title>
+    <link rel="stylesheet" href="/static/css/tokens.css" nonce="{{ csp_nonce() }}">
+    <link rel="stylesheet" href="/static/css/base.css" nonce="{{ csp_nonce() }}">
+    <link rel="stylesheet" href="/static/css/layout.css" nonce="{{ csp_nonce() }}">
+    <link rel="stylesheet" href="/static/css/components.css" nonce="{{ csp_nonce() }}">
+    <link rel="stylesheet" href="/static/css/dashboard.css" nonce="{{ csp_nonce() }}">
+</head>
+<style nonce="{{ csp_nonce() }}">
+.skip-link {
+    position: absolute;
+    top: -40px;
+    left: 0;
+    background: var(--primary, #3b82f6);
+    color: #fff;
+    padding: 8px 16px;
+    z-index: 10000;
+    font-size: 14px;
+    transition: top 0.2s;
+}
+.skip-link:focus {
+    top: 0;
+}
+</style>
+<body>
+<a href="#main-content" class="skip-link">Skip to main content</a>
+<div class="dash-layout">
+
+    <!-- ── Sidebar ─────────────────────────────────────────── -->
+    <aside class="dash-sidebar" aria-label="Dashboard sidebar">
+        <div class="dash-logo">
+            <i class="fas fa-brain"></i>
+            <span>Vetinari</span>
+        </div>
+        <nav class="dash-nav" aria-label="Dashboard navigation">
+            <a href="#" class="dash-nav-item active" data-section="overview">
+                <i class="fas fa-th-large"></i><span>Overview</span>
+            </a>
+            <a href="#" class="dash-nav-item" data-section="adapters">
+                <i class="fas fa-plug"></i><span>Adapters</span>
+            </a>
+            <a href="#" class="dash-nav-item" data-section="memory">
+                <i class="fas fa-database"></i><span>Memory</span>
+            </a>
+            <a href="#" class="dash-nav-item" data-section="plan">
+                <i class="fas fa-balance-scale"></i><span>Plan Gate</span>
+            </a>
+            <a href="#" class="dash-nav-item" data-section="traces">
+                <i class="fas fa-project-diagram"></i><span>Traces</span>
+            </a>
+            <a href="#" class="dash-nav-item" data-section="cost">
+                <i class="fas fa-dollar-sign"></i><span>Cost</span>
+            </a>
+            <a href="#" class="dash-nav-item" data-section="sla">
+                <i class="fas fa-chart-line"></i><span>SLA</span>
+            </a>
+            <a href="#" class="dash-nav-item" data-section="anomalies">
+                <i class="fas fa-exclamation-circle"></i><span>Anomalies</span>
+            </a>
+            <a href="#" class="dash-nav-item" data-section="forecast">
+                <i class="fas fa-chart-area"></i><span>Forecast</span>
+            </a>
+            <a href="#" class="dash-nav-item" data-section="alerts">
+                <i class="fas fa-bell"></i><span>Alerts</span>
+                <span class="dash-badge" id="alertBadge" style="display:none">0</span>
+            </a>
+            <a href="#" class="dash-nav-item" data-section="pipeline">
+                <i class="fas fa-stream"></i><span>Pipeline</span>
+            </a>
+            <a href="#" class="dash-nav-item" data-section="model-health">
+                <i class="fas fa-heartbeat"></i><span>Model Health</span>
+            </a>
+            <a href="#" class="dash-nav-item" data-section="cost-breakdown">
+                <i class="fas fa-layer-group"></i><span>Cost Breakdown</span>
+            </a>
+            <a href="#" class="dash-nav-item" data-section="decision-journal">
+                <i class="fas fa-book-open"></i><span>Decisions</span>
+            </a>
+            <a href="#" class="dash-nav-item" data-section="autonomy">
+                <i class="fas fa-robot"></i><span>Autonomy</span>
+            </a>
+        </nav>
+        <div class="dash-sidebar-footer">
+            <span class="dash-status-dot" id="statusDot"></span>
+            <span id="statusLabel">Connecting…</span>
+        </div>
+    </aside>
+
+    <!-- ── Main ───────────────────────────────────────────── -->
+    <main class="dash-main" id="main-content" aria-label="Dashboard metrics">
+
+        <!-- Top bar -->
+        <header class="dash-topbar">
+            <div class="dash-topbar-left">
+                <h1 class="dash-page-title" id="pageTitle">Overview</h1>
+                <span class="dash-uptime" id="uptimeLabel"></span>
+            </div>
+            <div class="dash-topbar-right">
+                <label class="dash-auto-refresh-label">
+                    <input type="checkbox" id="autoRefreshToggle" checked>
+                    Auto-refresh
+                </label>
+                <label for="refreshInterval" class="visually-hidden">Refresh interval</label>
+                <select class="dash-select" id="refreshInterval">
+                    <option value="5000">5 s</option>
+                    <option value="15000" selected>15 s</option>
+                    <option value="30000">30 s</option>
+                    <option value="60000">60 s</option>
+                </select>
+                <button class="dash-btn dash-btn-primary" id="refreshNowBtn">
+                    <i class="fas fa-sync" id="refreshIcon"></i> Refresh
+                </button>
+                <a href="/" class="dash-btn dash-btn-secondary">
+                    <i class="fas fa-arrow-left"></i> App
+                </a>
+            </div>
+        </header>
+
+        <!-- ── OVERVIEW ──────────────────────────────────── -->
+        <section class="dash-section active" id="section-overview">
+
+            <!-- Welcome banner for new users (hidden once activity begins) -->
+            <div id="dash-welcome-banner" class="dash-welcome" style="margin-bottom: 1rem; padding: 1.25rem; background: var(--bg-elevated, #1a1d23); border: 1px solid var(--border-default, #2a2d35); border-radius: 8px;">
+                <h2 style="margin: 0 0 0.5rem 0; color: var(--text-primary, #e4e8f1);">Welcome to Vetinari</h2>
+                <p style="margin: 0 0 0.75rem 0; color: var(--text-secondary, #9ca3af); line-height: 1.5;">
+                    This dashboard shows real-time metrics once you start running tasks.
+                    To get started:
+                </p>
+                <ol style="margin: 0; padding-left: 1.25rem; color: var(--text-secondary, #9ca3af); line-height: 1.8;">
+                    <li>Download a <span class="vt-tooltip" data-tooltip="GGUF (GPT-Generated Unified Format) — a compact model file format optimized for fast local inference on consumer hardware">GGUF</span> model and place it in your <code>models/</code> directory</li>
+                    <li>Create a project from the main page</li>
+                    <li>Run a task — metrics will appear here automatically</li>
+                </ol>
+            </div>
+
+            <!-- KPI cards -->
+            <div class="dash-kpi-grid">
+                <div class="dash-kpi-card">
+                    <div class="dash-kpi-icon dash-icon-blue"><i class="fas fa-exchange-alt"></i></div>
+                    <div class="dash-kpi-body">
+                        <div class="dash-kpi-label">Total Requests</div>
+                        <div class="dash-kpi-value" id="kpi-total-requests">—</div>
+                    </div>
+                </div>
+                <div class="dash-kpi-card">
+                    <div class="dash-kpi-icon dash-icon-green"><i class="fas fa-check-circle"></i></div>
+                    <div class="dash-kpi-body">
+                        <div class="dash-kpi-label">Success Rate</div>
+                        <div class="dash-kpi-value" id="kpi-success-rate">—</div>
+                    </div>
+                </div>
+                <div class="dash-kpi-card">
+                    <div class="dash-kpi-icon dash-icon-yellow"><i class="fas fa-tachometer-alt"></i></div>
+                    <div class="dash-kpi-body">
+                        <div class="dash-kpi-label">Avg Latency</div>
+                        <div class="dash-kpi-value" id="kpi-avg-latency">—</div>
+                    </div>
+                </div>
+                <div class="dash-kpi-card">
+                    <div class="dash-kpi-icon dash-icon-purple"><i class="fas fa-coins"></i></div>
+                    <div class="dash-kpi-body">
+                        <div class="dash-kpi-label">Tokens Used</div>
+                        <div class="dash-kpi-value" id="kpi-tokens">—</div>
+                    </div>
+                </div>
+                <div class="dash-kpi-card">
+                    <div class="dash-kpi-icon dash-icon-teal"><i class="fas fa-balance-scale"></i></div>
+                    <div class="dash-kpi-body">
+                        <div class="dash-kpi-label">Approval Rate</div>
+                        <div class="dash-kpi-value" id="kpi-approval-rate">—</div>
+                    </div>
+                </div>
+                <div class="dash-kpi-card">
+                    <div class="dash-kpi-icon dash-icon-red"><i class="fas fa-exclamation-triangle"></i></div>
+                    <div class="dash-kpi-body">
+                        <div class="dash-kpi-label">Active Alerts</div>
+                        <div class="dash-kpi-value" id="kpi-active-alerts">0</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Charts row -->
+            <div class="dash-charts-row">
+                <div class="dash-card dash-chart-card">
+                    <div class="dash-card-header">
+                        <span>Adapter Latency</span>
+                        <select class="dash-select dash-select-sm" id="latencyProviderFilter">
+                            <option value="">All providers</option>
+                        </select>
+                    </div>
+                    <canvas id="latencyChart"></canvas>
+                </div>
+                <div class="dash-card dash-chart-card">
+                    <div class="dash-card-header"><span>Success Rate</span></div>
+                    <canvas id="successChart"></canvas>
+                </div>
+            </div>
+
+            <div class="dash-charts-row">
+                <div class="dash-card dash-chart-card">
+                    <div class="dash-card-header"><span>Token Usage</span></div>
+                    <canvas id="tokenChart"></canvas>
+                </div>
+                <div class="dash-card dash-chart-card">
+                    <div class="dash-card-header"><span>Memory Latency</span></div>
+                    <canvas id="memLatencyChart"></canvas>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── ADAPTERS ───────────────────────────────────── -->
+        <section class="dash-section" id="section-adapters">
+            <div class="dash-card">
+                <div class="dash-card-header">
+                    <span>Provider Details</span>
+                    <span class="dash-text-muted" id="adapterTimestamp"></span>
+                </div>
+                <div class="dash-table-wrap">
+                    <table class="dash-table" id="adapterTable">
+                        <thead>
+                            <tr>
+                                <th>Provider</th>
+                                <th>Model</th>
+                                <th>Requests</th>
+                                <th>Success %</th>
+                                <th>Avg Latency</th>
+                                <th>Min / Max</th>
+                                <th>Tokens</th>
+                                <th>Last Request</th>
+                            </tr>
+                        </thead>
+                        <tbody id="adapterTableBody">
+                            <tr><td colspan="8" class="dash-empty">Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── MEMORY ─────────────────────────────────────── -->
+        <section class="dash-section" id="section-memory">
+            <div class="dash-card">
+                <div class="dash-card-header"><span>Memory Backend Operations</span></div>
+                <div class="dash-table-wrap">
+                    <table class="dash-table" id="memoryTable">
+                        <thead>
+                            <tr>
+                                <th>Backend</th>
+                                <th>Writes</th>
+                                <th>Reads</th>
+                                <th>Searches</th>
+                                <th>Write Lat (ms)</th>
+                                <th>Read Lat (ms)</th>
+                                <th>Search Lat (ms)</th>
+                                <th>Dedup Hit %</th>
+                                <th>Sync Failures</th>
+                            </tr>
+                        </thead>
+                        <tbody id="memoryTableBody">
+                            <tr><td colspan="9" class="dash-empty">Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── PLAN GATE ──────────────────────────────────── -->
+        <section class="dash-section" id="section-plan">
+            <div class="dash-kpi-grid dash-kpi-grid-3">
+                <div class="dash-kpi-card">
+                    <div class="dash-kpi-icon dash-icon-green"><i class="fas fa-check"></i></div>
+                    <div class="dash-kpi-body">
+                        <div class="dash-kpi-label">Approved</div>
+                        <div class="dash-kpi-value" id="plan-approved">—</div>
+                    </div>
+                </div>
+                <div class="dash-kpi-card">
+                    <div class="dash-kpi-icon dash-icon-red"><i class="fas fa-times"></i></div>
+                    <div class="dash-kpi-body">
+                        <div class="dash-kpi-label">Rejected</div>
+                        <div class="dash-kpi-value" id="plan-rejected">—</div>
+                    </div>
+                </div>
+                <div class="dash-kpi-card">
+                    <div class="dash-kpi-icon dash-icon-blue"><i class="fas fa-robot"></i></div>
+                    <div class="dash-kpi-body">
+                        <div class="dash-kpi-label">Auto-Approved</div>
+                        <div class="dash-kpi-value" id="plan-auto">—</div>
+                    </div>
+                </div>
+                <div class="dash-kpi-card">
+                    <div class="dash-kpi-icon dash-icon-teal"><i class="fas fa-percentage"></i></div>
+                    <div class="dash-kpi-body">
+                        <div class="dash-kpi-label">Approval Rate</div>
+                        <div class="dash-kpi-value" id="plan-rate">—</div>
+                    </div>
+                </div>
+                <div class="dash-kpi-card">
+                    <div class="dash-kpi-icon dash-icon-yellow"><i class="fas fa-shield-alt"></i></div>
+                    <div class="dash-kpi-body">
+                        <div class="dash-kpi-label">Avg Risk Score</div>
+                        <div class="dash-kpi-value" id="plan-risk">—</div>
+                    </div>
+                </div>
+                <div class="dash-kpi-card">
+                    <div class="dash-kpi-icon dash-icon-purple"><i class="fas fa-clock"></i></div>
+                    <div class="dash-kpi-body">
+                        <div class="dash-kpi-label">Avg Decision Time</div>
+                        <div class="dash-kpi-value" id="plan-time">—</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── TRACES ─────────────────────────────────────── -->
+        <section class="dash-section" id="section-traces">
+            <div class="dash-card" style="margin-bottom: var(--dash-space);">
+                <div class="dash-card-header">
+                    <span>Trace Search</span>
+                </div>
+                <div class="dash-search-row">
+                    <input type="text" class="dash-input" id="traceSearchInput" placeholder="Enter Trace ID…">
+                    <button class="dash-btn dash-btn-primary" id="traceSearchBtn">
+                        <i class="fas fa-search"></i> Search
+                    </button>
+                    <button class="dash-btn dash-btn-secondary" id="traceClearBtn">
+                        <i class="fas fa-times"></i> Clear
+                    </button>
+                </div>
+            </div>
+            <div class="dash-card">
+                <div class="dash-card-header">
+                    <span>Traces</span>
+                    <span class="dash-text-muted" id="traceCount"></span>
+                </div>
+                <div class="dash-table-wrap">
+                    <table class="dash-table" id="traceTable">
+                        <thead>
+                            <tr>
+                                <th>Trace ID</th>
+                                <th>Start Time</th>
+                                <th>Duration (ms)</th>
+                                <th>Spans</th>
+                                <th>Status</th>
+                                <th>Root Op</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="traceTableBody">
+                            <tr><td colspan="7" class="dash-empty">No traces yet.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Trace detail panel -->
+            <div class="dash-card" id="traceDetailPanel" style="display:none; margin-top: var(--dash-space);">
+                <div class="dash-card-header">
+                    <span>Trace Detail — <code id="traceDetailId"></code></span>
+                    <button class="dash-btn dash-btn-secondary dash-btn-sm" id="traceDetailClose">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div id="traceDetailBody"></div>
+            </div>
+        </section>
+
+        <!-- ── COST ─────────────────────────────────────────── -->
+        <section class="dash-section" id="section-cost">
+            <div class="dash-kpi-grid dash-kpi-grid-3">
+                <div class="dash-kpi-card">
+                    <div class="dash-kpi-icon dash-icon-green"><i class="fas fa-dollar-sign"></i></div>
+                    <div class="dash-kpi-body">
+                        <div class="dash-kpi-label">Total Cost</div>
+                        <div class="dash-kpi-value" id="cost-total">—</div>
+                    </div>
+                </div>
+                <div class="dash-kpi-card">
+                    <div class="dash-kpi-icon dash-icon-blue"><i class="fas fa-coins"></i></div>
+                    <div class="dash-kpi-body">
+                        <div class="dash-kpi-label">Total Tokens</div>
+                        <div class="dash-kpi-value" id="cost-tokens">—</div>
+                    </div>
+                </div>
+                <div class="dash-kpi-card">
+                    <div class="dash-kpi-icon dash-icon-purple"><i class="fas fa-exchange-alt"></i></div>
+                    <div class="dash-kpi-body">
+                        <div class="dash-kpi-label">Total Requests</div>
+                        <div class="dash-kpi-value" id="cost-requests">—</div>
+                    </div>
+                </div>
+            </div>
+            <div class="dash-charts-row">
+                <div class="dash-card">
+                    <div class="dash-card-header"><span>Top Agents by Cost</span></div>
+                    <div class="dash-table-wrap">
+                        <table class="dash-table"><thead><tr><th>Agent</th><th>Cost (USD)</th></tr></thead>
+                        <tbody id="costAgentTableBody"><tr><td colspan="2" class="dash-empty">Loading…</td></tr></tbody></table>
+                    </div>
+                </div>
+                <div class="dash-card">
+                    <div class="dash-card-header"><span>Top Models by Cost</span></div>
+                    <div class="dash-table-wrap">
+                        <table class="dash-table"><thead><tr><th>Model</th><th>Cost (USD)</th></tr></thead>
+                        <tbody id="costModelTableBody"><tr><td colspan="2" class="dash-empty">Loading…</td></tr></tbody></table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── SLA ──────────────────────────────────────────── -->
+        <section class="dash-section" id="section-sla">
+            <div class="dash-card">
+                <div class="dash-card-header"><span>SLO Compliance</span></div>
+                <div class="dash-table-wrap">
+                    <table class="dash-table" id="slaTable">
+                        <thead><tr>
+                            <th>SLO Name</th><th>Type</th><th>Budget</th>
+                            <th>Current Value</th><th>Compliance %</th>
+                            <th>Samples</th><th>Status</th>
+                        </tr></thead>
+                        <tbody id="slaTableBody">
+                            <tr><td colspan="7" class="dash-empty">Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── ANOMALIES ────────────────────────────────────── -->
+        <section class="dash-section" id="section-anomalies">
+            <div class="dash-card">
+                <div class="dash-card-header">
+                    <span>Recent Anomalies</span>
+                    <span class="dash-text-muted" id="anomalyCount"></span>
+                </div>
+                <div class="dash-table-wrap">
+                    <table class="dash-table">
+                        <thead><tr>
+                            <th>Time</th><th>Metric</th><th>Value</th>
+                            <th>Method</th><th>Score</th><th>Reason</th>
+                        </tr></thead>
+                        <tbody id="anomalyTableBody">
+                            <tr><td colspan="6" class="dash-empty">No anomalies detected.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── FORECAST ─────────────────────────────────────── -->
+        <section class="dash-section" id="section-forecast">
+            <div class="dash-card" style="margin-bottom: var(--dash-space);">
+                <div class="dash-card-header"><span>Forecast Settings</span></div>
+                <div class="dash-search-row">
+                    <select class="dash-select" id="forecastMetric">
+                        <option value="adapter.latency">Adapter Latency</option>
+                        <option value="adapter.tokens">Token Usage</option>
+                    </select>
+                    <select class="dash-select" id="forecastMethod">
+                        <option value="linear_trend">Linear Trend</option>
+                        <option value="exp_smoothing">Exponential Smoothing</option>
+                        <option value="sma">Simple Moving Average</option>
+                        <option value="seasonal">Seasonal</option>
+                    </select>
+                    <button class="dash-btn dash-btn-primary" id="forecastRunBtn">
+                        <i class="fas fa-chart-area"></i> Run Forecast
+                    </button>
+                </div>
+            </div>
+            <div class="dash-card">
+                <div class="dash-card-header"><span>Forecast Results</span></div>
+                <div class="dash-table-wrap">
+                    <table class="dash-table">
+                        <thead><tr>
+                            <th>Step</th><th>Prediction</th><th>Low (80%)</th><th>High (80%)</th>
+                        </tr></thead>
+                        <tbody id="forecastTableBody">
+                            <tr><td colspan="4" class="dash-empty">Click "Run Forecast" to generate predictions.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div style="margin-top:0.5rem;padding:0 1rem 1rem;">
+                    <span class="dash-text-muted" id="forecastMeta"></span>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── ALERTS ─────────────────────────────────────── -->
+        <section class="dash-section" id="section-alerts">
+            <div class="dash-card" style="margin-bottom: var(--dash-space);">
+                <div class="dash-card-header">
+                    <span>Active Alerts</span>
+                    <span class="dash-badge" id="activeAlertCount">0</span>
+                </div>
+                <div id="activeAlertsList">
+                    <div class="dash-empty">No active alerts.</div>
+                </div>
+            </div>
+
+            <div class="dash-card">
+                <div class="dash-card-header">
+                    <span>Alert History</span>
+                    <button class="dash-btn dash-btn-secondary dash-btn-sm" id="clearAlertHistory">
+                        <i class="fas fa-trash"></i> Clear
+                    </button>
+                </div>
+                <div id="alertHistoryList">
+                    <div class="dash-empty">No alerts fired yet.</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── PIPELINE ───────────────────────────────────── -->
+        <section class="dash-section" id="section-pipeline">
+            <div id="pipelineSection">
+                <div class="dash-empty">Loading pipeline…</div>
+            </div>
+        </section>
+
+        <!-- ── MODEL HEALTH ──────────────────────────────── -->
+        <section class="dash-section" id="section-model-health">
+            <div id="modelHealthSection">
+                <div class="dash-empty">Loading model health…</div>
+            </div>
+        </section>
+
+        <!-- ── COST BREAKDOWN ────────────────────────────── -->
+        <section class="dash-section" id="section-cost-breakdown">
+            <div id="costBreakdownSection">
+                <div class="dash-empty">Loading cost breakdown…</div>
+            </div>
+        </section>
+
+        <!-- ── DECISION JOURNAL ──────────────────────────── -->
+        <section class="dash-section" id="section-decision-journal">
+            <div id="decisionJournalSection">
+                <div class="dash-empty">Loading decisions…</div>
+            </div>
+        </section>
+
+        <!-- ── AUTONOMY ───────────────────────────────────── -->
+        <section class="dash-section" id="section-autonomy">
+            <div id="autonomySection">
+                <div class="dash-empty">Loading autonomy…</div>
+            </div>
+        </section>
+
+    </main>
+</div>
+
+<!-- Trace-span modal -->
+<div class="dash-modal-overlay" id="traceModal" style="display:none;">
+    <div class="dash-modal">
+        <div class="dash-modal-header">
+            <h3>Trace Spans — <code id="modalTraceId"></code></h3>
+            <button class="dash-btn dash-btn-secondary dash-btn-sm" id="traceModalClose">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="dash-modal-body" id="modalSpanList"></div>
+    </div>
+</div>
+
+<!-- Welcome-back banner mount point — populated by maybeShowWelcomeBack() in dashboard.js -->
+<div id="welcomeBackContainer"></div>
+
+<script src="/static/js/sse-manager.js" nonce="{{ csp_nonce() }}"></script>
+<script src="/static/js/activity-tracker.js" nonce="{{ csp_nonce() }}"></script>
+<script src="/static/js/dashboard.js" nonce="{{ csp_nonce() }}"></script>
+</body>
+</html>

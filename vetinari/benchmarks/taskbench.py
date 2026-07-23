@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
 from typing import Any
 
 from vetinari.benchmarks.runner import (
@@ -28,8 +29,27 @@ from vetinari.benchmarks.runner import (
     BenchmarkSuiteAdapter,
     BenchmarkTier,
 )
+from vetinari.context import count_tokens
 
 logger = logging.getLogger(__name__)
+
+DEVELOPER_WORKFLOW_CONTRACT_ID = "wave3-rcg0014p06-scope-followup-P09"
+TASKBENCH_WORKFLOW_GUARDS: tuple[str, ...] = (
+    "planner execution failures produce unavailable benchmark output",
+    "unavailable benchmark output scores zero",
+    "dependency scoring checks expected edges explicitly",
+    "DAG scoring rejects missing dependency nodes and cycles",
+)
+
+
+def developer_workflow_contract() -> dict[str, object]:
+    """Return TaskBench workflow guarantees verified by this follow-up pack."""
+    return {
+        "pack": DEVELOPER_WORKFLOW_CONTRACT_ID,
+        "surface": "vetinari/benchmarks/taskbench.py",
+        "guards": TASKBENCH_WORKFLOW_GUARDS,
+    }
+
 
 # -- Sample TaskBench cases --
 
@@ -226,7 +246,7 @@ class TaskBenchAdapter(BenchmarkSuiteAdapter):
         Returns:
             The BenchmarkResult result.
         """
-        start = time.time()
+        start = time.monotonic()
 
         error: str | None = None
         try:
@@ -241,7 +261,7 @@ class TaskBenchAdapter(BenchmarkSuiteAdapter):
                 "benchmark_mode": "unavailable",
             }
 
-        latency = (time.time() - start) * 1000
+        latency = (time.monotonic() - start) * 1000
 
         return BenchmarkResult(
             case_id=case.case_id,
@@ -250,7 +270,7 @@ class TaskBenchAdapter(BenchmarkSuiteAdapter):
             passed=False,
             score=0.0,
             latency_ms=round(latency, 2),
-            tokens_consumed=len(case.input_data.get("goal", "")) * 2,
+            tokens_consumed=count_tokens(str(case.input_data.get("goal", ""))),
             output=result_data,
             error=error,
         )
@@ -266,9 +286,11 @@ class TaskBenchAdapter(BenchmarkSuiteAdapter):
           - 0.20: DAG validity — no cycles, all deps exist
 
         Returns:
-            The computed value.
+            float value produced by evaluate().
         """
         if not result.output:
+            return 0.0
+        if result.output.get("benchmark_mode") == "unavailable" or result.error:
             return 0.0
 
         expected = None
@@ -278,7 +300,7 @@ class TaskBenchAdapter(BenchmarkSuiteAdapter):
                 break
 
         if expected is None:
-            return 0.3
+            return 0.0
 
         subtasks = result.output.get("subtasks", [])
         dependencies = result.output.get("dependencies", {})
@@ -325,7 +347,8 @@ class TaskBenchAdapter(BenchmarkSuiteAdapter):
 
         return round(min(score, 1.0), 4)
 
-    def _check_dag(self, subtask_names: set[str], dependencies: dict[str, list[str]]) -> bool:
+    @staticmethod
+    def _check_dag(subtask_names: set[str], dependencies: dict[str, list[str]]) -> bool:
         """Check if the dependency graph is a valid DAG."""
         # All referenced deps must exist in subtask set
         for task, deps in dependencies.items():
@@ -337,25 +360,27 @@ class TaskBenchAdapter(BenchmarkSuiteAdapter):
 
         # Cycle detection via topological sort (Kahn's algorithm)
         in_degree: dict[str, int] = dict.fromkeys(subtask_names, 0)
+        dependents_by_task: dict[str, list[str]] = {task: [] for task in subtask_names}
         for task, deps in dependencies.items():
             in_degree.setdefault(task, 0)
-            in_degree[task] += len(deps)
+            for dep in deps:
+                in_degree[task] += 1
+                dependents_by_task.setdefault(dep, []).append(task)
 
-        queue = [s for s, d in in_degree.items() if d == 0]
+        queue = deque(s for s, d in in_degree.items() if d == 0)
         visited = 0
         while queue:
-            node = queue.pop(0)
+            node = queue.popleft()
             visited += 1
-            # Find tasks that depend on this node
-            for task, deps in dependencies.items():
-                if node in deps:
-                    in_degree[task] -= 1
-                    if in_degree[task] == 0:
-                        queue.append(task)
+            for task in dependents_by_task.get(node, []):
+                in_degree[task] -= 1
+                if in_degree[task] == 0:
+                    queue.append(task)
 
         return visited == len(subtask_names)
 
-    def _run_via_planner(self, case: BenchmarkCase) -> dict[str, Any]:
+    @staticmethod
+    def _run_via_planner(case: BenchmarkCase) -> dict[str, Any]:
         """Attempt decomposition via Vetinari planner."""
         from vetinari.planning.plan_mode import PlanModeEngine
         from vetinari.planning.plan_types import PlanGenerationRequest
@@ -365,12 +390,4 @@ class TaskBenchAdapter(BenchmarkSuiteAdapter):
         return {
             "subtasks": [s.subtask_id for s in plan.subtasks],
             "dependencies": plan.dependencies or {},
-        }
-
-    def _mock_run(self, case: BenchmarkCase) -> dict[str, Any]:
-        """Compatibility helper retained for tests; not used by run_case."""
-        expected = case.expected or {}
-        return {
-            "subtasks": expected.get("expected_subtasks", []),
-            "dependencies": expected.get("expected_dependencies", {}),
         }

@@ -1,0 +1,212 @@
+# Workflow command timeout registry: an explicit, deliberate timeout for every command
+# any suite driver (program / audit / brainstorm / kaizen) runs. There is NO generic
+# default that silently absorbs untuned commands. Enforcement is hard, not advisory:
+#   - scripts/workflow_command_manifest.py HARD-FAILS (non-zero exit, no silent fallback)
+#     when asked to run a command that is not classified below.
+#   - scripts/check_workflow_command_timeouts.py fails closed if the live command surface
+#     contains any command missing from this registry.
+# This replaces the former single blanket timeout that forced every command to inherit the
+# worst-case ceiling. Values are conservative cost classes with generous headroom; tighten
+# them from measured durations recorded to outputs/telemetry/workflow-command-durations.jsonl.
+schema_version: workflow-command-timeouts.v1
+
+classes:
+  quick: 600         # state queries, cache/context/receipt writers, small updaters
+  standard: 1200     # per-wave gates, generators, validators, most checks
+  heavy: 1800        # full-repo audits, audit lanes, evals, artifact/efficiency scans
+  pack_validation: 3600    # one scoped pack-validation command group
+  full_suite: 10800        # standalone or wave-boundary full-suite execution (180m)
+  validation_rerun: 14400  # outer whole-wave pack-validation rerun (240m)
+
+commands:
+  # --- quick (26) ---
+  agent_corrections_updater.py: quick
+  ai_wiki.py: quick
+  audit_state_query.py: quick
+  brainstorm_history.py: quick
+  brainstorm_project_context.py: quick
+  brainstorm_source_cache.py: quick
+  brainstorm_state.py: quick
+  brainstorm_state_query.py: quick
+  check_brainstorm_cache.py: quick
+  check_pytest_hygiene.py: quick
+  claude_delete.py: quick
+  claude_md_focus_updater.py: quick
+  clear_run_stop_flag.py: quick
+  codex_session_spend.py: quick
+  kaizen_digest.py: quick
+  kaizen_state_query.py: quick
+  learnings_promoter.py: quick
+  priority_context_updater.py: quick
+  program_state_query.py: quick
+  sync_codex_rules.py: quick
+  workflow_context_receipt.py: quick
+  workflow_delta_packet.py: quick
+  workflow_lane_cache.py: quick
+  workflow_load_plan.py: quick
+  workflow_read_plan_receipt.py: quick
+  workflow_readme_first.py: quick
+  # --- standard (108) ---
+  _build_core.py: standard
+  check_dependency_license_export.py: standard
+  check_training_version_lattice.py: standard
+  check_converter_lock.py: standard
+  generate_config_docs.py: standard
+  generate_project_identity_snapshot.py: standard
+  kaizen_rule_budget.py: standard
+  _build_extbench_lane_evidence.py: standard
+  _fix_a11y_pair_ids.py: standard
+  _fix_inv_digest.py: standard
+  _fix_registry_line_hints.py: standard
+  _fuzz_failures.py: standard
+  _ml_audit_count.py: standard
+  advance_audit_round.py: standard
+  audit_acceptance_evidence.py: standard
+  audit_artifact_compile.py: standard
+  audit_inspect_batch_027.py: standard
+  audit_pre_round_tool_health.py: standard
+  audit_reconcile_findings.py: standard
+  audit_repair_packet.py: standard
+  batch_030_inspect.py: standard
+  brainstorm_artifact_compile.py: standard
+  brainstorm_repair_packet.py: standard
+  brainstorm_run_index.py: standard
+  brainstorm_suite_driver.py: standard
+  build_full_spectrum_lane_agent_prompt.py: standard
+  build_program_pack_agent_prompt.py: standard
+  build_registry_index.py: standard
+  check_agent_routing.py: standard
+  check_agent_workflow_canaries.py: standard
+  check_audit_eval_delta.py: standard
+  check_brainstorm_quality.py: standard
+  check_capability_wiring.py: standard
+  check_charter_bridge_completeness.py: standard
+  check_config_wiring.py: standard
+  check_coverage_gate.py: standard
+  check_coverage_gates.py: standard
+  check_developer_workflow_health.py: standard
+  check_workflow_command_timeouts.py: standard
+  check_doc_contract_alignment.py: standard
+  check_docs_consistency.py: standard
+  check_environment_split.py: standard
+  check_litestar_retirement.py: standard
+  check_frontier_overlap.py: standard
+  check_kaizen_template_fill.py: standard
+  check_lane_pair_mismatch.py: standard
+  check_pack_adr_required.py: standard
+  check_pairs_since_leg26.py: standard
+  check_privacy_compliance.py: standard
+  check_program_plan_quality.py: standard
+  check_release_version_alignment.py: standard
+  check_rustsec_package.py: standard
+  check_rust_workspace.py: standard
+  check_security_doc_standards.py: standard
+  check_test_lane_manifest.py: standard
+  check_vetinari_rules.py: standard
+  check_workbench_default_surfaces.py: standard
+  check_workbench_live_action_paths.py: standard
+  compile_full_spectrum_closure_status.py: standard
+  codebase_graph.py: standard
+  delegation_model_fallback.py: standard
+  hook_bash_guard.py: standard
+  hook_pre_commit_gate.py: standard
+  hook_pre_webfetch_internal_first.py: standard
+  hook_stop_pytest_escalation.py: standard
+  hook_stop_tool_misuse.py: standard
+  hook_subagent_start.py: standard
+  inspect_batch_019.py: standard
+  inventory_noqa_suppressions.py: standard
+  inventory_test_health_debt.py: standard
+  kaizen_generate_weekly.py: standard
+  kaizen_suite_driver.py: standard
+  lane_evidence_envelope.py: standard
+  program_advance_phase.py: standard
+  program_artifact_validator.py: standard
+  program_bare_minimum_lane.py: standard
+  program_evidence.py: standard
+  program_finding_accountability.py: standard
+  program_fulfillment_lane.py: standard
+  program_goal_coverage.py: standard
+  program_pack_agent_preflight.py: standard
+  program_pack_closeout.py: standard
+  program_pack_quality_summary.py: standard
+  program_pack_return_gate.py: standard
+  program_quality_gate.py: standard
+  program_readiness_gate.py: standard
+  program_reconcile_repaired_packs.py: standard
+  program_repair_packet.py: standard
+  program_semantic_contract.py: standard
+  program_wave_batch_plan.py: standard
+  program_wave_brief_scaffold.py: standard
+  program_wave_compile.py: standard
+  program_wave_context.py: standard
+  program_wave_finalize_artifacts.py: standard
+  program_wave_fix_location_discovery.py: standard
+  program_wave_input_packet.py: standard
+  program_wave_lessons_digest.py: standard
+  program_wave_metrics.py: standard
+  program_work_packet.py: standard
+  registry_add.py: standard
+  test_cli_output.py: standard
+  test_reliability_primitives.py: standard
+  test_script_output_contract.py: standard
+  validate_closure_status.py: standard
+  verify_llama_vendor.py: standard
+  validate_finding_capture.py: standard
+  validate_program_pack_agent_prompt.py: standard
+  validate_proof_tier.py: standard
+  wave_owned_scope_drift.py: standard
+  workflow_command_manifest.py: standard
+  workflow_delegation_cost.py: standard
+  workflow_historical_miss_replay.py: standard
+  workflow_packet_linter.py: standard
+  write_recall_metrics.py: standard
+  # --- heavy (40) ---
+  backend_health_check.py: heavy
+  run_all_deterministic_lanes.py: heavy
+  run_backend_parity_lane.py: heavy
+  run_project_identity_drift_lane.py: heavy
+  run_visibility_parity_lane.py: heavy
+  verification_compliance_audit.py: heavy
+  batch_inspection_worker.py: heavy
+  check_ci_release_proof.py: heavy
+  check_local_inference_backend.py: heavy
+  check_memory_recall_evals.py: heavy
+  check_release_artifacts.py: heavy
+  check_test_reliability.py: heavy
+  check_wiring_audit.py: heavy
+  enumerate_small_n_surfaces.py: heavy
+  failure_recurrence_audit.py: heavy
+  full_spectrum_lane_command.py: heavy
+  full_spectrum_lane_evidence.py: heavy
+  full_spectrum_lane_packets.py: heavy
+  full_spectrum_program_candidates.py: heavy
+  hook_telemetry_audit.py: heavy
+  inspect_audit_batch.py: heavy
+  integrate_resample_reaudit_results.py: heavy
+  migrate_spine_to_rust.py: heavy
+  model_bakeoff.py: heavy
+  probe_engine_export_toolchain.py: heavy
+  release_certifier.py: heavy
+  run_authz_matrix_lane.py: heavy
+  run_capability_checklist_lane.py: heavy
+  run_false_negative_evals.py: heavy
+  run_meta_circular_honesty_lane.py: heavy
+  run_session_quality_lane.py: heavy
+  run_training_exit_hatch_proof.py: heavy
+  run_transitive_supply_chain_lane.py: heavy
+  run_user_journey_lane.py: heavy
+  run_vet_lane.py: heavy
+  sensitive_route_audit.py: heavy
+  state_leak_probe.py: heavy
+  subagent_prompt_audit.py: heavy
+  validate_run.py: heavy
+  validate_engine_release.py: heavy
+  verify_engine_model_fixture.py: heavy
+  workflow_efficiency_gate.py: heavy
+  # --- full suite / validation rerun (5) ---
+  program_pack_validation_rerun.py: validation_rerun
+  run_runtime_execution_lane.py: full_suite
+  run_tests.py: full_suite
+  verify_full_spectrum_extension_lanes.py: full_suite
+  wave8_lane_core.py: full_suite

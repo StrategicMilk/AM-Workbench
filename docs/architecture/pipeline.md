@@ -1,17 +1,16 @@
-# Vetinari Pipeline
+# AM Workbench Pipeline
 
-This page is the current public quick-start reference for the runtime pipeline.
-Vetinari is the orchestration engine inside AM Workbench.
+This page is the current quick-start reference for the runtime pipeline.
 
 ## Runtime Shape
 
-Vetinari uses a 3-agent factory pipeline:
+AM Workbench uses a 3-agent factory pipeline:
 
 ```text
 Foreman -> Worker -> Inspector
 ```
 
-The live enum is `vetinari.types.AgentType` with only `FOREMAN`, `WORKER`, and `INSPECTOR`.
+The core pipeline enum is `vetinari.types.AgentType`: `FOREMAN`, `WORKER`, and `INSPECTOR`. Three auxiliary types extend this for non-pipeline roles: `TRAINING` (fine-tuning/DPO/SimPO runners), `RELEASE` (release-certifier/publication boundary runners), and `WORKBENCH` (Workbench subsystem-scoped agent interactions). Auxiliary types do not participate in the Foreman→Worker→Inspector execution cycle.
 
 ## Agents And Modes
 
@@ -21,7 +20,7 @@ The live enum is `vetinari.types.AgentType` with only `FOREMAN`, `WORKER`, and `
 | Worker | Executes research, architecture, build, operations, and recovery work | 24 |
 | Inspector | Reviews quality, security, tests, and simplification | 4 |
 
-Total active modes: 34.
+See `vetinari/agents/` for the full mode catalog.
 
 ## Common Paths
 

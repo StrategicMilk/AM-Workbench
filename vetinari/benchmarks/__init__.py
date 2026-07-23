@@ -8,23 +8,37 @@ Three-layer testing architecture:
 
 from __future__ import annotations
 
-from vetinari.benchmarks.cost_benchmark import (  # noqa: VET123 - barrel export preserves public import compatibility
+from vetinari.benchmarks.benchmark_types import (
+    BenchmarkCase,
+    BenchmarkResult,
+)
+from vetinari.benchmarks.ci_benchmarks import run_ci_benchmarks
+from vetinari.benchmarks.cost_benchmark import (
     CostBenchmark,
     aggregate_cost_benchmarks,
 )
-from vetinari.benchmarks.runner import (  # noqa: VET123 - barrel export preserves public import compatibility
-    BenchmarkCase,
-    BenchmarkResult,
+from vetinari.benchmarks.external_probes import (
+    AgentSecurityInvariantAdapter,
+    EmbeddingQualityAdapter,
+    LMEvalHarnessProbeAdapter,
+    MCPAgentBenchmarkAdapter,
+    OWASPLLMTop10Adapter,
+)
+from vetinari.benchmarks.runner import (
     BenchmarkRunner,
     get_default_runner,
-    run_ci_benchmarks,
 )
 
 __all__ = [
+    "AgentSecurityInvariantAdapter",
     "BenchmarkCase",
     "BenchmarkResult",
     "BenchmarkRunner",
     "CostBenchmark",
+    "EmbeddingQualityAdapter",
+    "LMEvalHarnessProbeAdapter",
+    "MCPAgentBenchmarkAdapter",
+    "OWASPLLMTop10Adapter",
     "aggregate_cost_benchmarks",
     "get_default_runner",
     "run_ci_benchmarks",

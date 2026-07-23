@@ -21,6 +21,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 # Reward tier weights — must sum to 1.0.
 # Tier 1 is binary (execution pass/fail); Tiers 2-5 are continuous.
 TIER_EXECUTION_WEIGHT: float = 0.10  # Tier 1: execution pass/fail (free, instant)
@@ -31,7 +32,7 @@ TIER_LLM_JUDGE_WEIGHT: float = 0.20  # Tier 5: LLM-as-judge score (expensive, to
 TIER_EFFICIENCY_WEIGHT: float = 0.10  # Bonus: no rework needed
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class DapoExecutionResult:
     """Result of code execution verification.
 
@@ -46,7 +47,7 @@ class DapoExecutionResult:
     exit_code: int = 0
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class RewardBreakdown:
     """Detailed breakdown of the DAPO reward computation.
 
@@ -58,6 +59,7 @@ class RewardBreakdown:
         tier4_heuristic: Tier 4 heuristic contribution.
         tier5_llm_judge: Tier 5 LLM judge contribution.
         efficiency_bonus: Efficiency bonus contribution.
+        llm_judge_available: Whether the LLM judge score was present.
         hard_floor_applied: Whether the hard floor (code doesn't run) was applied.
     """
 
@@ -68,6 +70,7 @@ class RewardBreakdown:
     tier4_heuristic: float = 0.0
     tier5_llm_judge: float = 0.0
     efficiency_bonus: float = 0.0
+    llm_judge_available: bool = False
     hard_floor_applied: bool = False
 
     def __repr__(self) -> str:
@@ -88,6 +91,7 @@ class RewardBreakdown:
             "tier4_heuristic": round(self.tier4_heuristic, 4),
             "tier5_llm_judge": round(self.tier5_llm_judge, 4),
             "efficiency_bonus": round(self.efficiency_bonus, 4),
+            "llm_judge_available": self.llm_judge_available,
             "hard_floor_applied": self.hard_floor_applied,
         }
 
@@ -109,52 +113,55 @@ def compute_dapo_reward(
     Returns:
         RewardBreakdown with total reward and per-tier contributions.
     """
-    breakdown = RewardBreakdown()
-
     # Tier 1: Execution pass/fail (binary, free, instant)
+    tier1_execution = 0.0
     if execution_result is not None:
         if execution_result.success:
-            breakdown.tier1_execution = TIER_EXECUTION_WEIGHT
+            tier1_execution = TIER_EXECUTION_WEIGHT
         else:
             # Hard floor: code that doesn't run gets zero reward
-            breakdown.hard_floor_applied = True
-            breakdown.total_reward = 0.0
-            return breakdown
+            return RewardBreakdown(hard_floor_applied=True, total_reward=0.0)
 
     # Tier 2: Test pass rate (continuous, free, ~seconds)
     test_pass_rate = quality_result.get("test_pass_rate", 0.0)
-    breakdown.tier2_test = test_pass_rate * TIER_TEST_WEIGHT
+    tier2_test = test_pass_rate * TIER_TEST_WEIGHT
 
     # Tier 3: Static analysis score (continuous, free, instant)
     static_score = quality_result.get("static_analysis_score", 0.0)
-    breakdown.tier3_static = static_score * TIER_STATIC_WEIGHT
+    tier3_static = static_score * TIER_STATIC_WEIGHT
 
     # Tier 4: Quality agent heuristic pre-screen (continuous, cheap ML)
     heuristic_score = quality_result.get("heuristic_score", 0.0)
-    breakdown.tier4_heuristic = heuristic_score * TIER_HEURISTIC_WEIGHT
+    tier4_heuristic = heuristic_score * TIER_HEURISTIC_WEIGHT
 
     # Tier 5: LLM-as-judge score (continuous, expensive)
-    llm_judge_score = quality_result.get("score", 0.0)
-    breakdown.tier5_llm_judge = llm_judge_score * TIER_LLM_JUDGE_WEIGHT
+    llm_judge_available = "score" in quality_result and quality_result.get("score") is not None
+    llm_judge_score = float(quality_result["score"]) if llm_judge_available else 0.0
+    tier5_llm_judge = llm_judge_score * TIER_LLM_JUDGE_WEIGHT
 
     # Efficiency bonus: no rework needed.
     # Defect 17 fix: only award the bonus when the key is explicitly present
     # and set to 0.  Missing key means "not scored" — no bonus for unscored samples.
+    efficiency_bonus = 0.0
     if "rework_count" in quality_result and quality_result["rework_count"] == 0:
-        breakdown.efficiency_bonus = TIER_EFFICIENCY_WEIGHT
+        efficiency_bonus = TIER_EFFICIENCY_WEIGHT
 
     # Sum all tiers
-    breakdown.total_reward = min(
+    total_reward = min(
         1.0,
-        breakdown.tier1_execution
-        + breakdown.tier2_test
-        + breakdown.tier3_static
-        + breakdown.tier4_heuristic
-        + breakdown.tier5_llm_judge
-        + breakdown.efficiency_bonus,
+        tier1_execution + tier2_test + tier3_static + tier4_heuristic + tier5_llm_judge + efficiency_bonus,
     )
 
-    return breakdown
+    return RewardBreakdown(
+        total_reward=total_reward,
+        tier1_execution=tier1_execution,
+        tier2_test=tier2_test,
+        tier3_static=tier3_static,
+        tier4_heuristic=tier4_heuristic,
+        tier5_llm_judge=tier5_llm_judge,
+        efficiency_bonus=efficiency_bonus,
+        llm_judge_available=llm_judge_available,
+    )
 
 
 @dataclass

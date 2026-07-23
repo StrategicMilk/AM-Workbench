@@ -18,7 +18,7 @@ from vetinari.routing.system_router import (
     get_system_routing_stats,
     route_system,
 )
-from vetinari.routing.topology_router import (  # noqa: VET123 - barrel export preserves public import compatibility
+from vetinari.routing.topology_router import (
     Topology,
     TopologyDecision,
     TopologyRouter,

@@ -8,3 +8,17 @@ Provides canonical test suites that Vetinari runs against itself:
 """
 
 from __future__ import annotations
+
+from vetinari.testing.adversarial_tests import (
+    AdversarialCase,
+    AdversarialCaseResult,
+    AdversarialReport,
+    AdversarialTestRunner,
+)
+
+__all__ = [
+    "AdversarialCase",
+    "AdversarialCaseResult",
+    "AdversarialReport",
+    "AdversarialTestRunner",
+]

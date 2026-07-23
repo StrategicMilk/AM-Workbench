@@ -5,7 +5,7 @@ matches a known pattern (with a proven fix) or is novel (requiring an LLM
 retry brief).  Known patterns are resolved cheaply via the failure registry
 and remediation stats; novel failures are flagged for LLM-assisted retry.
 
-Pipeline role: consulted by ``TaskRetryLoopMixin`` before each retry attempt
+Pipeline role: consulted by ``TaskRetryLoopRunner`` before each retry attempt
 to decide *how* to retry rather than blindly re-executing.
 """
 
@@ -16,7 +16,10 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
+from vetinari.boundary_guards import require_score_in_range
+
 logger = logging.getLogger(__name__)
+_PREVENTION_RULE_CONFIDENCE: float = 0.8  # Uncalibrated baseline tracked by FSA-8716.
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +113,8 @@ class RetryAnalyzer:
             context={"error_msg": error_msg[:500], "task_type": task_type},
         )
 
-    def _check_prevention_rules(self, text: str) -> RetryStrategy | None:
+    @staticmethod
+    def _check_prevention_rules(text: str) -> RetryStrategy | None:
         """Check failure text against registered prevention rules.
 
         Args:
@@ -135,7 +139,10 @@ class RetryAnalyzer:
                     return RetryStrategy(
                         known=True,
                         fix_action=f"Apply prevention rule: {rule.description}",
-                        confidence=0.8,  # Prevention rules are well-established
+                        confidence=require_score_in_range(
+                            _PREVENTION_RULE_CONFIDENCE,
+                            label="prevention_rule_confidence",
+                        ),
                         matching_rule_id=rule.rule_id,
                         context={"rule_category": rule.category},
                     )

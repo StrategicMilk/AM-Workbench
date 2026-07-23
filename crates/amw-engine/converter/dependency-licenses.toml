@@ -1,0 +1,37 @@
+# Exact license evidence for the hash-locked converter environment. Keys must
+# match every logical requirement in requirements-convert_lora_to_gguf.txt.
+# PyPI project-version JSON is the metadata authority except torch's CPU wheel,
+# which is resolved from the pinned PyTorch CPU index.
+
+[packages]
+"accelerate==1.14.0" = "Apache-2.0"
+"certifi==2026.7.22" = "MPL-2.0"
+"charset-normalizer==3.4.9" = "MIT"
+"colorama==0.4.6" = "BSD-3-Clause"
+"filelock==3.32.0" = "MIT"
+"fsspec==2026.6.0" = "BSD-3-Clause"
+"hf-xet==1.5.2" = "Apache-2.0"
+"huggingface-hub==0.36.2" = "Apache-2.0"
+"idna==3.18" = "BSD-3-Clause"
+"jinja2==3.1.6" = "BSD-3-Clause"
+"markupsafe==3.0.3" = "BSD-3-Clause"
+"mpmath==1.3.0" = "BSD-3-Clause"
+"networkx==3.6.1" = "BSD-3-Clause"
+"numpy==1.26.4" = "BSD-3-Clause"
+"packaging==26.2" = "Apache-2.0 OR BSD-2-Clause"
+"peft==0.19.1" = "Apache-2.0"
+"protobuf==4.25.8" = "BSD-3-Clause"
+"psutil==7.2.2" = "BSD-3-Clause"
+"pyyaml==6.0.3" = "MIT"
+"regex==2026.7.19" = "Apache-2.0 AND CNRI-Python"
+"requests==2.34.2" = "Apache-2.0"
+"safetensors==0.8.0" = "Apache-2.0"
+"sentencepiece==0.2.1" = "Apache-2.0"
+"setuptools==81.0.0" = "MIT"
+"sympy==1.14.0" = "BSD-3-Clause"
+"tokenizers==0.22.2" = "Apache-2.0"
+"torch==2.11.0+cpu" = "BSD-3-Clause"
+"tqdm==4.69.0" = "MPL-2.0 AND MIT"
+"transformers==4.57.6" = "Apache-2.0"
+"typing-extensions==4.16.0" = "PSF-2.0"
+"urllib3==2.7.0" = "MIT"

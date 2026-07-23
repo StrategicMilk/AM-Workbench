@@ -29,10 +29,14 @@ from vetinari.utils.lazy_import import lazy_import
 
 logger = logging.getLogger(__name__)
 
+
 # ── Optional imports ─────────────────────────────────────────────────────────
-torch, _TORCH_AVAILABLE = lazy_import("torch")  # type: ignore[assignment]
-diffusers, _DIFFUSERS_AVAILABLE = lazy_import("diffusers")  # type: ignore[assignment]
-PILImage, _PIL_AVAILABLE = lazy_import("PIL.Image")  # type: ignore[assignment]  # noqa: VET070  # Pillow in [image] extras
+torch: Any
+diffusers: Any
+PILImage: Any
+torch, _TORCH_AVAILABLE = lazy_import("torch")
+diffusers, _DIFFUSERS_AVAILABLE = lazy_import("diffusers")
+PILImage, _PIL_AVAILABLE = lazy_import("PIL.Image")
 
 
 # ── Configuration defaults ───────────────────────────────────────────────────
@@ -245,7 +249,7 @@ class DiffusionEngine:
                 "success": False,
                 "path": "",
                 "filename": "",
-                "error": "diffusers, torch, or Pillow not installed (pip install vetinari[image])",  # noqa: VET301 — user guidance string
+                "error": "diffusers, torch, or Pillow not installed (pip install vetinari[image])",
             }
 
         if not self._output_dir_writable:
@@ -256,7 +260,31 @@ class DiffusionEngine:
                 "error": f"Image output directory {self._output_dir} is not writable",
             }
 
-        # Validate inputs
+        prompt_error = self._validate_generation_inputs(prompt, width, height, steps, cfg_scale)
+        if prompt_error is not None:
+            return prompt_error
+
+        with self._lock:
+            try:
+                return self._generate_locked(prompt, negative_prompt, width, height, steps, cfg_scale, seed, model_id)
+
+            except Exception as exc:
+                logger.error("Image generation failed: %s", exc)
+                return {
+                    "success": False,
+                    "path": "",
+                    "filename": "",
+                    "error": f"Generation failed: {exc}",
+                }
+
+    @staticmethod
+    def _validate_generation_inputs(
+        prompt: str,
+        width: int,
+        height: int,
+        steps: int,
+        cfg_scale: float,
+    ) -> dict[str, Any] | None:
         if not prompt or not prompt.strip():
             return {"success": False, "path": "", "filename": "", "error": "Prompt cannot be empty"}
         if not isinstance(width, int) or not (64 <= width <= 4096) or width % 8 != 0:
@@ -267,63 +295,45 @@ class DiffusionEngine:
             raise ValueError(f"Steps must be a positive integer in range 1-200, got {steps!r}")
         if not isinstance(cfg_scale, (int, float)) or not (1.0 <= float(cfg_scale) <= 30.0):
             raise ValueError(f"cfg_scale must be a positive float in range 1.0-30.0, got {cfg_scale!r}")
+        return None
 
-        with self._lock:
-            try:
-                # Load pipeline if needed
-                pipeline = self._get_or_load_pipeline(model_id)
-
-                # Set up generator for reproducible results
-                generator = None
-                if seed >= 0:
-                    generator = torch.Generator(device=self._device).manual_seed(seed)
-
-                # Generate image
-                start_time = time.time()
-                result = pipeline(
-                    prompt=prompt,
-                    negative_prompt=negative_prompt or None,
-                    width=width,
-                    height=height,
-                    num_inference_steps=steps,
-                    guidance_scale=cfg_scale,
-                    generator=generator,
-                )
-                elapsed_ms = int((time.time() - start_time) * 1000)
-
-                # Save image
-                image = result.images[0]
-                filename = f"img_{uuid.uuid4().hex[:8]}.png"
-                out_path = self._output_dir / filename
-                image.save(str(out_path))
-
-                logger.info(
-                    "Generated image: %s (%dx%d, %d steps, %d ms)",
-                    out_path,
-                    width,
-                    height,
-                    steps,
-                    elapsed_ms,
-                )
-
-                return {
-                    "success": True,
-                    "path": str(out_path),
-                    "filename": filename,
-                    "width": width,
-                    "height": height,
-                    "elapsed_ms": elapsed_ms,
-                    "error": "",
-                }
-
-            except Exception as exc:
-                logger.error("Image generation failed: %s", exc)
-                return {
-                    "success": False,
-                    "path": "",
-                    "filename": "",
-                    "error": f"Generation failed: {exc}",
-                }
+    def _generate_locked(
+        self,
+        prompt: str,
+        negative_prompt: str,
+        width: int,
+        height: int,
+        steps: int,
+        cfg_scale: float,
+        seed: int,
+        model_id: str | None,
+    ) -> dict[str, Any]:
+        pipeline = self._get_or_load_pipeline(model_id)
+        generator = torch.Generator(device=self._device).manual_seed(seed) if seed >= 0 else None
+        start_time = time.time()
+        result = pipeline(
+            prompt=prompt,
+            negative_prompt=negative_prompt or None,
+            width=width,
+            height=height,
+            num_inference_steps=steps,
+            guidance_scale=cfg_scale,
+            generator=generator,
+        )
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        filename = f"img_{uuid.uuid4().hex[:8]}.png"
+        out_path = self._output_dir / filename
+        result.images[0].save(str(out_path))
+        logger.info("Generated image: %s (%dx%d, %d steps, %d ms)", out_path, width, height, steps, elapsed_ms)
+        return {
+            "success": True,
+            "path": str(out_path),
+            "filename": filename,
+            "width": width,
+            "height": height,
+            "elapsed_ms": elapsed_ms,
+            "error": "",
+        }
 
     def _get_or_load_pipeline(self, model_id: str | None = None) -> Any:
         """Load a diffusion pipeline, reusing cached if same model.

@@ -1,0 +1,26 @@
+kind: discovery
+version: "1.0"
+grading_criteria:
+  - id: finding_doc_exists
+    name: Finding document exists
+    required: true
+    description: Discovery output names a written finding document.
+    evidence_type: artifact_path
+    evidence_key: finding_doc
+    rejection_reason: Discovery shard is missing a finding document path.
+  - id: finding_doc_has_content
+    name: Finding document has content
+    required: true
+    description: Discovery output includes substantive finding document content.
+    evidence_type: artifact_content
+    evidence_key: finding_doc_content
+    rejection_reason: Discovery shard finding document content is missing.
+  - id: test_results_secondary
+    name: Test results secondary
+    required: false
+    description: Optional tests may support a discovery but do not define success.
+    evidence_type: criterion_field
+    evidence_key: test_results
+    allowed_values: ["passed", "not_applicable"]
+    rejection_reason: Optional discovery test evidence is invalid.
+rejection_policy: all_required

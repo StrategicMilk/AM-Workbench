@@ -20,14 +20,14 @@ staleness_window_days: 90
 
 components:
   - component: python
-    minimum_version: "3.10.0"
+    minimum_version: "3.11.0"
     known_bad_ranges: []
     required_compute_capability: null
     verified_at: "2026-04-24"
     verified_sources:
       - "https://devguide.python.org/versions/"
-      - "pyproject.toml requires-python = '>=3.10'"
-    notes: "Vetinari package requires-python is >=3.10; ensure interpreter matches."
+      - "pyproject.toml requires-python = '>=3.11'"
+    notes: "Vetinari package requires-python is >=3.11; ensure interpreter matches."
 
   - component: torch
     minimum_version: "2.7.0"

@@ -20,27 +20,32 @@ push the new receipt to attached clients without polling.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
+import re
+import threading
 from collections.abc import Iterator
-from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
-from vetinari.agents.contracts import (
-    AttestedArtifact,
-    LLMJudgment,
-    OutcomeSignal,
-    Provenance,
-    ToolEvidence,
-)
 from vetinari.events import EventBus, get_event_bus
 from vetinari.receipts.events import receipt_appended
-from vetinari.receipts.record import WorkReceipt, WorkReceiptKind
-from vetinari.types import AgentType, ArtifactKind, EvidenceBasis
+from vetinari.receipts.record import WorkReceipt
+from vetinari.receipts.store_serialization import (
+    WORK_RECEIPT_SCHEMA_VERSION,
+    _receipt_from_jsonl,
+    _receipt_to_jsonl,
+)
 
 logger = logging.getLogger(__name__)
+DEFAULT_RECEIPT_MAX_BYTES = 10 * 1024 * 1024  # Rotate each project receipt JSONL before 10 MiB.
+DEFAULT_RECEIPT_BACKUP_COUNT = 5  # Retain five bounded receipt backups per project.
+
+
+# Allowlist for project_id components: alphanumeric, underscore, hyphen only.
+# Leading/trailing whitespace, path separators, and parent-traversal markers
+# are all rejected to prevent filesystem path-traversal attacks.
+_PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def _default_repo_root() -> Path:
@@ -67,6 +72,8 @@ class WorkReceiptStore:
         self,
         repo_root: Path | None = None,
         event_bus: EventBus | None = None,
+        max_bytes: int = DEFAULT_RECEIPT_MAX_BYTES,
+        backup_count: int = DEFAULT_RECEIPT_BACKUP_COUNT,
     ) -> None:
         """Initialise the store.
 
@@ -75,9 +82,21 @@ class WorkReceiptStore:
                 location three parents above this file.
             event_bus: Optional EventBus override; ``None`` uses the
                 process-wide singleton.
+            max_bytes: Maximum active per-project JSONL size before rotation.
+            backup_count: Number of rotated JSONL backups retained per project.
+
+        Raises:
+            ValueError: If ``max_bytes`` or ``backup_count`` is not positive.
         """
+        if max_bytes <= 0:
+            raise ValueError("max_bytes must be positive")
+        if backup_count <= 0:
+            raise ValueError("backup_count must be positive")
         self._repo_root: Path = repo_root if repo_root is not None else _default_repo_root()
         self._event_bus: EventBus = event_bus if event_bus is not None else get_event_bus()
+        self._max_bytes = max_bytes
+        self._backup_count = backup_count
+        self._lock = threading.Lock()
 
     @property
     def receipts_root(self) -> Path:
@@ -90,20 +109,36 @@ class WorkReceiptStore:
         return self._repo_root / "outputs" / "receipts"
 
     def receipts_path(self, project_id: str) -> Path:
-        """Return the absolute path to a project's receipts file.
+        r"""Return the absolute path to a project's receipts file.
+
+        Validates that *project_id* contains only alphanumeric characters,
+        underscores, and hyphens, then resolves the candidate path and
+        asserts it remains inside the receipts root tree.  This two-layer
+        check (allowlist regex + canonical-path containment) defends against
+        both direct path-separator injection and symlink-based escapes.
 
         Args:
-            project_id: Project identifier; must be non-empty.
+            project_id: Project identifier; must match ``[A-Za-z0-9_-]+``.
 
         Returns:
             Absolute ``Path`` to ``outputs/receipts/<project_id>/receipts.jsonl``.
 
         Raises:
-            ValueError: If project_id is empty or whitespace-only.
+            ValueError: If project_id is empty, contains disallowed characters
+                (including ``/``, ``\\``, ``..``, or whitespace), or if the
+                resolved path would escape the receipts root.
         """
-        if not project_id or not project_id.strip():
-            raise ValueError("project_id must be a non-empty string")
-        return self.receipts_root / project_id / "receipts.jsonl"
+        if not project_id or not _PROJECT_ID_RE.fullmatch(project_id):
+            raise ValueError(
+                f"project_id must match [A-Za-z0-9_-]+ (got {project_id!r}); "
+                "leading/trailing whitespace, path separators, and parent-traversal "
+                "markers are rejected"
+            )
+        root = self.receipts_root.resolve()
+        candidate = (self.receipts_root / project_id / "receipts.jsonl").resolve()
+        if not candidate.is_relative_to(root):
+            raise ValueError(f"resolved receipts path {candidate} escapes receipts root {root}")
+        return candidate
 
     def append(self, receipt: WorkReceipt) -> None:
         """Append one receipt and publish ``receipt.appended``.
@@ -138,10 +173,12 @@ class WorkReceiptStore:
 
         line = _receipt_to_jsonl(receipt) + "\n"
 
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(line)
-            fh.flush()
-            os.fsync(fh.fileno())
+        with self._lock:
+            self._rotate_project_log_if_needed(path, len(line.encode("utf-8")))
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(line)
+                fh.flush()
+                os.fsync(fh.fileno())
 
         logger.debug(
             "Appended receipt %s (kind=%s, project=%s) to %s",
@@ -160,6 +197,7 @@ class WorkReceiptStore:
                 awaiting_user=receipt.awaiting_user,
             )
         )
+        self._event_bus.drain_handlers(timeout=5.0)
 
     def iter_receipts(self, project_id: str) -> Iterator[WorkReceipt]:
         """Stream a project's receipts in append order, line-by-line.
@@ -172,11 +210,169 @@ class WorkReceiptStore:
                 streamed.
 
         Yields:
-            One WorkReceipt per line in append order.
+            One WorkReceipt per retained line in append order, including
+            rotated backups from oldest to newest.
         """
         path = self.receipts_path(project_id)
+        for log_path in self._project_log_paths(path):
+            yield from self._iter_receipts_from_path(log_path)
+
+    def find_awaiting(self, project_id: str) -> list[WorkReceipt]:
+        """Return only this project's receipts that block on user input.
+
+        Args:
+            project_id: Project identifier to filter on.
+
+        Returns:
+            Receipts where ``awaiting_user`` is True, in append order.
+            Empty list when the project has no receipts file or no
+            awaiting receipts.
+        """
+        return [r for r in self.iter_receipts(project_id) if r.awaiting_user]
+
+    def purge_expired_receipts(
+        self,
+        project_id: str,
+        *,
+        cutoff_days: int = 30,
+        now: datetime | None = None,
+    ) -> int:
+        """Physically remove receipts older than the retention cutoff.
+
+        Args:
+            project_id: Project identifier whose receipt log should be purged.
+            cutoff_days: Maximum age in days to retain. Must be non-negative.
+            now: Optional reference time for deterministic tests.
+
+        Returns:
+            Number of receipts removed from the project log.
+
+        Raises:
+            ValueError: If ``project_id`` is invalid, ``cutoff_days`` is
+                negative, or a receipt timestamp is malformed.
+            OSError: If the receipt log cannot be rewritten.
+        """
+        if cutoff_days < 0:
+            raise ValueError("cutoff_days must be non-negative")
+        path = self.receipts_path(project_id)
         if not path.exists():
+            return 0
+
+        reference = now if now is not None else datetime.now(timezone.utc)
+        kept: list[WorkReceipt] = []
+        removed = 0
+        for receipt in self.iter_receipts(project_id):
+            timestamp = _parse_receipt_retention_timestamp(receipt)
+            age = reference - timestamp
+            if age.total_seconds() > cutoff_days * 24 * 60 * 60:
+                removed += 1
+            else:
+                kept.append(receipt)
+        if removed == 0:
+            return 0
+
+        tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        with tmp_path.open("w", encoding="utf-8", newline="\n") as fh:
+            for receipt in kept:
+                fh.write(_receipt_to_jsonl(receipt) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
+        for rotated_path in self._rotated_project_log_paths(path):
+            if _path_exists_strict(rotated_path):
+                rotated_path.unlink()
+        return removed
+
+    def purge_expired_receipts_all_projects(
+        self,
+        *,
+        cutoff_days: int = 30,
+        now: datetime | None = None,
+    ) -> int:
+        """Purge expired receipt rows for every project receipt log."""
+        return sum(
+            self.purge_expired_receipts(project_id, cutoff_days=cutoff_days, now=now)
+            for project_id in self._project_ids()
+        )
+
+    def delete_receipts_for_subject(self, subject: str) -> int:
+        """Physically remove receipts containing a subject marker.
+
+        Args:
+            subject: Exact subject marker to erase from persisted receipts.
+
+        Returns:
+            Number of receipt rows removed across all project receipt logs.
+        """
+        marker = subject.strip()
+        if not marker:
+            return 0
+        return sum(
+            self._delete_receipts_for_subject_in_project(project_id, marker) for project_id in self._project_ids()
+        )
+
+    def _delete_receipts_for_subject_in_project(self, project_id: str, marker: str) -> int:
+        path = self.receipts_path(project_id)
+        if not path.exists():
+            return 0
+        receipts = list(self.iter_receipts(project_id))
+        kept = [receipt for receipt in receipts if marker not in _receipt_to_jsonl(receipt)]
+        removed = len(receipts) - len(kept)
+        if removed == 0:
+            return 0
+        tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        with tmp_path.open("w", encoding="utf-8", newline="\n") as fh:
+            for receipt in kept:
+                fh.write(_receipt_to_jsonl(receipt) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
+        for rotated_path in self._rotated_project_log_paths(path):
+            if _path_exists_strict(rotated_path):
+                rotated_path.unlink()
+        return removed
+
+    def _project_ids(self) -> list[str]:
+        root = self.receipts_root
+        if not root.exists():
+            return []
+        return sorted(
+            candidate.name
+            for candidate in root.iterdir()
+            if candidate.is_dir() and _PROJECT_ID_RE.fullmatch(candidate.name)
+        )
+
+    def _rotate_project_log_if_needed(self, path: Path, incoming_bytes: int) -> None:
+        """Rotate a per-project receipt JSONL before the append exceeds its cap."""
+        try:
+            current_size = path.stat().st_size
+        except FileNotFoundError:
+            logger.warning("Exception handled by  rotate project log if needed fallback", exc_info=True)
             return
+        if current_size + incoming_bytes <= self._max_bytes:
+            return
+        oldest = path.with_name(f"{path.name}.{self._backup_count}")
+        if _path_exists_strict(oldest):
+            oldest.unlink()
+        for index in range(self._backup_count - 1, 0, -1):
+            source = path.with_name(f"{path.name}.{index}")
+            if _path_exists_strict(source):
+                source.replace(path.with_name(f"{path.name}.{index + 1}"))
+        path.replace(path.with_name(f"{path.name}.1"))
+
+    def _project_log_paths(self, path: Path) -> list[Path]:
+        """Return receipt ledgers from oldest retained backup to active JSONL."""
+        paths = list(reversed(self._rotated_project_log_paths(path)))
+        paths.append(path)
+        return [candidate for candidate in paths if _path_exists_strict(candidate)]
+
+    def _rotated_project_log_paths(self, path: Path) -> list[Path]:
+        """Return retained rotated receipt paths from newest to oldest."""
+        return [path.with_name(f"{path.name}.{index}") for index in range(1, self._backup_count + 1)]
+
+    @staticmethod
+    def _iter_receipts_from_path(path: Path) -> Iterator[WorkReceipt]:
+        """Stream receipts from one JSONL path, skipping malformed rows explicitly."""
         with path.open("r", encoding="utf-8") as fh:
             for lineno, raw in enumerate(fh, start=1):
                 stripped = raw.strip()
@@ -193,141 +389,70 @@ class WorkReceiptStore:
                     )
                     continue
 
-    def find_awaiting(self, project_id: str) -> list[WorkReceipt]:
-        """Return only this project's receipts that block on user input.
 
-        Args:
-            project_id: Project identifier to filter on.
-
-        Returns:
-            Receipts where ``awaiting_user`` is True, in append order.
-            Empty list when the project has no receipts file or no
-            awaiting receipts.
-        """
-        return [r for r in self.iter_receipts(project_id) if r.awaiting_user]
+def _parse_receipt_retention_timestamp(receipt: WorkReceipt) -> datetime:
+    value = receipt.finished_at_utc or receipt.started_at_utc
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"receipt {receipt.receipt_id!r} has malformed retention timestamp") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
-# --- serialization helpers ---------------------------------------------------
+def _path_exists_strict(path: Path) -> bool:
+    """Return whether a path exists without hiding unreadable state."""
+    try:
+        path.stat()
+    except FileNotFoundError:
+        logger.warning("Exception handled by  path exists strict fallback", exc_info=True)
+        return False
+    return True
 
 
-def _receipt_to_jsonl(receipt: WorkReceipt) -> str:
-    """Serialise a WorkReceipt to a single-line JSON string.
-
-    Enum values are written as their string ``.value`` so the JSONL is
-    self-contained and does not require the enum imports at read time.
-
-    Args:
-        receipt: The receipt to serialise.
-
-    Returns:
-        Single-line JSON string (no trailing newline).
-    """
-    raw: dict[str, Any] = {
-        "receipt_id": receipt.receipt_id,
-        "project_id": receipt.project_id,
-        "agent_id": receipt.agent_id,
-        "agent_type": receipt.agent_type.value,
-        "kind": receipt.kind.value,
-        "started_at_utc": receipt.started_at_utc,
-        "finished_at_utc": receipt.finished_at_utc,
-        "inputs_summary": receipt.inputs_summary,
-        "outputs_summary": receipt.outputs_summary,
-        "outcome": _outcome_to_dict(receipt.outcome),
-        "awaiting_user": receipt.awaiting_user,
-        "awaiting_reason": receipt.awaiting_reason,
-        "linked_claim_ids": list(receipt.linked_claim_ids),
-    }
-    return json.dumps(raw, separators=(",", ":"))
-
-
-def _outcome_to_dict(outcome: OutcomeSignal) -> dict[str, Any]:
-    """Convert an OutcomeSignal (with nested frozen dataclasses) to a dict."""
-    return {
-        "passed": outcome.passed,
-        "score": outcome.score,
-        "basis": outcome.basis.value,
-        "tool_evidence": [asdict(te) for te in outcome.tool_evidence],
-        "llm_judgment": asdict(outcome.llm_judgment) if outcome.llm_judgment is not None else None,
-        "attested_artifacts": [_attested_to_dict(a) for a in outcome.attested_artifacts],
-        "provenance": asdict(outcome.provenance) if outcome.provenance is not None else None,
-        "issues": list(outcome.issues),
-        "suggestions": list(outcome.suggestions),
-        "use_case": outcome.use_case,
-    }
-
-
-def _attested_to_dict(artifact: AttestedArtifact) -> dict[str, Any]:
-    """Convert an AttestedArtifact to a JSON-friendly dict."""
-    return {
-        "kind": artifact.kind.value,
-        "attested_by": artifact.attested_by,
-        "attested_at_utc": artifact.attested_at_utc,
-        "payload": dict(artifact.payload),
-    }
-
-
-def _receipt_from_jsonl(line: str) -> WorkReceipt:
-    """Deserialise one JSONL line into a WorkReceipt.
+def purge_project_receipts_retention(
+    project_id: str,
+    *,
+    cutoff_days: int = 30,
+    now: datetime | None = None,
+) -> int:
+    """Purge expired receipt rows from the default receipt store.
 
     Args:
-        line: The raw JSON line (no trailing newline).
+        project_id: Project identifier whose receipt log should be purged.
+        cutoff_days: Maximum age in days to retain.
+        now: Optional reference time for deterministic callers.
 
     Returns:
-        The reconstructed WorkReceipt.
+        Number of receipts removed.
 
     Raises:
-        ValueError: If the line is not valid JSON or required fields
-            are missing.
-        KeyError: If a required field is absent from the payload.
+        ValueError: If ``project_id`` is invalid, ``cutoff_days`` is negative,
+            or a receipt timestamp is malformed.
+        OSError: If the receipt log cannot be rewritten.
     """
-    raw: dict[str, Any] = json.loads(line)
-    return WorkReceipt(
-        receipt_id=raw["receipt_id"],
-        project_id=raw["project_id"],
-        agent_id=raw["agent_id"],
-        agent_type=AgentType(raw["agent_type"]),
-        kind=WorkReceiptKind(raw["kind"]),
-        started_at_utc=raw["started_at_utc"],
-        finished_at_utc=raw["finished_at_utc"],
-        inputs_summary=raw.get("inputs_summary", ""),
-        outputs_summary=raw.get("outputs_summary", ""),
-        outcome=_outcome_from_dict(raw["outcome"]),
-        awaiting_user=bool(raw.get("awaiting_user")),
-        awaiting_reason=raw.get("awaiting_reason"),
-        linked_claim_ids=tuple(raw.get("linked_claim_ids", ())),
-    )
+    return WorkReceiptStore().purge_expired_receipts(project_id, cutoff_days=cutoff_days, now=now)
 
 
-def _outcome_from_dict(raw: dict[str, Any]) -> OutcomeSignal:
-    """Reconstruct an OutcomeSignal from a JSON dict."""
-    tool_evidence = tuple(ToolEvidence(**te) for te in raw.get("tool_evidence", ()))
-    llm_raw = raw.get("llm_judgment")
-    llm_judgment = LLMJudgment(**llm_raw) if llm_raw is not None else None
-    attested = tuple(_attested_from_dict(a) for a in raw.get("attested_artifacts", ()))
-    prov_raw = raw.get("provenance")
-    provenance = Provenance(**prov_raw) if prov_raw is not None else None
-    return OutcomeSignal(
-        passed=bool(raw.get("passed")),
-        score=float(raw.get("score", 0.0)),
-        basis=EvidenceBasis(raw.get("basis", EvidenceBasis.UNSUPPORTED.value)),
-        tool_evidence=tool_evidence,
-        llm_judgment=llm_judgment,
-        attested_artifacts=attested,
-        provenance=provenance,
-        issues=tuple(raw.get("issues", ())),
-        suggestions=tuple(raw.get("suggestions", ())),
-        use_case=raw.get("use_case"),
-    )
+def purge_all_project_receipts_retention(
+    *,
+    cutoff_days: int = 30,
+    now: datetime | None = None,
+) -> int:
+    """Purge expired receipt rows from every project in the default receipt store."""
+    return WorkReceiptStore().purge_expired_receipts_all_projects(cutoff_days=cutoff_days, now=now)
 
 
-def _attested_from_dict(raw: dict[str, Any]) -> AttestedArtifact:
-    """Reconstruct an AttestedArtifact from a JSON dict."""
-    return AttestedArtifact(
-        kind=ArtifactKind(raw["kind"]),
-        attested_by=raw["attested_by"],
-        attested_at_utc=raw["attested_at_utc"],
-        payload=dict(raw.get("payload", {})),
-    )
+def delete_receipts_for_subject(subject: str) -> int:
+    """Delete subject-matching receipts from the default receipt store."""
+    return WorkReceiptStore().delete_receipts_for_subject(subject)
 
 
-__all__ = ["WorkReceiptStore"]
+__all__ = [
+    "WORK_RECEIPT_SCHEMA_VERSION",
+    "WorkReceiptStore",
+    "delete_receipts_for_subject",
+    "purge_all_project_receipts_retention",
+    "purge_project_receipts_retention",
+]

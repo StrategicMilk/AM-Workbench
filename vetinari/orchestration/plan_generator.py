@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
@@ -16,6 +18,39 @@ from vetinari.orchestration.execution_graph import ExecutionGraph
 from vetinari.types import AgentType, PlanStatus
 
 logger = logging.getLogger(__name__)
+_BACKGROUND_EXECUTOR: ThreadPoolExecutor | None = None
+_BACKGROUND_EXECUTOR_LOCK = threading.Lock()
+
+
+def _get_executor() -> ThreadPoolExecutor:
+    global _BACKGROUND_EXECUTOR
+    if _BACKGROUND_EXECUTOR is None:
+        with _BACKGROUND_EXECUTOR_LOCK:
+            if _BACKGROUND_EXECUTOR is None:
+                _BACKGROUND_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="plan-gen")
+    return _BACKGROUND_EXECUTOR
+
+
+def shutdown_plan_generator_executor_for_test() -> None:
+    """Drain and clear the plan-generator background executor.
+
+    Wired into ``tests/_root_conftest_harness.py`` so daemon worker threads
+    do not leak across test sessions. Safe to call when the executor was
+    never started.
+    """
+    global _BACKGROUND_EXECUTOR
+    with _BACKGROUND_EXECUTOR_LOCK:
+        executor = _BACKGROUND_EXECUTOR
+        _BACKGROUND_EXECUTOR = None
+    if executor is not None:
+        executor.shutdown(wait=True, cancel_futures=False)
+
+
+def _log_bg_error(future: Future[Any]) -> None:
+    try:
+        future.result()
+    except Exception:
+        logger.warning("Plan-generator background task failed", exc_info=True)
 
 
 def _log_decomposition_async(
@@ -26,7 +61,7 @@ def _log_decomposition_async(
     """Fire-and-forget audit log for plan decomposition decisions.
 
     Runs in a daemon thread to avoid blocking the plan generation hot path.
-    Failures are silently logged at DEBUG level.
+    Failures are logged at WARNING level.
 
     Args:
         choice: Short description of the decomposition method chosen.
@@ -47,7 +82,8 @@ def _log_decomposition_async(
         except Exception:
             logger.warning("Audit logging failed during decomposition", exc_info=True)
 
-    threading.Thread(target=_log, daemon=True).start()
+    future = _get_executor().submit(_log)
+    future.add_done_callback(_log_bg_error)
 
 
 class PlanGenerator:
@@ -59,8 +95,14 @@ class PlanGenerator:
     - Constraint handling
     """
 
-    def __init__(self, model_router=None):
+    def __init__(
+        self,
+        model_router=None,
+        *,
+        graph_factory: Callable[..., Any] | None = None,
+    ):
         self.model_router = model_router
+        self._graph_factory = graph_factory or ExecutionGraph
 
     def generate_plan(
         self,
@@ -71,19 +113,21 @@ class PlanGenerator:
         """Generate an execution graph from a goal.
 
         Args:
-            goal: The goal to achieve
-            constraints: Any constraints (budget, time, etc.)
-            max_depth: Maximum depth of task decomposition
+            goal: Goal to achieve.
+            constraints: Optional planning constraints.
+            max_depth: Maximum task decomposition depth.
 
         Returns:
-            ExecutionGraph with decomposed tasks
+            ExecutionGraph with decomposed tasks.
+
+        Raises:
+            AttributeError: If the graph lacks required topology metadata.
         """
-        constraints = constraints or {}  # noqa: VET112 - empty fallback preserves optional request metadata contract
-        plan_id = f"plan-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{uuid.uuid4().hex[:6]}"
+        constraints = constraints or {}
+        plan_id = f"plan-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
-        graph = ExecutionGraph(plan_id=plan_id, goal=goal)
+        graph = self._graph_factory(plan_id=plan_id, goal=goal)
 
-        # Decompose goal into tasks
         tasks = self._decompose_goal(goal, max_depth, constraints)
 
         for task_spec in tasks:
@@ -100,16 +144,19 @@ class PlanGenerator:
             graph.status = PlanStatus.FAILED
             return graph
 
-        # Analyse DAG shape and record suggested topology as plan metadata (ADR-0080)
+        if not hasattr(graph, "topology_metadata"):
+            raise AttributeError("ExecutionGraph.topology_metadata is required for generated plan topology metadata")
+
+        task_dicts = [{"id": t.id, "dependencies": list(t.depends_on)} for t in graph.nodes.values()]
+        graph.topology_metadata["task_dependencies"] = task_dicts
+
         try:
             from vetinari.routing.dag_analyzer import analyze_dag, suggest_topology
 
-            task_dicts = [{"id": t.task_id, "dependencies": list(t.depends_on)} for t in graph.tasks.values()]
             dag_shape = analyze_dag(task_dicts)
             topology = suggest_topology(dag_shape)
-            graph.metadata = getattr(graph, "metadata", {}) or {}
-            graph.metadata["suggested_topology"] = topology
-            graph.metadata["dag_shape"] = dag_shape.to_dict()
+            graph.topology_metadata["suggested_topology"] = topology
+            graph.topology_metadata["dag_shape"] = dag_shape.to_dict()
             logger.debug("[PlanGenerator] Plan %s: topology=%s", plan_id, topology)
         except Exception as exc:
             logger.warning("[PlanGenerator] DAG analysis skipped for plan %s: %s", plan_id, exc)
@@ -118,33 +165,15 @@ class PlanGenerator:
         return graph
 
     def _decompose_goal(self, goal: str, max_depth: int, constraints: dict[str, Any] | None = None) -> list[dict]:
-        """Decompose a goal into tasks using the assembly-line pattern.
-
-        Assembly-line stages:
-        1. INPUT ANALYSIS  -- classify request, assess complexity
-        2. PLAN GENERATION -- high-level workflow
-        3. TASK DECOMP     -- break plan into atomic tasks
-        4. MODEL ASSIGNMENT-- assign model to each task
-        5. PARALLEL EXEC   -- execute assigned tasks (DAG)
-        6. OUTPUT REVIEW   -- verify outputs for consistency
-        7. FINAL ASSEMBLY  -- combine outputs
-
-        Uses the ForemanAgent (LLM-powered) when available, falls back to
-        keyword-based heuristics.
-        """
-        # Try to use the ForemanAgent for intelligent decomposition
+        """Decompose a goal into tasks, using Foreman when available."""
         try:
             from vetinari.agents import get_foreman_agent
             from vetinari.agents.contracts import AgentTask
 
             planner = get_foreman_agent()
-            # Switch to non-interactive (batch) mode for web/pipeline requests.
-            # Clarification questions are auto-answered rather than blocking on user input.
             planner.set_interaction_mode("auto")
-            # Bug #15c: inject max_context_tokens from VariantConfig so the planner
-            # respects the active variant's token budget (LOW=4096, MEDIUM=16384, HIGH=32768).
             try:
-                from vetinari.web.variant_system import get_variant_manager as _get_vm
+                from vetinari.orchestration.variant_system import get_variant_manager as _get_vm
 
                 _variant_max_ctx = _get_vm().get_config().max_context_tokens
                 planner._max_context_tokens = _variant_max_ctx
@@ -187,7 +216,6 @@ class PlanGenerator:
                     }
                     for i, t in enumerate(result.output["tasks"])
                 ]
-                # Log plan decomposition decision (US-023)
                 _log_decomposition_async(
                     choice=f"llm_decomposition ({len(decomposed)} tasks)",
                     reasoning=f"ForemanAgent decomposed goal into {len(decomposed)} tasks",
@@ -201,10 +229,8 @@ class PlanGenerator:
         except Exception as e:
             logger.warning("ForemanAgent decomposition failed: %s, using keyword fallback", e)
 
-        # Keyword-based fallback decomposition
         fallback_tasks = self._keyword_decomposition(goal, constraints=constraints)
 
-        # Log fallback decomposition decision (US-023)
         _log_decomposition_async(
             choice=f"keyword_fallback ({len(fallback_tasks)} tasks)",
             reasoning="ForemanAgent unavailable, used keyword-based heuristic decomposition",
@@ -217,20 +243,9 @@ class PlanGenerator:
 
         return fallback_tasks
 
-    def _assess_risk(self, goal: str, tasks: list[dict]) -> list[dict]:
-        """Tag tasks with risk flags for destructive or irreversible operations.
-
-        Scans goal and task descriptions for destructive keywords (delete,
-        drop, remove, overwrite, migrate, deploy, push) and marks matching
-        tasks with ``risk_level`` and ``risk_reason`` in their ``input`` dict.
-
-        Args:
-            goal: The original goal string.
-            tasks: The decomposed task list to annotate.
-
-        Returns:
-            The same task list with risk annotations added where applicable.
-        """
+    @staticmethod
+    def _assess_risk(goal: str, tasks: list[dict]) -> list[dict]:
+        """Tag tasks with risk flags for destructive or irreversible operations."""
         _DESTRUCTIVE_KEYWORDS = {
             "high": ["delete", "drop", "destroy", "overwrite", "force push", "rm -rf", "truncate"],
             "medium": ["migrate", "deploy", "push", "upgrade", "rename", "move", "replace"],
@@ -254,18 +269,125 @@ class PlanGenerator:
                     break
         return tasks
 
+    @staticmethod
+    def _add_foundation_task(
+        tasks: list[dict],
+        next_id: Callable[[str], str],
+        goal: str,
+        tech_stack: str,
+        is_code: bool,
+    ) -> str | None:
+        """Add an optional tech-stack foundation task."""
+        if not tech_stack or not is_code:
+            return None
+        foundation_id = next_id("foundation-")
+        tasks.append(
+            {
+                "id": foundation_id,
+                "description": f"Set up project architecture and framework scaffolding for: {tech_stack}",
+                "type": "scaffolding",
+                "depends_on": [],
+                "input": {"goal": goal, "tech_stack": tech_stack},
+            },
+        )
+        logger.info("Layer 0 scaffolding task injected for tech_stack=%s", tech_stack)
+        return foundation_id
+
+    @staticmethod
+    def _add_chain_task(
+        tasks: list[dict],
+        next_id: Callable[[str], str],
+        description: str,
+        task_type: str,
+        depends_on: list[str],
+        input_data: dict[str, Any],
+    ) -> str:
+        """Append one generated task and return its ID."""
+        task_id = next_id("t")
+        tasks.append(
+            {
+                "id": task_id,
+                "description": description,
+                "type": task_type,
+                "depends_on": depends_on,
+                "input": input_data,
+            },
+        )
+        return task_id
+
+    def _add_code_tasks(
+        self,
+        tasks: list[dict],
+        next_id: Callable[[str], str],
+        goal: str,
+        goal_summary: str,
+        previous: str,
+    ) -> None:
+        """Add implementation, testing, and verification tasks for code goals."""
+        for description, task_type in (
+            (f"Set up project structure and scaffolding for: {goal_summary}", "implementation"),
+            (f"Implement core functionality: {goal_summary}", "implementation"),
+            (f"Write and run tests for: {goal_summary}", "testing"),
+            (f"Verify output quality and completeness for: {goal_summary}", "verification"),
+        ):
+            previous = self._add_chain_task(tasks, next_id, description, task_type, [previous], {"goal": goal})
+
+    def _add_research_tasks(
+        self,
+        tasks: list[dict],
+        next_id: Callable[[str], str],
+        goal: str,
+        goal_summary: str,
+        previous: str,
+    ) -> None:
+        """Add research and synthesis tasks for investigation-style goals."""
+        research_id = self._add_chain_task(
+            tasks,
+            next_id,
+            f"Gather information and sources about: {goal_summary}",
+            "research",
+            [previous],
+            {"goal": goal},
+        )
+        self._add_chain_task(
+            tasks,
+            next_id,
+            f"Analyze and synthesize findings for: {goal_summary}",
+            "analysis",
+            [research_id],
+            {"goal": goal},
+        )
+
+    def _add_review_and_docs(
+        self,
+        tasks: list[dict],
+        next_id: Callable[[str], str],
+        goal: str,
+        goal_summary: str,
+        include_docs: bool,
+    ) -> None:
+        """Add trailing review and optional documentation tasks."""
+        review_id = self._add_chain_task(
+            tasks,
+            next_id,
+            f"Review output quality and consistency for: {goal_summary}",
+            "verification",
+            [tasks[-1]["id"]],
+            {"goal": goal},
+        )
+        if include_docs:
+            self._add_chain_task(
+                tasks,
+                next_id,
+                f"Create documentation and final summary for: {goal_summary}",
+                "documentation",
+                [review_id],
+                {"goal": goal},
+            )
+
     def _keyword_decomposition(self, goal: str, constraints: dict[str, Any] | None = None) -> list[dict]:
-        """Fallback keyword-based goal decomposition.
-
-        When ``constraints`` includes ``tech_stack``, a Layer 0 scaffolding
-        task is injected before the analysis stage to ensure foundation-first
-        execution (architecture and framework setup before implementation).
-
-        Args:
-            goal: The user's goal string.
-            constraints: Optional project constraints (tech_stack, category, etc.).
-        """
-        constraints = constraints or {}  # noqa: VET112 - empty fallback preserves optional request metadata contract
+        """Fallback keyword-based goal decomposition."""
+        constraints = constraints or {}
         tasks: list[dict] = []
         counter = [1]
 
@@ -297,153 +419,46 @@ class PlanGenerator:
         is_research = any(k in goal_lower for k in ["research", "analyze", "investigate", "study", "review"])
         is_docs = any(k in goal_lower for k in ["document", "readme", "explain", "write", "report"])
 
-        # Layer 0: Foundation scaffolding when tech_stack is specified (ADR: foundation-first)
-        foundation_id: str | None = None
         tech_stack = constraints.get("tech_stack", "")
-        if tech_stack and is_code:
-            foundation_id = next_id("foundation-")
-            tasks.append(
-                {
-                    "id": foundation_id,
-                    "description": f"Set up project architecture and framework scaffolding for: {tech_stack}",
-                    "type": "scaffolding",
-                    "depends_on": [],
-                    "input": {"goal": goal, "tech_stack": tech_stack},
-                },
-            )
-            logger.info("Layer 0 scaffolding task injected for tech_stack=%s", tech_stack)
+        foundation_id = self._add_foundation_task(tasks, next_id, goal, tech_stack, is_code)
 
         # Stage 1: Analysis — include goal in description for worker context
         _goal_summary = goal[:120].rstrip()
-        t1 = next_id()
-        tasks.append(
-            {
-                "id": t1,
-                "description": f"Analyze requirements and create specification for: {_goal_summary}",
-                "type": "analysis",
-                "depends_on": [foundation_id] if foundation_id else [],
-                "input": {"goal": goal},
-            },
+        t1 = self._add_chain_task(
+            tasks,
+            next_id,
+            f"Analyze requirements and create specification for: {_goal_summary}",
+            "analysis",
+            [foundation_id] if foundation_id else [],
+            {"goal": goal},
         )
 
-        # Stage 2: Implementation
         if is_code:
-            t2 = next_id()
-            tasks.append(
-                {
-                    "id": t2,
-                    "description": f"Set up project structure and scaffolding for: {_goal_summary}",
-                    "type": "implementation",
-                    "depends_on": [t1],
-                    "input": {"goal": goal},
-                },
-            )
-            t3 = next_id()
-            tasks.append(
-                {
-                    "id": t3,
-                    "description": f"Implement core functionality: {_goal_summary}",
-                    "type": "implementation",
-                    "depends_on": [t2],
-                    "input": {"goal": goal},
-                },
-            )
-            t4 = next_id()
-            tasks.append(
-                {
-                    "id": t4,
-                    "description": f"Write and run tests for: {_goal_summary}",
-                    "type": "testing",
-                    "depends_on": [t3],
-                    "input": {"goal": goal},
-                },
-            )
-            t5 = next_id()
-            tasks.append(
-                {
-                    "id": t5,
-                    "description": f"Verify output quality and completeness for: {_goal_summary}",
-                    "type": "verification",
-                    "depends_on": [t4],
-                    "input": {"goal": goal},
-                },
-            )
+            self._add_code_tasks(tasks, next_id, goal, _goal_summary, t1)
         elif is_research:
-            t2 = next_id()
-            tasks.append(
-                {
-                    "id": t2,
-                    "description": f"Gather information and sources about: {_goal_summary}",
-                    "type": "research",
-                    "depends_on": [t1],
-                    "input": {"goal": goal},
-                },
-            )
-            t3 = next_id()
-            tasks.append(
-                {
-                    "id": t3,
-                    "description": f"Analyze and synthesize findings for: {_goal_summary}",
-                    "type": "analysis",
-                    "depends_on": [t2],
-                    "input": {"goal": goal},
-                },
-            )
+            self._add_research_tasks(tasks, next_id, goal, _goal_summary, t1)
         else:
-            t2 = next_id()
-            tasks.append(
-                {
-                    "id": t2,
-                    "description": f"Execute primary task: {_goal_summary}",
-                    "type": "implementation",
-                    "depends_on": [t1],
-                    "input": {},
-                },
+            self._add_chain_task(
+                tasks,
+                next_id,
+                f"Execute primary task: {_goal_summary}",
+                "implementation",
+                [t1],
+                {},
             )
 
-        # Stage 3: Review and Assembly
-        prev = tasks[-1]["id"]
-        trev = next_id()
-        tasks.append(
-            {
-                "id": trev,
-                "description": f"Review output quality and consistency for: {_goal_summary}",
-                "type": "verification",
-                "depends_on": [prev],
-                "input": {"goal": goal},
-            },
-        )
-
-        if is_docs or is_code:
-            tdoc = next_id()
-            tasks.append(
-                {
-                    "id": tdoc,
-                    "description": f"Create documentation and final summary for: {_goal_summary}",
-                    "type": "documentation",
-                    "depends_on": [trev],
-                    "input": {"goal": goal},
-                },
-            )
-
+        self._add_review_and_docs(tasks, next_id, goal, _goal_summary, is_docs or is_code)
         return self._assess_risk(goal, tasks)
 
     def resolve_worker_mode(self, task_description: str) -> str | None:
-        """Resolve the best Worker mode for a task using capability-based routing.
-
-        Queries the skill registry's capability index to find which Worker mode
-        best matches the task description keywords.
-
-        Args:
-            task_description: Description of the task to route.
+        """Resolve the best Worker mode for a task using capability routing.
 
         Returns:
-            The best-matching Worker mode name, or None if no match found.
+            Best matching Worker mode, or None when no capability matches.
         """
         try:
             from vetinari.skills.skill_registry import get_skill, get_skills_by_capability
 
-            # Map common task keywords to capabilities
             _keyword_to_capability = {
                 "review": "code_review",
                 "audit": "security_audit",
@@ -477,7 +492,6 @@ class PlanGenerator:
                     if matching_skills:
                         worker_skill = get_skill("worker")
                         if worker_skill:
-                            # Find the mode that matches this capability
                             _cap_to_mode = {
                                 "code_review": "code_review",
                                 "security_audit": "security_audit",
@@ -503,7 +517,8 @@ class PlanGenerator:
             logger.warning("Capability-based routing unavailable, using default")
         return None
 
-    def _has_circular_dependency(self, graph: ExecutionGraph) -> bool:
+    @staticmethod
+    def _has_circular_dependency(graph: ExecutionGraph) -> bool:
         """Check for circular dependencies in the graph."""
         visited: set = set()
         rec_stack: set = set()

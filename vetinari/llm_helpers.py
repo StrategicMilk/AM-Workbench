@@ -13,11 +13,18 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any
 
+from vetinari.boundary_guards import require_score_in_range
 from vetinari.config.inference_config import get_inference_config
+from vetinari.security.fail_closed import UntrustedInputError, sanitize_untrusted_text
+from vetinari.security.redaction import redact_text
 
 logger = logging.getLogger(__name__)
+_CATEGORY_MAX_TOKENS = 20
+_CONFIDENCE_SCORE_MAX_TOKENS = 10
+
 
 # Cached system prompt prefixes — allocated once, reused across calls
 _GOAL_CLASSIFICATION_PROMPT = (
@@ -64,6 +71,27 @@ _RETRY_BRIEF_PROMPT = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class LLMCallResult:
+    """LLM helper result with response provenance."""
+
+    output: str | None
+    model_id: str
+    status: str
+    latency_ms: int
+    tokens_used: int
+    response_metadata: dict[str, Any]
+    error: str | None = None
+
+    def __repr__(self) -> str:
+        return (
+            "LLMCallResult("
+            f"model_id={self.model_id!r}, status={self.status!r}, "
+            f"latency_ms={self.latency_ms!r}, tokens_used={self.tokens_used!r}, "
+            f"has_output={self.output is not None!r}, error={self.error!r})"
+        )
+
+
 def quick_llm_call(
     prompt: str,
     system_prompt: str = "",
@@ -85,7 +113,34 @@ def quick_llm_call(
     Returns:
         The LLM response text, or None if the LLM is unavailable.
     """
+    return quick_llm_call_with_provenance(
+        prompt=prompt,
+        system_prompt=system_prompt,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    ).output
+
+
+def quick_llm_call_with_provenance(
+    prompt: str,
+    system_prompt: str = "",
+    max_tokens: int = 200,
+    temperature: float = 0.1,
+) -> LLMCallResult:
+    """Make a lightweight LLM call and return response provenance.
+
+    Args:
+        prompt: User/task prompt to send after redaction.
+        system_prompt: Optional system prompt for the model.
+        max_tokens: Maximum output tokens to request.
+        temperature: Sampling temperature to request.
+
+    Returns:
+        LLMCallResult with output, model id, status, latency, token usage, and error metadata.
+    """
     try:
+        safe_prompt = sanitize_untrusted_text(prompt, max_length=20_000)
+        safe_system_prompt = sanitize_untrusted_text(system_prompt, max_length=4_000) if system_prompt else ""
         from vetinari.adapter_manager import get_adapter_manager
         from vetinari.adapters.base import InferenceRequest
 
@@ -93,26 +148,52 @@ def quick_llm_call(
 
         request = InferenceRequest(
             model_id="",  # Empty = let AdapterManager select the best available model
-            prompt=prompt,
-            system_prompt=system_prompt,
+            prompt=redact_text(safe_prompt),
+            system_prompt=safe_system_prompt,
             max_tokens=max_tokens,
             temperature=temperature,
         )
         response = mgr.infer(request)
+        response_status = getattr(response, "status", "error")
+        response_error = getattr(response, "error", None)
+        response_model_id = getattr(response, "model_id", None) or getattr(request, "model_id", "")
+        response_latency_ms = getattr(response, "latency_ms", 0)
+        response_tokens_used = getattr(response, "tokens_used", 0)
+        response_metadata = dict(getattr(response, "metadata", None) or {})
 
-        if response.status == "error":
-            logger.debug("LLM call returned error status: %s", response.error)
-            return None
+        if response_status == "error":
+            logger.debug("LLM call returned error status: %s", response_error)
+            return LLMCallResult(
+                output=None,
+                model_id=response_model_id,
+                status=response_status,
+                latency_ms=response_latency_ms,
+                tokens_used=response_tokens_used,
+                response_metadata=response_metadata,
+                error=response_error,
+            )
 
-        output = response.output.strip() if response.output else None
-        return output
+        response_output = getattr(response, "output", None)
+        output = response_output.strip() if response_output else None
+        return LLMCallResult(
+            output=output,
+            model_id=response_model_id,
+            status=response_status,
+            latency_ms=response_latency_ms,
+            tokens_used=response_tokens_used,
+            response_metadata=response_metadata,
+            error=response_error,
+        )
 
     except ImportError:
-        logger.warning("AdapterManager not available — LLM helpers disabled, using heuristic fallback")
-        return None
-    except Exception:
-        logger.warning("LLM call failed — falling back to heuristic", exc_info=True)
-        return None
+        logger.warning("AdapterManager not available - LLM helpers disabled, using heuristic fallback")
+        return LLMCallResult(None, "", "unavailable", 0, 0, {}, "adapter_manager_unavailable")
+    except UntrustedInputError as exc:
+        logger.warning("LLM call rejected untrusted prompt input: %s", exc)
+        return LLMCallResult(None, "", "blocked", 0, 0, {}, "untrusted_input")
+    except Exception as exc:
+        logger.warning("LLM call failed - falling back to heuristic", exc_info=True)
+        return LLMCallResult(None, "", "error", 0, 0, {}, str(exc))
 
 
 def classify_goal_via_llm(goal: str) -> str | None:
@@ -155,7 +236,7 @@ def classify_goal_via_llm(goal: str) -> str | None:
     result = quick_llm_call(
         prompt=f"Goal: {goal}",
         system_prompt=_GOAL_CLASSIFICATION_PROMPT,
-        max_tokens=20,  # noqa: VET129 — single-word category, deterministic
+        max_tokens=_CATEGORY_MAX_TOKENS,
     )
     if result:
         category = result.strip().lower().split()[0] if result.strip() else None
@@ -358,6 +439,9 @@ def score_confidence_via_llm(task_description: str, response_text: str) -> float
     # --- Tier 1: structural heuristic (no LLM needed) ---
     structural_score = score_confidence_structural(task_description, response_text)
     if structural_score is not None:
+        structural_score = require_score_in_range(structural_score, field_name="confidence")
+        if structural_score == 0.0:
+            logger.warning("score_confidence_via_llm: structural-only confidence is 0.0")
         logger.debug(
             "score_confidence_via_llm: structural check conclusive (%.3f) — skipping LLM",
             structural_score,
@@ -368,12 +452,15 @@ def score_confidence_via_llm(task_description: str, response_text: str) -> float
     result = quick_llm_call(
         prompt=f"Task: {task_description}\n\nResponse: {response_text[:500]}",
         system_prompt=_CONFIDENCE_SCORING_PROMPT,
-        max_tokens=10,  # noqa: VET129 — single decimal output, deterministic
+        max_tokens=_CONFIDENCE_SCORE_MAX_TOKENS,
     )
     if result:
         try:
             score = float(result.strip())
-            return max(0.0, min(1.0, score))
+            score = require_score_in_range(score, field_name="confidence")
+            if score == 0.0:
+                logger.warning("score_confidence_via_llm: LLM confidence is 0.0")
+            return score
         except ValueError:
             logger.warning(
                 "Could not parse confidence score %r as float — returning None (no score available)",

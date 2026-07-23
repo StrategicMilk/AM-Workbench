@@ -23,11 +23,14 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
+import yaml
+
 from vetinari.config.model_config import get_task_default_model
 from vetinari.constants import _PROJECT_ROOT
 from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Dataclass for a resolved profile
@@ -51,6 +54,40 @@ class InferenceProfile:
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
         return dataclass_to_dict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ResolutionTraceRow:
+    """One resolved inference parameter."""
+
+    param_name: str
+    value: Any
+    source_layer: int
+    source_ref: str
+
+    def __repr__(self) -> str:
+        return (
+            "ResolutionTraceRow("
+            f"param_name={self.param_name!r}, value={self.value!r}, "
+            f"source_layer={self.source_layer!r}, source_ref={self.source_ref!r})"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ResolutionTrace:
+    """Human-readable explanation of inference parameter resolution."""
+
+    rows: tuple[ResolutionTraceRow, ...]
+
+    def to_table(self) -> str:
+        """Render a compact text table.
+
+        Returns:
+            Multiline table describing effective parameter sources.
+        """
+        lines = ["param value layer source"]
+        lines.extend(f"{row.param_name} {row.value} {row.source_layer} {row.source_ref}" for row in self.rows)
+        return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +124,21 @@ def _classify_model_size(model_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 _DEFAULT_CONFIG_PATH = str(_PROJECT_ROOT / "config" / "task_inference_profiles.json")
+_PACKAGED_CONFIG_PATH = str(pathlib.Path(__file__).resolve().parent / "runtime" / "task_inference_profiles.json")
+
+
+def resolve_config_path(filename: str = "task_inference_profiles.json") -> pathlib.Path:
+    """Resolve the production inference profile catalog path by filename.
+
+    Returns:
+        Path to the canonical inference profile catalog.
+
+    Raises:
+        ValueError: If ``filename`` is not the supported profile catalog name.
+    """
+    if pathlib.Path(filename).name != "task_inference_profiles.json":
+        raise ValueError("only task_inference_profiles.json is an inference profile catalog")
+    return _PROJECT_ROOT / "config" / "task_inference_profiles.json"
 
 
 class InferenceConfigManager:
@@ -115,11 +167,14 @@ class InferenceConfigManager:
         self._config_path: str | None = None
         self._load_config()
 
-    def _load_config(self, path: str | None = None) -> bool:
-        """Load profiles from JSON config. Returns True on success."""
-        config_path = path or self._config_path or _DEFAULT_CONFIG_PATH
-        self._config_path = config_path
+    def _clear_loaded_config(self) -> None:
+        with self._lock:
+            self._profiles = {}
+            self._model_size_adjustments = {}
+            self._model_overrides = {}
+            self.is_loaded = False
 
+    def _load_config_file(self, config_path: str) -> bool:
         try:
             with pathlib.Path(config_path).open(encoding="utf-8") as f:
                 data = json.load(f)
@@ -131,18 +186,25 @@ class InferenceConfigManager:
                     config_path,
                     type(data).__name__,
                 )
-                with self._lock:
-                    self._profiles = {}
-                    self._model_size_adjustments = {}
-                    self._model_overrides = {}
-                    self.is_loaded = False
+                self._clear_loaded_config()
+                return False
+
+            profiles = data.get("profiles")
+            if not isinstance(profiles, dict):
+                logger.error(
+                    "Inference profiles at %s missing dict 'profiles' section"
+                    " — all profiles cleared, inference will use built-in fallbacks",
+                    config_path,
+                )
+                self._clear_loaded_config()
                 return False
 
             with self._lock:
-                self._profiles = data.get("profiles", {})
+                self._profiles = profiles
                 self._model_size_adjustments = data.get("model_size_adjustments", {})
                 self._model_overrides = data.get("model_overrides", {})
                 self.is_loaded = True
+                self._config_path = config_path
 
             logger.info("Loaded %d inference profiles from %s", len(self._profiles), config_path)
             return True
@@ -162,11 +224,7 @@ class InferenceConfigManager:
                 e.colno,
                 e.msg,
             )
-            with self._lock:
-                self._profiles = {}
-                self._model_size_adjustments = {}
-                self._model_overrides = {}
-                self.is_loaded = False
+            self._clear_loaded_config()
             return False
         except Exception:
             logger.exception(
@@ -174,12 +232,46 @@ class InferenceConfigManager:
                 " — all profiles cleared, inference will use built-in fallbacks",
                 config_path,
             )
-            with self._lock:
-                self._profiles = {}
-                self._model_size_adjustments = {}
-                self._model_overrides = {}
-                self.is_loaded = False
+            self._clear_loaded_config()
             return False
+
+    def _load_config(self, path: str | None = None) -> bool:
+        """Load profiles from JSON config. Returns True on success."""
+        config_path = path or self._config_path or _DEFAULT_CONFIG_PATH
+        self._config_path = config_path
+
+        if self._load_config_file(config_path):
+            return True
+
+        default_load = path is None and config_path == _DEFAULT_CONFIG_PATH
+        if default_load and config_path != _PACKAGED_CONFIG_PATH:
+            logger.warning(
+                "Default inference config %s unavailable or invalid — trying packaged config %s",
+                config_path,
+                _PACKAGED_CONFIG_PATH,
+            )
+            return self._load_config_file(_PACKAGED_CONFIG_PATH)
+
+        return False
+
+    def update_profile_parameters(self, task_type: str, changes: dict[str, Any]) -> None:
+        """Apply process-local profile changes through the manager boundary.
+
+        Args:
+            task_type: Profile key to update.
+            changes: Non-empty mapping of profile values to merge.
+
+        Raises:
+            ValueError: If ``task_type`` or ``changes`` is empty or malformed.
+        """
+        if not isinstance(task_type, str) or not task_type.strip():
+            raise ValueError("task_type must be non-empty")
+        if not isinstance(changes, dict) or not changes:
+            raise ValueError("changes must be a non-empty dict")
+        with self._lock:
+            profile_data = dict(self._profiles.get(task_type, {}))
+            profile_data.update(changes)
+            self._profiles[task_type] = profile_data
 
     def reload(self, path: str | None = None) -> bool:
         """Hot-reload config without restart."""
@@ -234,7 +326,8 @@ class InferenceConfigManager:
             prefer_json=raw.get("prefer_json", False),
         )
 
-    def _get_knowledge_profile(self, task_type: str) -> InferenceProfile | None:
+    @staticmethod
+    def _get_knowledge_profile(task_type: str) -> InferenceProfile | None:
         """Build an InferenceProfile from knowledge YAML parameter recommendations.
 
         Handles both preset format (``{"preset": "code", "temperature": 0.05, ...}``)
@@ -352,6 +445,69 @@ class InferenceConfigManager:
             "prefer_json": profile.prefer_json,
         }
 
+    @staticmethod
+    def _yaml_profile(profile_name: str) -> dict[str, Any]:
+        path = _PROJECT_ROOT / "config" / "inference_profiles.yaml"
+        if not path.exists():
+            return {}
+        try:
+            with path.open(encoding="utf-8") as handle:
+                data = yaml.safe_load(handle) or {}
+        except Exception:
+            logger.warning("Unable to load inference profile YAML %s", path, exc_info=True)
+            return {}
+        raw = data.get("profiles", {}).get(profile_name, {})
+        return raw if isinstance(raw, dict) else {}
+
+    def get_effective_catalog_params(
+        self,
+        profile_name: str,
+        model_id: str,
+        agent_type: str | None = None,
+        agent_mode: str | None = None,
+        call_site_overrides: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve parameters with explicit overrides above YAML profile defaults.
+
+        Args:
+            profile_name: Inference profile name.
+            model_id: Model id used for size-based adjustments.
+            agent_type: Optional agent type for traceability.
+            agent_mode: Optional agent mode for traceability.
+            call_site_overrides: Explicit non-None override values.
+
+        Returns:
+            Effective inference parameter mapping.
+        """
+        params = self.get_effective_params(profile_name, model_id)
+        yaml_profile = self._yaml_profile(profile_name)
+        for key in ("temperature", "top_p", "top_k", "max_tokens"):
+            if key in yaml_profile:
+                params[key] = yaml_profile[key]
+        if call_site_overrides:
+            params.update({k: v for k, v in call_site_overrides.items() if v is not None})
+        return params
+
+    def explain(self, agent: str, task: str, model: str) -> ResolutionTrace:
+        """Explain which layer set each effective inference parameter.
+
+        Args:
+            agent: Agent name for the trace request.
+            task: Task or profile name being resolved.
+            model: Model id being resolved.
+
+        Returns:
+            Resolution trace rows for the effective parameters.
+        """
+        params = self.get_effective_catalog_params(task, model, agent_type=agent)
+        yaml_profile = self._yaml_profile(task)
+        rows = []
+        for key in ("temperature", "top_p", "top_k", "max_tokens"):
+            layer = 3 if key in yaml_profile else 6
+            source = f"config/inference_profiles.yaml:{task}" if layer == 3 else "InferenceConfigManager fallback"
+            rows.append(ResolutionTraceRow(key, params.get(key), layer, source))
+        return ResolutionTrace(tuple(rows))
+
     # ------------------------------------------------------------------
     # Introspection
     # ------------------------------------------------------------------
@@ -420,3 +576,8 @@ def reset_inference_config() -> None:
     """Reset inference config."""
     with InferenceConfigManager._class_lock:
         InferenceConfigManager._instance = None
+
+
+def reload_inference_config() -> None:
+    """Reload inference config by clearing the singleton cache."""
+    reset_inference_config()

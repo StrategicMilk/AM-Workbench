@@ -64,6 +64,10 @@ function safeUrl(value) {
   return '#';
 }
 
+function safeRenderedText(value) {
+  return typeof value === 'string' ? value : escapeHtml(value ?? '');
+}
+
 function buildRenderer() {
   const renderer = new marked.Renderer();
 
@@ -72,7 +76,8 @@ function buildRenderer() {
   renderer.link = (href, title, text) => {
     const safeHref = safeUrl(href);
     const safeTitle = title ? ` title="${escapeAttribute(title)}"` : '';
-    return `<a href="${safeHref}"${safeTitle} target="_blank" rel="noopener noreferrer">${text}</a>`;
+    const externalAttrs = safeHref === '#' ? ' aria-disabled="true"' : ' target="_blank" rel="noopener noreferrer"';
+    return `<a href="${safeHref}"${safeTitle}${externalAttrs}>${safeRenderedText(text)}</a>`;
   };
 
   renderer.image = (href, title, text) => {

@@ -1,0 +1,62 @@
+schema_version: 1
+sources:
+  - id: workbench_exports
+    label: Workbench exports
+    kind: workbench_export
+    paths:
+      - exports/workbench
+  - id: codex_config
+    label: Codex configuration
+    kind: codex_config
+    paths:
+      - .codex/config.toml
+      - .codex/AGENTS.md
+  - id: claude_config
+    label: Claude configuration
+    kind: claude_config
+    paths:
+      - .claude/settings.json
+      - .claude/CLAUDE.md
+  - id: provider_models
+    label: Provider and model settings
+    kind: provider_model_setting
+    paths:
+      - config/models.yaml
+      - models.yaml
+  - id: skills
+    label: Skills
+    kind: skill
+    paths:
+      - .codex/skills
+  - id: memories
+    label: Memories
+    kind: memory
+    paths:
+      - .codex/memories
+      - .claude/memories
+  - id: automations
+    label: Automations
+    kind: automation
+    paths:
+      - automations
+      - .codex/automations
+  - id: tool_settings
+    label: MCP and tool settings
+    kind: tool_setting
+    risky_tool: true
+    paths:
+      - .codex/mcp.json
+      - .claude/mcp.json
+      - tools.json
+  - id: workspace_packs
+    label: Workspace packs
+    kind: workspace_pack
+    paths:
+      - packs
+      - workspace_packs
+  - id: external_assistant_data
+    label: External assistant data
+    kind: external_assistant_data
+    paths:
+      - external_assistants
+      - assistant_exports

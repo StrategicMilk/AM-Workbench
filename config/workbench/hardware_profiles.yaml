@@ -1,0 +1,81 @@
+hardware_digital_twin:
+  profile_id: prosumer-gradient-v1
+  stale_after_hours: 24
+  benchmark_categories:
+    - kind: cpu
+      label: CPU thread headroom
+      required: true
+      ready_threshold: 0.25
+      degraded_threshold: 0.10
+      evidence_required: true
+    - kind: ram
+      label: System RAM headroom
+      required: true
+      ready_threshold: 0.25
+      degraded_threshold: 0.10
+      evidence_required: true
+    - kind: disk
+      label: Model-store disk throughput and free space
+      required: true
+      ready_threshold: 0.20
+      degraded_threshold: 0.08
+      evidence_required: true
+    - kind: gpu_vram
+      label: GPU and VRAM headroom
+      required: true
+      ready_threshold: 0.20
+      degraded_threshold: 0.05
+      evidence_required: true
+    - kind: model_load
+      label: Model cold and warm load latency
+      required: true
+      ready_threshold: 0.15
+      degraded_threshold: 0.05
+      evidence_required: true
+    - kind: embedding_vector_search
+      label: Embedding and vector search throughput
+      required: true
+      ready_threshold: 0.15
+      degraded_threshold: 0.05
+      evidence_required: true
+    - kind: windows_wsl_path
+      label: Windows to WSL path cost
+      required: true
+      ready_threshold: 0.15
+      degraded_threshold: 0.05
+      evidence_required: true
+    - kind: service_residency
+      label: Local service residency and warm process cost
+      required: true
+      ready_threshold: 0.20
+      degraded_threshold: 0.08
+      evidence_required: true
+    - kind: thermal_power
+      label: Thermal and power pressure
+      required: false
+      ready_threshold: 0.15
+      degraded_threshold: 0.00
+      evidence_required: true
+      optional_when_unavailable: true
+    - kind: runtime_version
+      label: Runtime and driver versions
+      required: true
+      ready_threshold: 1.00
+      degraded_threshold: 1.00
+      evidence_required: true
+  proposal_risk_policies:
+    - risk: safe_adaptation
+      review_required: false
+      rollback_required: false
+      before_after_evidence_required: true
+      locally_executable: false
+    - risk: safe_host_improvement
+      review_required: true
+      rollback_required: true
+      before_after_evidence_required: true
+      locally_executable: false
+    - risk: risky_host_change
+      review_required: true
+      rollback_required: true
+      before_after_evidence_required: true
+      locally_executable: false

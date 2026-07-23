@@ -2,14 +2,32 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from vetinari.types import PlanStatus, StatusEnum  # canonical source
+from vetinari.agents.contracts import Task
+from vetinari.types import AgentType, PlanStatus, StatusEnum, TaskKind  # canonical source
 from vetinari.utils.serialization import dataclass_to_dict
+
+logger = logging.getLogger(__name__)
+
+_PLAN_SCHEMA_VERSION = 1
+_PLAN_REQUIRED_FIELDS = frozenset({
+    "plan_id",
+    "plan_version",
+    "goal",
+    "status",
+    "subtasks",
+    "dependencies",
+    "definition_of_done",
+    "created_at",
+    "updated_at",
+})
 
 
 class TaskDomain(str, Enum):
@@ -33,7 +51,7 @@ class PlanRiskLevel(str, Enum):
     CRITICAL = "critical"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class DefinitionOfDone:
     """Definition of Done for a task or subtask."""
 
@@ -45,7 +63,7 @@ class DefinitionOfDone:
         return f"DefinitionOfDone(criteria={len(self.criteria)}, auto_verify={self.auto_verify!r})"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class DefinitionOfReady:
     """Definition of Ready for a task or subtask."""
 
@@ -60,7 +78,7 @@ class DefinitionOfReady:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TaskRationale:
     """Rationale for task/model decisions."""
 
@@ -81,6 +99,7 @@ class Subtask:
 
     Unified from the former plan_types.Subtask and subtask_tree.Subtask
     (M4 ontology unification). Contains superset of fields from both.
+    ``kind`` classifies the pass used by scaffold-then-fill execution.
     """
 
     subtask_id: str = field(default_factory=lambda: f"subtask_{uuid.uuid4().hex[:8]}")
@@ -129,6 +148,10 @@ class Subtask:
     # -- Topology fields (ADR-0080, ADR-0081) --
     assigned_plan_id: str = ""  # Sub-plan ID if this subtask spawns a recursive plan
     execution_topology: str = ""  # Topology string from TopologyRouter for this subtask
+    decompose_decision_action: str = ""  # Foreman action recorded for recursion audit
+    decompose_decision_reason: str = ""  # Reason text from Foreman's decomposition judgment
+    decompose_decision_confidence: float = 0.0  # Confidence margin recorded with the judgment
+    kind: TaskKind = TaskKind.IMPLEMENTATION  # Pass classification; default preserves backward compat
 
     def __repr__(self) -> str:
         return (
@@ -176,7 +199,7 @@ class Subtask:
         if "definition_of_ready" in data and isinstance(data["definition_of_ready"], dict):
             data["definition_of_ready"] = DefinitionOfReady(**data["definition_of_ready"])
 
-        for field_name in ["status", "domain"]:
+        for field_name in ["status", "domain", "kind"]:
             if field_name in data and isinstance(data[field_name], str):
                 if field_name == "status":
                     try:
@@ -188,6 +211,11 @@ class Subtask:
                         data[field_name] = TaskDomain(data[field_name])
                     except ValueError:
                         data[field_name] = TaskDomain.GENERAL
+                elif field_name == "kind":
+                    try:
+                        data[field_name] = TaskKind(data[field_name])
+                    except ValueError:
+                        data[field_name] = TaskKind.IMPLEMENTATION
 
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
@@ -277,20 +305,35 @@ class Plan:
         """Create Plan from dictionary.
 
         Returns:
-            The Plan result.
-        """
-        if "status" in data and isinstance(data["status"], str):
-            data["status"] = PlanStatus(data["status"])
-        if "risk_level" in data and isinstance(data["risk_level"], str):
-            data["risk_level"] = PlanRiskLevel(data["risk_level"])
-        if "plan_candidates" in data and isinstance(data["plan_candidates"], list):
-            data["plan_candidates"] = [PlanCandidate.from_dict(c) for c in data["plan_candidates"]]
-        if "subtasks" in data and isinstance(data["subtasks"], list):
-            data["subtasks"] = [Subtask.from_dict(s) for s in data["subtasks"]]
-        if "definition_of_done" in data and isinstance(data["definition_of_done"], dict):
-            data["definition_of_done"] = DefinitionOfDone(**data["definition_of_done"])
+        The Plan result.
 
-        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+        Raises:
+            ValueError: Propagated when validation, persistence, or execution fails.
+        """
+        if not isinstance(data, dict):
+            raise ValueError("Plan.from_dict requires a dictionary payload")
+        allowed_fields = set(cls.__dataclass_fields__)
+        unknown_fields = sorted(set(data) - allowed_fields)
+        if unknown_fields:
+            raise ValueError(f"Plan payload contains unknown fields: {', '.join(unknown_fields)}")
+        missing_fields = sorted(_PLAN_REQUIRED_FIELDS - set(data))
+        if missing_fields:
+            raise ValueError(f"Plan payload is missing required fields: {', '.join(missing_fields)}")
+        payload = dict(data)
+        if payload["plan_version"] != _PLAN_SCHEMA_VERSION:
+            raise ValueError(f"Unsupported Plan schema version: {payload['plan_version']!r}")
+        if isinstance(payload["status"], str):
+            payload["status"] = PlanStatus(payload["status"])
+        if "risk_level" in payload and isinstance(payload["risk_level"], str):
+            payload["risk_level"] = PlanRiskLevel(payload["risk_level"])
+        if isinstance(payload.get("plan_candidates"), list):
+            payload["plan_candidates"] = [PlanCandidate.from_dict(c) for c in payload["plan_candidates"]]
+        if isinstance(payload.get("subtasks"), list):
+            payload["subtasks"] = [Subtask.from_dict(s) for s in payload["subtasks"]]
+        if isinstance(payload["definition_of_done"], dict):
+            payload["definition_of_done"] = DefinitionOfDone(**payload["definition_of_done"])
+
+        return cls(**payload)
 
     def get_subtask(self, subtask_id: str) -> Subtask | None:
         """Get a subtask by ID.
@@ -319,7 +362,7 @@ class Plan:
         """Calculate overall risk score based on subtasks.
 
         Returns:
-            The computed value.
+            Calculated risk score result.
         """
         if not self.subtasks:
             return 0.0
@@ -351,7 +394,60 @@ class Plan:
         return self.risk_score
 
 
-@dataclass(frozen=True)
+def _agent_type_from_subtask(value: str | None) -> AgentType:
+    if not value:
+        return AgentType.FOREMAN
+    try:
+        return AgentType(value)
+    except ValueError:
+        logger.warning("Handled recoverable failure before fallback.", exc_info=True)
+        upper_value = value.upper()
+        for agent_type in AgentType:
+            if agent_type.name == upper_value:
+                return agent_type
+        return AgentType.FOREMAN
+
+
+def subtask_to_task_with_kind(subtask: Subtask, *, parent_id: str | None = None) -> Task:
+    """Build a Task from a Subtask and preserve the scaffold-then-fill kind.
+
+    The agents contract ``Task`` intentionally has no dedicated ``kind``
+    field. This helper is the planning-domain propagation site: it writes
+    ``Subtask.kind.value`` into ``task.metadata["kind"]`` so executors can
+    coerce it back through ``TaskKind`` without changing the contracts module.
+
+    Args:
+        subtask: Source planning subtask.
+        parent_id: Optional parent task ID for nested execution plans.
+
+    Returns:
+        A Task whose metadata always contains a JSON-safe ``kind`` value.
+    """
+    metadata: dict[str, Any] = {}
+    if subtask.subtask_explanation_json:
+        try:
+            parsed = json.loads(subtask.subtask_explanation_json)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            metadata.update(parsed)
+
+    metadata["kind"] = subtask.kind.value
+    return Task(
+        id=subtask.subtask_id,
+        description=subtask.description,
+        inputs=list(subtask.inputs),
+        outputs=list(subtask.outputs),
+        dependencies=list(subtask.dependencies),
+        assigned_agent=_agent_type_from_subtask(subtask.assigned_agent),
+        depth=subtask.depth,
+        parent_id=parent_id or "",
+        status=subtask.status,
+        metadata=metadata,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class PlanGenerationRequest:
     """Request to generate a plan."""
 
@@ -370,7 +466,7 @@ class PlanGenerationRequest:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PlanApprovalRequest:
     """Request to approve a plan.
 
@@ -400,7 +496,7 @@ class PlanApprovalRequest:
         return f"PlanApprovalRequest(plan_id={self.plan_id!r}, approved={self.approved!r}, approver={self.approver!r})"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PlanHistoryResponse:
     """Response containing plan history."""
 

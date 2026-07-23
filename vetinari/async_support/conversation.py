@@ -39,11 +39,27 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
+from vetinari.async_support.conversation_context import ContextReconstructorMixin
 from vetinari.exceptions import ExecutionError
+from vetinari.privacy.envelope import (
+    PRIVACY_ENVELOPE_KEY,
+    extract_privacy_envelope,
+    require_privacy_envelope,
+    wrap_for_persistence,
+)
 
 logger = logging.getLogger(__name__)
 
-_CHARS_PER_TOKEN: int = 4  # rough estimate used for token budgeting
+
+_CONVERSATION_RETENTION_DAYS = 30
+_CONVERSATION_RETENTION_SECONDS = _CONVERSATION_RETENTION_DAYS * 24 * 60 * 60
+
+
+def _count_tokens(content: str) -> int:
+    """Return an exact engine count, preserving a visible degraded path."""
+    from vetinari.context.window_manager import count_tokens
+
+    return count_tokens(content)
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +77,7 @@ class ConversationMessage:
         content: Text content of the message.
         timestamp: UNIX timestamp (seconds) when the message was added.
         metadata: Arbitrary key-value metadata.
-        token_count: Estimated token count for the message content.
+        token_count: Exact token count, or a degradation-visible fallback count.
     """
 
     role: str
@@ -104,9 +120,14 @@ class ConversationStore:
         # Module-level mutable state:
         #   _sessions: LRU cache keyed by session_id; written by add_message/
         #              create_session, read by get_history/get_context_window.
+        #   _session_modes: per-session conversation mode (FSA-0050).  Default
+        #              "task" routes to task execution; "free_form" disables
+        #              task routing so the conversation stays chat-only.
         #   _lock: protects all reads/writes to _sessions (not SQLite — SQLite
         #          handles its own locking via WAL mode).
         self._sessions: OrderedDict[str, list[ConversationMessage]] = OrderedDict()
+        self._session_modes: dict[str, str] = {}
+        self._engine_session_ids: dict[str, str] = {}
         self._lock = threading.Lock()
         self._restore_from_db()
 
@@ -118,7 +139,7 @@ class ConversationStore:
         """Load existing sessions from SQLite into the in-memory LRU cache.
 
         Queries the ``conversation_messages`` table for distinct session IDs,
-        loads the most recent ``_MAX_SESSIONS`` sessions (sorted by session_id),
+        loads the most recent ``_MAX_SESSIONS`` sessions by message timestamp,
         and populates ``_sessions``.  Called once from ``__init__``.
         """
         try:
@@ -126,11 +147,18 @@ class ConversationStore:
             from vetinari.database import get_connection
 
             conn = get_connection()
-            cursor = conn.execute("SELECT DISTINCT session_id FROM conversation_messages ORDER BY session_id")
+            cursor = conn.execute(
+                "SELECT session_id FROM conversation_messages "
+                "GROUP BY session_id "
+                "ORDER BY MAX(timestamp) DESC, MAX(id) DESC "
+                "LIMIT ?",
+                (self._MAX_SESSIONS,),
+            )
             session_ids = [row[0] for row in cursor.fetchall()]
 
-            # Load only the most recent _MAX_SESSIONS to respect the LRU limit.
-            sessions_to_load = session_ids[-self._MAX_SESSIONS :]
+            # Reinsert oldest-to-newest so the OrderedDict LRU tail is the
+            # newest restored session, not the lexicographically largest ID.
+            sessions_to_load = list(reversed(session_ids))
 
             loaded = 0
             for sid in sessions_to_load:
@@ -147,7 +175,47 @@ class ConversationStore:
                 exc,
             )
 
-    def _load_session_from_db(self, session_id: str) -> list[ConversationMessage]:
+    @staticmethod
+    def _message_metadata_for_persistence(session_id: str, msg: ConversationMessage) -> dict[str, Any]:
+        metadata = dict(msg.metadata)
+        envelope_source = f"conversation:{session_id}:{msg.role}"
+        metadata[PRIVACY_ENVELOPE_KEY] = extract_privacy_envelope(
+            wrap_for_persistence(
+                {},
+                privacy_class="subject_data",
+                source=envelope_source,
+                subject_id=session_id,
+                retention_days=_CONVERSATION_RETENTION_DAYS,
+            )
+        )
+        return metadata
+
+    @staticmethod
+    def _message_is_expired(timestamp: float, metadata: dict[str, Any], now: float | None = None) -> bool:
+        current = time.time() if now is None else now
+        try:
+            envelope = extract_privacy_envelope(require_privacy_envelope(metadata))
+            retention_days = int(envelope.get("retention_days") or _CONVERSATION_RETENTION_DAYS)
+        except (TypeError, ValueError):
+            retention_days = _CONVERSATION_RETENTION_DAYS
+        return current - float(timestamp) > retention_days * 24 * 60 * 60
+
+    @staticmethod
+    def _delete_expired_messages(session_id: str, cutoff: float) -> None:
+        try:
+            from vetinari.database import get_connection
+
+            conn = get_connection()
+            conn.execute(
+                "DELETE FROM conversation_messages WHERE session_id = ? AND timestamp < ?",
+                (session_id, cutoff),
+            )
+            conn.commit()
+        except Exception as exc:
+            logger.warning("Could not prune expired messages for session %s: %s", session_id, exc)
+
+    @staticmethod
+    def _load_session_from_db(session_id: str) -> list[ConversationMessage]:
         """Fetch all messages for *session_id* from SQLite, ordered by timestamp.
 
         Args:
@@ -170,18 +238,30 @@ class ConversationStore:
                 (session_id,),
             )
             messages: list[ConversationMessage] = []
+            expired_count = 0
             for row in cursor.fetchall():
                 try:
                     metadata = json.loads(row[3] or "{}")
                 except (json.JSONDecodeError, TypeError):
                     metadata = {}
+                timestamp = float(row[2])
+                if ConversationStore._message_is_expired(timestamp, metadata):
+                    expired_count += 1
+                    continue
+                user_metadata = dict(metadata)
+                user_metadata.pop(PRIVACY_ENVELOPE_KEY, None)
                 messages.append(
                     ConversationMessage(
                         role=row[0],
                         content=row[1],
-                        timestamp=row[2],
-                        metadata=metadata,
+                        timestamp=timestamp,
+                        metadata=user_metadata,
                     )
+                )
+            if expired_count:
+                ConversationStore._delete_expired_messages(
+                    session_id,
+                    time.time() - _CONVERSATION_RETENTION_SECONDS,
                 )
             return messages
         except Exception as exc:
@@ -192,8 +272,8 @@ class ConversationStore:
             )
             return []
 
+    @staticmethod
     def _persist_message(
-        self,
         session_id: str,
         msg: ConversationMessage,
     ) -> None:
@@ -218,7 +298,7 @@ class ConversationStore:
                     msg.role,
                     msg.content,
                     msg.timestamp,
-                    json.dumps(msg.metadata),
+                    json.dumps(ConversationStore._message_metadata_for_persistence(session_id, msg)),
                 ),
             )
             conn.commit()
@@ -229,7 +309,8 @@ class ConversationStore:
                 exc,
             )
 
-    def _delete_session_from_db(self, session_id: str) -> None:
+    @staticmethod
+    def _delete_session_from_db(session_id: str) -> None:
         """Delete all persisted messages for *session_id* from SQLite.
 
         Best-effort: logs a warning on failure but never raises.
@@ -297,6 +378,7 @@ class ConversationStore:
                 # Evict oldest if at capacity.
                 while len(self._sessions) >= self._MAX_SESSIONS:
                     evicted_id, _ = self._sessions.popitem(last=False)
+                    self._engine_session_ids.pop(evicted_id, None)
                     logger.debug("Evicted oldest conversation session %s", evicted_id)
                 self._sessions[session_id] = messages
         return True
@@ -305,12 +387,17 @@ class ConversationStore:
     # Session management
     # ------------------------------------------------------------------
 
-    def create_session(self, session_id: str | None = None) -> str:
+    def create_session(self, session_id: str | None = None, *, mode: str = "task") -> str:
         """Create a new conversation session.
 
         Args:
             session_id: Optional explicit ID.  A UUID4 is generated when
                 omitted.
+            mode: Conversation mode.  ``"task"`` (default) routes user
+                turns through the task-execution pipeline; ``"free_form"``
+                (FSA-0050) keeps the conversation chat-only and disables
+                task routing.  Unknown values fail closed to ``"task"``
+                with a warning log.
 
         Returns:
             The session ID string.
@@ -318,6 +405,12 @@ class ConversationStore:
         Raises:
             ExecutionError: If *session_id* already exists.
         """
+        normalized_mode = mode if mode in ("task", "free_form") else "task"
+        if normalized_mode != mode:
+            logger.warning(
+                "Unknown conversation mode %r — falling back to 'task' for safety",
+                mode,
+            )
         sid = session_id or str(uuid.uuid4())
         with self._lock:
             if sid in self._sessions:
@@ -325,10 +418,73 @@ class ConversationStore:
             # Evict oldest sessions when at capacity.
             while len(self._sessions) >= self._MAX_SESSIONS:
                 evicted_id, _ = self._sessions.popitem(last=False)
+                self._session_modes.pop(evicted_id, None)
+                self._engine_session_ids.pop(evicted_id, None)
                 logger.debug("Evicted oldest conversation session %s", evicted_id)
             self._sessions[sid] = []
-        logger.debug("Created conversation session %s", sid)
+            self._session_modes[sid] = normalized_mode
+        logger.debug("Created conversation session %s (mode=%s)", sid, normalized_mode)
         return sid
+
+    def get_engine_session_id(self, session_id: str) -> str | None:
+        """Return the AM Engine KV-session handle for a conversation.
+
+        Returns:
+            Bound engine session ID, or ``None`` when no live handle exists.
+        """
+        with self._lock:
+            return self._engine_session_ids.get(session_id)
+
+    def set_engine_session_id(self, session_id: str, engine_session_id: str) -> None:
+        """Bind a first-turn AM Engine KV-session handle to a conversation.
+
+        Args:
+            session_id: Conversation that owns the engine session.
+            engine_session_id: Non-empty AM Engine KV-session handle.
+
+        Raises:
+            KeyError: If the conversation does not exist.
+            ValueError: If the engine session handle is empty.
+        """
+        if not engine_session_id:
+            raise ValueError("engine_session_id must be non-empty")
+        with self._lock:
+            if session_id not in self._sessions:
+                raise KeyError(f"Session '{session_id}' does not exist")
+            self._engine_session_ids[session_id] = engine_session_id
+
+    def clear_engine_session_id(self, session_id: str) -> None:
+        """Clear a stale KV-session handle after engine-down/session-unknown."""
+        with self._lock:
+            self._engine_session_ids.pop(session_id, None)
+
+    def get_session_mode(self, session_id: str) -> str:
+        """Return the conversation mode for *session_id*.
+
+        Args:
+            session_id: Session to look up.
+
+        Returns:
+            ``"task"`` or ``"free_form"``.  Defaults to ``"task"`` for
+            unknown or pre-existing sessions that predate the mode field.
+        """
+        with self._lock:
+            return self._session_modes.get(session_id, "task")
+
+    def should_route_to_task_execution(self, session_id: str) -> bool:
+        """Return whether incoming messages for *session_id* should route to tasks.
+
+        Free-form sessions (FSA-0050) explicitly disable task routing so the
+        user can chat without the system kicking off task decomposition for
+        every message.
+
+        Args:
+            session_id: Session to evaluate.
+
+        Returns:
+            True for ``"task"`` mode (the default); False for ``"free_form"``.
+        """
+        return self.get_session_mode(session_id) != "free_form"
 
     def add_message(
         self,
@@ -356,7 +512,8 @@ class ConversationStore:
             role=role,
             content=content,
             timestamp=time.time(),
-            metadata=metadata or {},  # noqa: VET112 - empty fallback preserves optional request metadata contract
+            metadata=metadata or {},
+            token_count=_count_tokens(content),
         )
         with self._lock:
             if session_id not in self._sessions:
@@ -399,8 +556,8 @@ class ConversationStore:
     def get_context_window(self, session_id: str, max_tokens: int = 4096) -> list[ConversationMessage]:
         """Return the most recent messages that fit within a token budget.
 
-        Token count is estimated at :data:`_CHARS_PER_TOKEN` characters per
-        token.  Messages are included from newest to oldest until the budget
+        Token counts come from AM Engine when available. Messages are included
+        from newest to oldest until the budget
         is exhausted, then returned in chronological order.
 
         If the session was evicted from the in-memory LRU, it is transparently
@@ -424,10 +581,10 @@ class ConversationStore:
             messages = list(self._sessions[session_id])
 
         selected: list[ConversationMessage] = []
-        budget = max_tokens * _CHARS_PER_TOKEN  # convert to chars
+        budget = max_tokens
 
         for msg in reversed(messages):
-            cost = len(msg.content)
+            cost = msg.token_count or _count_tokens(msg.content)
             if cost > budget:
                 break
             selected.append(msg)
@@ -453,6 +610,7 @@ class ConversationStore:
             if session_id not in self._sessions:
                 raise KeyError(f"Session '{session_id}' does not exist")
             self._sessions[session_id] = []
+            self._engine_session_ids.pop(session_id, None)
 
         # Delete persisted rows outside the lock — best-effort.
         self._delete_session_from_db(session_id)
@@ -518,7 +676,7 @@ def _reset_conversation_store() -> None:
 # ---------------------------------------------------------------------------
 
 
-class ContextReconstructor:
+class ContextReconstructor(ContextReconstructorMixin):
     """Build a formatted prompt context string from conversation history.
 
     The reconstructor fits the most recent messages into a token budget,
@@ -527,60 +685,3 @@ class ContextReconstructor:
 
     _SYSTEM_HEADER = "You are a helpful AI assistant.\n\n"
     _SUMMARY_HEADER = "[Earlier conversation summarised]\n\n"
-
-    def reconstruct(
-        self,
-        messages: list[ConversationMessage],
-        max_tokens: int = 4096,
-    ) -> str:
-        """Build a context string from *messages* within *max_tokens*.
-
-        The method works in three steps:
-
-        1. Reserve space for the system header.
-        2. Walk messages from newest to oldest, collecting those that fit.
-        3. Prepend a summary placeholder for any omitted older messages.
-
-        Args:
-            messages: Conversation history (chronological order).
-            max_tokens: Token budget for the assembled context.
-
-        Returns:
-            Formatted context string ready to prepend to a prompt.
-        """
-        if not messages:
-            return self._SYSTEM_HEADER
-
-        char_budget = max_tokens * _CHARS_PER_TOKEN
-        header_cost = len(self._SYSTEM_HEADER)
-        char_budget -= header_cost
-
-        selected: list[ConversationMessage] = []
-        for msg in reversed(messages):
-            formatted = self._format_message(msg)
-            if len(formatted) > char_budget:
-                break
-            selected.append(msg)
-            char_budget -= len(formatted)
-
-        selected.reverse()
-        omitted_count = len(messages) - len(selected)
-
-        parts: list[str] = [self._SYSTEM_HEADER]
-        if omitted_count > 0:
-            parts.append(f"[{omitted_count} earlier message(s) not shown]\n\n")
-        parts.extend(self._format_message(msg) for msg in selected)
-
-        return "".join(parts)
-
-    @staticmethod
-    def _format_message(msg: ConversationMessage) -> str:
-        """Render a single message as a labelled block.
-
-        Args:
-            msg: Message to format.
-
-        Returns:
-            Formatted string ending with a newline.
-        """
-        return f"{msg.role.upper()}: {msg.content}\n"

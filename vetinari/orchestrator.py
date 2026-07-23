@@ -16,6 +16,7 @@ import yaml
 
 from vetinari.adapter_manager import get_adapter_manager
 from vetinari.adapters.base import InferenceRequest
+from vetinari.boundary_guards import account_evidence_drop
 from vetinari.exceptions import ExecutionError
 from vetinari.orchestration.two_layer import get_two_layer_orchestrator
 from vetinari.types import StatusEnum
@@ -218,11 +219,18 @@ class Orchestrator:
                 )
                 if not _is_failed:
                     completed += 1
-            except Exception:
+            except Exception as exc:
                 logger.exception("Task %s failed during run_all", task_id)
+                account_evidence_drop(task_id, "run_all_task_exception", logger=logger)
+                results.append({
+                    "task_id": task_id,
+                    "status": StatusEnum.FAILED.value,
+                    "error": str(exc),
+                })
         return {StatusEnum.COMPLETED.value: completed, "total": len(tasks), "results": results}
 
-    def _register_default_slos(self) -> None:
+    @staticmethod
+    def _register_default_slos() -> None:
         """Register the default Service Level Objectives with the SLA tracker.
 
         Registers four baseline SLOs that define acceptable performance bounds

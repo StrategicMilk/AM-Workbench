@@ -458,7 +458,8 @@ class EmbeddingDriftDetector:
 
         return cosine_distance(a, b)
 
-    def _emit_domain_event(self, distance: float) -> None:
+    @staticmethod
+    def _emit_domain_event(distance: float) -> None:
         """Emit NEW_DOMAIN_DETECTED event.
 
         Args:
@@ -506,3 +507,10 @@ def get_drift_ensemble() -> QualityDriftDetector:
             if _drift_ensemble is None:
                 _drift_ensemble = QualityDriftDetector()
     return _drift_ensemble
+
+
+def reset_drift_ensemble_for_test() -> None:
+    """Reset the process-wide quality drift detector singleton."""
+    global _drift_ensemble
+    with _drift_ensemble_lock:
+        _drift_ensemble = None

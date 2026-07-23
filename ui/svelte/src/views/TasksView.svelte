@@ -7,6 +7,8 @@
   import * as api from '$lib/api.js';
   import * as fmt from '$lib/utils/format.js';
   import { showToast } from '$lib/stores/toast.svelte.js';
+  import HelpPopover from '$lib/components/help/HelpPopover.svelte';
+  import HelpTooltip from '$lib/components/help/HelpTooltip.svelte';
 
   // -- State -------------------------------------------------------------------
 
@@ -165,6 +167,11 @@
       Tasks
       <span class="task-count">{tasks.length}</span>
     </h2>
+    <HelpPopover
+      title="Tasks"
+      body="All tasks produced by the Foreman for the active project's current run. Each task is assigned to a Worker agent and has a status: pending (queued), running (being executed), completed (accepted by Inspector), failed (rejected and awaiting retry or escalation), or blocked (waiting on a dependency or human approval). Task dependencies are shown as edges in the execution plan — a task cannot start until all its dependencies are completed. Click a task row to view its full input/output and Inspector report."
+      severity="info"
+    />
     <button
       class="btn btn-secondary btn-sm"
       onclick={loadTasks}
@@ -433,9 +440,14 @@
   }
 
   .input:focus {
-    outline: none;
+    outline: 2px solid transparent;
+    outline-offset: 2px;
     border-color: var(--primary);
     box-shadow: 0 0 0 2px var(--primary-muted);
+  }
+
+  .input:focus-visible {
+    outline-color: var(--primary);
   }
 
   .search-input { padding-left: 32px; }

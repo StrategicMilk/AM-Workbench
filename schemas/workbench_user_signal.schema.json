@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_user_signal.schema.json",
+  "title": "Workbench User Input Signal",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "signal_id",
+    "kind",
+    "source",
+    "project_id",
+    "actor_id",
+    "summary",
+    "evidence_refs",
+    "captured_at_utc",
+    "confidence",
+    "provenance_ref",
+    "policy"
+  ],
+  "properties": {
+    "signal_id": { "type": "string", "minLength": 1 },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "friction",
+        "repeated_workflow",
+        "preference_candidate",
+        "ignored_recommendation",
+        "delegation_desire",
+        "trust_boundary",
+        "question_debt",
+        "recommendation_feedback",
+        "effort_accounting"
+      ]
+    },
+    "source": { "type": "string", "enum": ["explicit", "implicit"] },
+    "project_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "actor_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "summary": { "type": "string", "minLength": 1 },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "captured_at_utc": { "type": "string", "format": "date-time" },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "provenance_ref": { "type": "string", "minLength": 1 },
+    "authority_ref": { "type": "string" },
+    "target_ref": { "type": "string" },
+    "high_impact": { "type": "boolean", "default": false },
+    "contains_sensitive_data": { "type": "boolean", "default": false },
+    "requested_action": { "type": "string", "enum": ["draft", "queue_review", "activate"], "default": "draft" },
+    "effort_minutes": { "type": "number", "minimum": 0, "default": 0 },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["collection_enabled", "implicit_collection_enabled", "local_only", "retention_days"],
+      "properties": {
+        "collection_enabled": { "type": "boolean" },
+        "implicit_collection_enabled": { "type": "boolean" },
+        "local_only": { "type": "boolean", "const": true },
+        "retention_days": { "type": "integer", "minimum": 1, "maximum": 365 },
+        "revoked_signal_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": []
+        },
+        "opted_out_kinds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "friction",
+              "repeated_workflow",
+              "preference_candidate",
+              "ignored_recommendation",
+              "delegation_desire",
+              "trust_boundary",
+              "question_debt",
+              "recommendation_feedback",
+              "effort_accounting"
+            ]
+          },
+          "default": []
+        }
+      }
+    }
+  }
+}

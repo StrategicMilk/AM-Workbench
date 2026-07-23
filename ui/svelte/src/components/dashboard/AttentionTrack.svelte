@@ -37,17 +37,17 @@
   });
 </script>
 
-<section class="attention-track" aria-live="polite">
+<section class="attention-track" aria-label="Attention required">
   <header class="attention-header">
     <h3>
-      <i class="fas fa-bell"></i>
+      <i class="fas fa-bell" aria-hidden="true"></i>
       Attention required
       {#if items.length > 0}
-        <span class="badge">{items.length}</span>
+        <span class="badge" aria-label="{items.length} attention item{items.length === 1 ? '' : 's'}">{items.length}</span>
       {/if}
     </h3>
     {#if lastFetched}
-      <span class="muted">updated {fmt.relativeTime ? fmt.relativeTime(lastFetched) : lastFetched.toLocaleTimeString()}</span>
+      <span class="muted" aria-hidden="true">updated {fmt.relativeTime ? fmt.relativeTime(lastFetched) : lastFetched.toLocaleTimeString()}</span>
     {/if}
   </header>
 
@@ -56,9 +56,9 @@
       Could not load attention list: {error}
     </p>
   {:else if loading}
-    <p class="muted">Loading…</p>
+    <p class="muted" role="status">Loading...</p>
   {:else if items.length === 0}
-    <p class="muted empty-state">No attention required</p>
+    <p class="muted empty-state" role="status">No attention required</p>
   {:else}
     <ul class="attention-list">
       {#each items as item (item.receipt_id)}

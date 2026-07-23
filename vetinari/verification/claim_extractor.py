@@ -177,36 +177,21 @@ def _is_claim_like(sentence: str) -> bool:
 def extract_claims(text: str) -> list[Claim]:
     """Split Worker output text into individual verifiable claims.
 
-    Processes the text in two passes:
-    1. Extract fenced code blocks and create CODE claims for each.
-    2. Split remaining prose into sentences and classify each as a claim.
-
-    Non-assertive text (questions, hedging, short fragments) is filtered out.
-
-    Args:
-        text: The full Worker output text to analyse.
-
     Returns:
-        List of Claim objects sorted by source position. Empty list if the
-        text contains no verifiable assertions.
+        Value produced for the caller.
     """
     if not text or not text.strip():
         return []
-
     claims: list[Claim] = []
-
-    # Pass 1: Extract code blocks as CODE claims
     code_blocks = _extract_code_blocks(text)
     code_spans: set[tuple[int, int]] = set()
     for code_content, start, end in code_blocks:
         code_spans.add((start, end))
-        # Validate the code block is parseable Python
         is_valid_python = True
         try:
             ast.parse(code_content)
         except SyntaxError:
             is_valid_python = False
-
         claim_text = "Code block is valid Python" if is_valid_python else "Code block contains syntax errors"
         claims.append(
             Claim(
@@ -217,35 +202,22 @@ def extract_claims(text: str) -> list[Claim]:
                 code_snippet=code_content,
             )
         )
-
-    # Pass 2: Split prose (outside code blocks) into sentences
-    # Remove code blocks from text for prose processing
     prose = text
     for _, start, end in sorted(code_blocks, key=lambda x: x[1], reverse=True):
         prose = prose[:start] + " " * (end - start) + prose[end:]
-
     sentences = _SENTENCE_SPLIT.split(prose)
-
-    # Track the search cursor so repeated sentences each get their own span
-    # rather than all mapping to the position of the first occurrence.
     _search_cursor = 0
-
     for sentence in sentences:
         sentence = sentence.strip()
         if not _is_claim_like(sentence):
             continue
-
         claim_type = _classify_sentence(sentence)
-
-        # Advance the cursor from its current position so duplicate sentences
-        # receive the position of their own occurrence, not the first one.
         pos = text.find(sentence, _search_cursor)
         if pos >= 0:
             _search_cursor = pos + len(sentence)
             span = (pos, pos + len(sentence))
         else:
             span = (0, len(sentence))
-
         claims.append(
             Claim(
                 text=sentence,
@@ -254,10 +226,7 @@ def extract_claims(text: str) -> list[Claim]:
                 confidence=0.9,
             )
         )
-
-    # Sort by position in source text
     claims.sort(key=lambda c: c.source_span[0])
-
     logger.debug(
         "extract_claims: %d claims extracted (%d code, %d format, %d factual, %d structural)",
         len(claims),
@@ -266,7 +235,6 @@ def extract_claims(text: str) -> list[Claim]:
         sum(1 for c in claims if c.claim_type == ClaimType.FACTUAL),
         sum(1 for c in claims if c.claim_type == ClaimType.STRUCTURAL),
     )
-
     return claims
 
 

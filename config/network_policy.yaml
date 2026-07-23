@@ -1,11 +1,9 @@
 # Network Isolation Policy for Vetinari
 #
-# DISPOSITION: Bounded scaffolding — this file defines the intended network
-# isolation model but is NOT currently enforced by the Vetinari runtime.
-# No Python module reads or applies these rules at runtime.
-# To activate: implement a NetworkPolicyEnforcer that reads this file and
-# gates outbound connections accordingly, then wire it into cli_startup.py.
-# Until then, treat this as authoritative design documentation only.
+# DISPOSITION: Runtime contract — this file is loaded fail-closed by
+# vetinari.workbench.network.config.validate_network_policy.
+# The current enforcer validates policy shape and rejects empty or disconnected
+# policy files before network-capable workbench paths can opt into a mode.
 #
 # Controls outbound network access.  Three modes:
 #   offline    — zero network access; all inference is local-only
@@ -16,6 +14,7 @@
 # falling back to the 'default_mode' below.
 
 default_mode: restricted
+runtime_enforcer: vetinari.workbench.network.config.validate_network_policy
 
 modes:
   offline:
@@ -52,3 +51,13 @@ dns_allowed: true  # Overridden to false in offline mode
 # Logging: log all blocked connection attempts
 log_blocked: true
 log_level: WARNING
+
+privacy_substantiation:
+  finding_ids:
+    - FSA-0679
+  known_bad_predicate: "Network policy allows restricted/open modes without documenting how blocked connection attempts are contained."
+  known_good_predicate: "Restricted mode enumerates hosts and ports, offline mode has no hosts, and blocked attempts are logged without allowing traffic."
+  negative_control_predicate: "Offline mode with a non-empty allowed_hosts list is invalid for this policy."
+  direct_surface_refs:
+    - config/network_policy.yaml
+    - tests/operator/test_wave3_anchored_mismatch_followup_01_p04.py

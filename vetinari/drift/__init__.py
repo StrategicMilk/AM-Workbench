@@ -24,42 +24,45 @@ from __future__ import annotations
 
 import logging
 
-logger = logging.getLogger(__name__)
-
-from .capability_auditor import (  # noqa: E402 - late import is required after bootstrap setup
+from .capability_auditor import (
     CapabilityAuditor,
     CapabilityFinding,
     get_capability_auditor,
     reset_capability_auditor,
 )
-from .contract_registry import (  # noqa: E402 - late import is required after bootstrap setup
+from .contract_registry import (
     ContractDriftError,
     ContractRegistry,
     get_contract_registry,
     reset_contract_registry,
 )
-from .goal_tracker import (  # noqa: E402, VET123 - late import is required after bootstrap setup; barrel export preserves public import compatibility
+from .goal_tracker import (
     AdherenceResult,
     GoalTracker,
 )
-from .monitor import (  # noqa: E402 - late import is required after bootstrap setup
+from .monitor import (
     DriftMonitor,
     DriftMonitorReport,
     get_drift_monitor,
     reset_drift_monitor,
 )
-from .schema_validator import (  # noqa: E402 - late import is required after bootstrap setup
+from .schema_validator import (
     SchemaValidator,
     get_schema_validator,
     reset_schema_validator,
 )
-from .wiring import (  # noqa: E402 - late import is required after bootstrap setup
+from .wiring import (
     check_goal_adherence,
     schedule_contract_check,
     schedule_drift_audit,
     startup_drift_validation,
     wire_drift_subsystem,
 )
+
+logger = logging.getLogger(__name__)
+
+DriftReport = DriftMonitorReport
+
 
 __all__ = [
     "AdherenceResult",

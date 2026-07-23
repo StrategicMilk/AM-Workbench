@@ -3,12 +3,52 @@
    * Output/artifact display view — code output with syntax highlighting,
    * file tree for multi-file outputs, version history, and approval controls.
    *
-   * Uses highlight.js for syntax highlighting loaded via CDN script tag.
+   * Uses the bundled Highlight.js dependency for local syntax highlighting.
    */
   import { appState } from '$lib/stores/app.svelte.js';
   import * as api from '$lib/api.js';
   import * as fmt from '$lib/utils/format.js';
   import { showToast } from '$lib/stores/toast.svelte.js';
+  import HelpPopover from '$lib/components/help/HelpPopover.svelte';
+  import HelpTooltip from '$lib/components/help/HelpTooltip.svelte';
+  import ProvenanceGate from '$lib/security/ProvenanceGate.svelte';
+  import { provenanceDecision, redactSupplyChainValue, requireTrustedProvenance } from '$lib/security';
+  import hljs from 'highlight.js/lib/core';
+  import bash from 'highlight.js/lib/languages/bash';
+  import css from 'highlight.js/lib/languages/css';
+  import javascript from 'highlight.js/lib/languages/javascript';
+  import json from 'highlight.js/lib/languages/json';
+  import markdownLanguage from 'highlight.js/lib/languages/markdown';
+  import plaintext from 'highlight.js/lib/languages/plaintext';
+  import powershell from 'highlight.js/lib/languages/powershell';
+  import python from 'highlight.js/lib/languages/python';
+  import shell from 'highlight.js/lib/languages/shell';
+  import typescript from 'highlight.js/lib/languages/typescript';
+  import xml from 'highlight.js/lib/languages/xml';
+  import yaml from 'highlight.js/lib/languages/yaml';
+
+  const highlightLanguages = {
+    bash,
+    css,
+    html: xml,
+    javascript,
+    json,
+    markdown: markdownLanguage,
+    plaintext,
+    powershell,
+    python,
+    shell,
+    text: plaintext,
+    typescript,
+    xml,
+    yaml,
+  };
+
+  for (const [name, language] of Object.entries(highlightLanguages)) {
+    if (!hljs.getLanguage(name)) {
+      hljs.registerLanguage(name, language);
+    }
+  }
 
   // -- State -------------------------------------------------------------------
 
@@ -19,7 +59,6 @@
   let actionPending = $state(false);
   let selectedFile = $state(null);
   let selectedVersion = $state(null);
-  let hlReady = $state(false);
   let codeEl = $state(null);
 
   // -- Derived -----------------------------------------------------------------
@@ -39,7 +78,21 @@
   let codeContent = $derived(activeFile?.content ?? '');
   let codeLanguage = $derived(activeFile?.language ?? detectLanguage(activeFile?.name ?? ''));
 
-  let canApprove = $derived(review?.status === 'pending_review' || review?.status === 'needs_approval');
+  let reviewProvenanceRefs = $derived([
+    ...(Array.isArray(review?.evidence_refs) ? review.evidence_refs : []),
+    ...(Array.isArray(review?.provenance_refs) ? review.provenance_refs : []),
+    review?.trace_ref,
+    review?.approval_ref,
+    review?.artifact_digest,
+  ].filter(Boolean));
+  let reviewProvenance = $derived(provenanceDecision({
+    evidence_refs: reviewProvenanceRefs,
+    status: review?.provenance_status ?? (review?.status === 'approved' ? 'verified' : review?.status),
+    reasons: review?.blocked_reasons,
+  }, 'output-review'));
+  let canApprove = $derived(
+    (review?.status === 'pending_review' || review?.status === 'needs_approval') && reviewProvenance.trusted
+  );
 
   // -- Data loading ------------------------------------------------------------
 
@@ -74,31 +127,19 @@
   // -- Highlight.js integration ------------------------------------------------
 
   $effect(() => {
-    if (!hlReady || !codeEl || !codeContent) return;
+    if (!codeEl || !codeContent) return;
     try {
-      const hljs = window.hljs;
-      if (!hljs) return;
       codeEl.textContent = codeContent;
       codeEl.className = `language-${codeLanguage}`;
-      hljs.highlightElement(codeEl);
+      if (hljs.getLanguage(codeLanguage)) {
+        codeEl.innerHTML = hljs.highlight(codeContent, { language: codeLanguage }).value;
+      } else {
+        codeEl.innerHTML = hljs.highlightAuto(codeContent).value;
+      }
     } catch {
-      // Graceful degradation if hljs isn't available
+      codeEl.textContent = codeContent;
     }
   });
-
-  function loadHighlightJs() {
-    if (window.hljs) { hlReady = true; return; }
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css';
-    document.head.appendChild(link);
-    const script = document.createElement('script');
-    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js';
-    script.onload = () => { hlReady = true; };
-    document.head.appendChild(script);
-  }
-
-  $effect(() => { loadHighlightJs(); });
 
   // -- Actions -----------------------------------------------------------------
 
@@ -106,6 +147,11 @@
     if (!appState.currentProjectId) return;
     actionPending = true;
     try {
+      requireTrustedProvenance({
+        evidence_refs: reviewProvenanceRefs,
+        status: review?.provenance_status ?? 'verified',
+        reasons: review?.blocked_reasons,
+      }, 'output-review:approve');
       await api.approveProject(appState.currentProjectId);
       showToast('Output approved', 'success');
       await loadReview();
@@ -142,6 +188,11 @@
   async function copyCode() {
     if (!codeContent) return;
     try {
+      requireTrustedProvenance({
+        evidence_refs: reviewProvenanceRefs,
+        status: review?.provenance_status ?? 'verified',
+        reasons: review?.blocked_reasons,
+      }, 'output-review:copy');
       await navigator.clipboard.writeText(codeContent);
       showToast('Copied to clipboard', 'success');
     } catch {
@@ -174,7 +225,7 @@
 <div class="output-view">
   <div class="view-header">
     <h2>
-      <i class="fas fa-code"></i>
+      <i class="fas fa-code" aria-hidden="true"></i>
       Output
       {#if review}
         <span class="status-badge status-{review.status === 'pending_review' ? 'warning' : review.status === 'approved' ? 'success' : 'muted'}">
@@ -182,7 +233,21 @@
         </span>
       {/if}
     </h2>
+    <HelpPopover
+      title="Output"
+      body="Final assembled output from the last completed run. Files are grouped by task and show the Inspector's review status alongside each artifact. Pending review means the Inspector has not yet accepted the output — you can approve or reject manually using the action buttons. Approved outputs are available for promotion to the project's canonical output store. Rejected outputs remain visible for reference but are not promoted automatically."
+      severity="info"
+    />
     <div class="header-actions">
+      {#if review}
+        <ProvenanceGate
+          refs={reviewProvenanceRefs}
+          status={review?.provenance_status ?? review?.status}
+          reasons={review?.blocked_reasons}
+          context="output-review"
+          compact
+        />
+      {/if}
       {#if canApprove}
         <button
           class="btn btn-success"
@@ -190,7 +255,7 @@
           disabled={actionPending}
           aria-label="Approve this output"
         >
-          <i class="fas fa-check"></i> Approve
+          <i class="fas fa-check" aria-hidden="true"></i> Approve
         </button>
         <button
           class="btn btn-danger"
@@ -198,7 +263,7 @@
           disabled={actionPending}
           aria-label="Reject this output"
         >
-          <i class="fas fa-times"></i> Reject
+          <i class="fas fa-times" aria-hidden="true"></i> Reject
         </button>
       {/if}
       <button
@@ -207,32 +272,32 @@
         disabled={loading}
         aria-label="Refresh output"
       >
-        <i class="fas fa-sync-alt" class:fa-spin={loading}></i>
+        <i class="fas fa-sync-alt" class:fa-spin={loading} aria-hidden="true"></i>
       </button>
     </div>
   </div>
 
   {#if !appState.currentProjectId}
     <div class="empty-state">
-      <i class="fas fa-folder-open"></i>
+      <i class="fas fa-folder-open" aria-hidden="true"></i>
       <p>No project selected. Open a project to view its output.</p>
     </div>
   {:else if loading}
     <div class="loading-state" role="status" aria-live="polite">
-      <i class="fas fa-spinner fa-spin"></i>
+      <i class="fas fa-spinner fa-spin" aria-hidden="true"></i>
       Loading output...
     </div>
   {:else if loadError}
-    <div class="error-state" role="alert">
-      <i class="fas fa-exclamation-triangle"></i>
+    <div class="error-state" role="alert" aria-live="assertive">
+      <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
       <p>Could not load output: {loadError}</p>
       <button class="btn btn-secondary btn-sm" onclick={loadReview}>
-        <i class="fas fa-redo"></i> Retry
+        <i class="fas fa-redo" aria-hidden="true"></i> Retry
       </button>
     </div>
   {:else if !review}
     <div class="empty-state">
-      <i class="fas fa-hourglass-half"></i>
+      <i class="fas fa-hourglass-half" aria-hidden="true"></i>
       <p>No output available yet. The project may still be in progress.</p>
     </div>
   {:else}
@@ -241,7 +306,7 @@
       {#if files.length > 1}
         <nav class="file-tree" aria-label="Output file tree">
           <h3 class="tree-title">
-            <i class="fas fa-folder-tree"></i>
+            <i class="fas fa-folder-tree" aria-hidden="true"></i>
             Files
             <span class="badge">{files.length}</span>
           </h3>
@@ -256,8 +321,8 @@
                   aria-selected={selectedFile === file.name}
                   aria-label="View file {file.name}"
                 >
-                  <i class="{fileIcon(file.name)}"></i>
-                  <span class="file-name">{file.name}</span>
+                  <i class="{fileIcon(file.name)}" aria-hidden="true"></i>
+              <span class="file-name">{redactSupplyChainValue(file.name, 'local_path')}</span>
                   {#if file.size != null}
                     <span class="file-size">{fmt.fileSize(file.size)}</span>
                   {/if}
@@ -273,8 +338,8 @@
         {#if activeFile}
           <div class="code-toolbar">
             <div class="code-toolbar-left">
-              <i class="{fileIcon(activeFile.name)}"></i>
-              <span class="code-filename">{activeFile.name}</span>
+              <i class="{fileIcon(activeFile.name)}" aria-hidden="true"></i>
+              <span class="code-filename">{redactSupplyChainValue(activeFile.name, 'local_path')}</span>
               <span class="code-lang">{codeLanguage}</span>
             </div>
             <div class="code-toolbar-right">
@@ -290,7 +355,7 @@
                 aria-label="Copy code to clipboard"
                 title="Copy"
               >
-                <i class="fas fa-copy"></i>
+                <i class="fas fa-copy" aria-hidden="true"></i>
               </button>
             </div>
           </div>
@@ -304,7 +369,7 @@
       {#if versions.length > 0}
         <aside class="version-history" aria-label="Version history">
           <h3 class="tree-title">
-            <i class="fas fa-history"></i>
+            <i class="fas fa-history" aria-hidden="true"></i>
             Versions
           </h3>
           <ul class="version-list" role="listbox" aria-label="Output versions">
@@ -327,7 +392,7 @@
                   <div class="version-meta">
                     <span>{fmt.relativeTime(v.created_at)}</span>
                     {#if v.author}
-                      <span>{v.author}</span>
+                      <span>{redactSupplyChainValue(v.author, 'author')}</span>
                     {/if}
                   </div>
                 </button>
@@ -341,7 +406,7 @@
     <!-- Review info footer -->
     {#if review.feedback || review.notes}
       <section class="review-notes card" aria-label="Review notes">
-        <h3 class="notes-title"><i class="fas fa-comment-alt"></i> Inspector Notes</h3>
+        <h3 class="notes-title"><i class="fas fa-comment-alt" aria-hidden="true"></i> Inspector Notes</h3>
         <p class="notes-text">{review.feedback ?? review.notes}</p>
       </section>
     {/if}
@@ -462,6 +527,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
+    min-height: 44px;
     padding: 6px 12px;
     background: none;
     border: none;
@@ -570,6 +636,7 @@
     display: flex;
     flex-direction: column;
     gap: 3px;
+    min-height: 44px;
     padding: 8px 12px;
     background: none;
     border: none;

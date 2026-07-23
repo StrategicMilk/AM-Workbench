@@ -24,6 +24,7 @@ from vetinari.types import AgentType
 
 logger = logging.getLogger(__name__)
 
+
 # Maximum length of condensed output (characters)
 _MAX_CONDENSED_LENGTH = TRUNCATE_CONDENSED  # ~1000 tokens
 
@@ -57,7 +58,7 @@ class ContextCondenser:
         Returns:
             Condensed context string ready for the receiving agent.
         """
-        metadata = result_metadata or {}  # noqa: VET112 - empty fallback preserves optional request metadata contract
+        metadata = result_metadata or {}
 
         match (from_agent.upper(), to_agent.upper()):
             case (AgentType.FOREMAN.value, AgentType.WORKER.value):
@@ -202,7 +203,8 @@ class ContextCondenser:
             return text
         return text[: max_len - len(_indicator)] + _indicator
 
-    def _cap_length(self, text: str) -> str:
+    @staticmethod
+    def _cap_length(text: str) -> str:
         """Cap total condensed output length with a visible truncation indicator.
 
         Args:

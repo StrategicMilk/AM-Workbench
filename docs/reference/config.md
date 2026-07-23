@@ -1,6 +1,6 @@
-# Vetinari Configuration Reference
+# AM Workbench Configuration Reference
 
-Complete guide to configuring Vetinari including Plan Mode, Ponder, and memory settings.
+Complete guide to configuring AM Workbench including Plan Mode, Ponder, and memory settings.
 
 ---
 
@@ -26,8 +26,8 @@ Complete guide to configuring Vetinari including Plan Mode, Ponder, and memory s
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| ENABLE_PONDER_MODEL_SEARCH | true | Enable cloud model search |
-| PONDER_CLOUD_WEIGHT | 0.20 | Cloud model influence (0.0-1.0) |
+| ENABLE_PONDER_MODEL_DISCOVERY | true | Enable Ponder model-discovery scoring in the model-selection flow; this is not a `vetinari.web.config.VetinariConfig` field |
+| PONDER_CLOUD_WEIGHT | 0.20 | Cloud signal weight used by Ponder/model-discovery scoring; this is not a `vetinari.web.config.VetinariConfig` field |
 
 ### Cloud Provider API Keys
 
@@ -43,8 +43,8 @@ Complete guide to configuring Vetinari including Plan Mode, Ponder, and memory s
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| VETINARI_MODELS_DIR | ./models | Directory containing GGUF fallback model files for llama.cpp |
-| VETINARI_NATIVE_MODELS_DIR | ./models/native | Directory containing native Hugging Face-format model assets for vLLM/NIM workflows |
+| VETINARI_MODELS_DIR | ./models | Directory containing llama-cpp GGUF model files (other backends ignore this) |
+| VETINARI_NATIVE_MODELS_DIR | ./models/native | Directory containing native HuggingFace-format checkpoints (safetensors, optional GPTQ/AWQ) for vLLM/SGLang/NIM workflows; faster-whisper uses CTranslate2 models, ComfyUI uses safetensors/ckpt |
 | VETINARI_GPU_LAYERS | -1 | Number of layers to offload to GPU (-1 = auto-detect) |
 | VETINARI_CONTEXT_LENGTH | 8192 | Context window size for loaded models |
 
@@ -92,7 +92,25 @@ Complete guide to configuring Vetinari including Plan Mode, Ponder, and memory s
 |----------|---------|-------------|
 | VETINARI_WEB_PORT | 5000 | Web dashboard port |
 | VETINARI_WEB_HOST | 127.0.0.1 | Web server bind address |
+| VETINARI_DEBUG | false | Enable web/runtime debug mode when set to `1`, `true`, or `yes` |
 | VETINARI_LOG_LEVEL | INFO | Python log level (DEBUG, INFO, WARNING, ERROR) |
+
+### Vetinari Web Runtime Configuration
+
+These variables are read by `vetinari.web.config.VetinariConfig.from_env()`.
+Malformed integer values fall back to the documented defaults and emit a warning.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| VETINARI_API_TOKEN | unset | Optional API token stored on the web config object for local integrations |
+| VETINARI_CONFIG | manifest/vetinari.yaml | Manifest path used by task/config route helpers |
+| VETINARI_PROJECT_DIR | projects | Project directory relative to the active workspace |
+| VETINARI_OUTPUT_DIR | outputs | Output directory relative to the active workspace |
+| VETINARI_MEMORY_GB | 48 | Memory budget in GiB for local runtime planning |
+| VETINARI_MAX_CONCURRENT | 4 | Maximum concurrent task budget for local runtime planning |
+| VETINARI_TIMEOUT | 120 | Default task timeout in seconds |
+| VETINARI_LLM_TIMEOUT | 300 | Default LLM inference timeout in seconds |
+| ENABLE_EXTERNAL_DISCOVERY | true | Enable external model/tool discovery features |
 
 ### Cascade Routing
 
@@ -130,8 +148,9 @@ GEMINI_API_KEY=AIza...
 VETINARI_VLLM_ENDPOINT=http://localhost:8000
 VETINARI_NIM_ENDPOINT=http://localhost:8001
 
-# GGUF fallback
+# llama-cpp GGUF (one backend among many)
 VETINARI_MODELS_DIR=./models
+# Native HuggingFace-format checkpoints for vLLM/SGLang/NIM
 VETINARI_NATIVE_MODELS_DIR=./models/native
 ```
 
@@ -278,7 +297,7 @@ Authorization: Bearer <VETINARI_ADMIN_TOKEN>
 
 Current mounted behavior is not "all plan API calls require auth": `GET /api/plan/status`
 and `GET /api/plan/templates` are public read surfaces in `litestar_plan_api.py`.
-Treat those as localhost-only/operator surfaces until scoped
+Treat those as localhost-only/operator surfaces until Session 34F1 proves scoped
 auth and redaction or routes implementation to guard them.
 
 ### POST /api/plan/generate
@@ -437,4 +456,4 @@ curl -H "Authorization: Bearer <VETINARI_ADMIN_TOKEN>" \
 
 - [Pipeline](../architecture/pipeline.md) - Current runtime pipeline
 - [Cloud Ponder](cloud-ponder.md) - Ponder model selection
-- [Ponder API](../api/ponder.md) - REST API documentation
+- [Ponder Contracts](../api/ponder.md) - Current in-process Ponder contract and route-restoration requirements

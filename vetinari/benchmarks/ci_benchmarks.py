@@ -10,10 +10,12 @@ valid.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
+from vetinari.clock import utc_now_iso
+
 logger = logging.getLogger(__name__)
+
 
 # Pass/fail thresholds for each CI probe.
 _CI_THRESHOLDS: dict[str, float] = {
@@ -84,12 +86,18 @@ def _ci_decomposition_score() -> dict[str, Any]:
     except Exception as exc:
         logger.warning("CI decomposition score failed: %s", exc)
         score = 0.0
-    return {
+        provenance = {"exc_type": type(exc).__name__, "exc_msg": str(exc)}
+    else:
+        provenance = None
+    result = {
         "name": "decomposition_score",
         "score": round(float(score), 4),
         "threshold": threshold,
         "passed": float(score) >= threshold,
     }
+    if provenance is not None:
+        result["provenance"] = provenance
+    return result
 
 
 def _ci_token_optimization() -> dict[str, Any]:
@@ -110,7 +118,7 @@ def _ci_token_optimization() -> dict[str, Any]:
     raw_tokens = len(sample.split())
     error: str | None = None
     try:
-        from vetinari.token_optimizer import TokenOptimizer  # type: ignore[attr-defined]
+        from vetinari.token_optimizer import TokenOptimizer
 
         optimizer = TokenOptimizer()
         optimised_result = optimizer.prepare_prompt(sample)
@@ -165,7 +173,7 @@ def run_ci_benchmarks() -> dict[str, Any]:
                 "overall_passed": bool,
             }
     """
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = utc_now_iso()
     scores: list[dict[str, Any]] = [
         _ci_plan_latency(),
         _ci_decomposition_score(),

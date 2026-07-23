@@ -1,7 +1,4 @@
-"""Model configuration loader — reads agent model assignments from YAML.
-
-Falls back to hardcoded defaults when the YAML file is missing or invalid.
-"""
+"""Model configuration loader — reads agent model assignments from YAML."""
 
 from __future__ import annotations
 
@@ -12,15 +9,16 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 _DEFAULT_MODEL = "qwen2.5-72b"
 _DEFAULT_PROVIDER = "local"
-_CONFIG_PATH = Path(__file__).parent / "models.yaml"  # noqa: VET306 — config read, not install tree artifact write
+_CONFIG_PATH = Path(__file__).parent / "models.yaml"
 
 _cached_config: dict[str, Any] | None = None
 
 
 def load_model_config(config_path: Path | None = None) -> dict[str, Any]:
-    """Load model configuration from YAML with fallback to defaults.
+    """Load model configuration from YAML.
 
     Args:
         config_path: Optional override for the YAML file path.
@@ -28,6 +26,9 @@ def load_model_config(config_path: Path | None = None) -> dict[str, Any]:
 
     Returns:
         Configuration dict with 'default' and 'agents' keys.
+
+    Raises:
+        ValueError: If an existing YAML config is malformed.
     """
     global _cached_config
     if _cached_config is not None and config_path is None:
@@ -52,16 +53,11 @@ def load_model_config(config_path: Path | None = None) -> dict[str, Any]:
                             config["agents"][agent_name] = agent_config
                 logger.info("Model config loaded from %s", path)
             else:
-                logger.warning(
-                    "Invalid model config format in %s — using defaults",
-                    path,
-                )
-        except Exception:
-            logger.warning(
-                "Failed to load model config from %s — using defaults",
-                path,
-                exc_info=True,
-            )
+                raise ValueError(f"Invalid model config format in {path}: expected mapping root")
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(f"Failed to load model config from {path}") from exc
     else:
         logger.debug("Model config file not found at %s — using defaults", path)
 
@@ -112,7 +108,7 @@ def get_task_default_model(task_type: str) -> str:
         Model ID string of the best available model for this task type.
     """
     config = load_model_config()
-    yaml_path = Path(__file__).parent / "models.yaml"  # noqa: VET306 — config read, not install tree artifact write
+    yaml_path = Path(__file__).parent / "models.yaml"
 
     # Capability preferences by task type
     _TASK_CAPABILITIES: dict[str, list[str]] = {
@@ -206,6 +202,11 @@ def reset_cache() -> None:
     """Clear the cached configuration. Useful for testing."""
     global _cached_config
     _cached_config = None
+
+
+def reset_model_config_cache() -> None:
+    """Clear the model configuration cache."""
+    reset_cache()
 
 
 def _build_default_config() -> dict[str, Any]:

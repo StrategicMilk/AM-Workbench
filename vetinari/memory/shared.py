@@ -24,10 +24,11 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Any
 
+logger = logging.getLogger(__name__)
+
+
 if TYPE_CHECKING:
     from vetinari.memory.interfaces import MemoryEntry
-
-logger = logging.getLogger(__name__)
 
 
 class SharedMemory:
@@ -149,9 +150,7 @@ class SharedMemory:
                 data = {**plan_data, "plan_id": plan_id}
                 store.write_plan_history(data)
         except Exception as exc:
-            logger.warning(
-                "write_plan_history failed for plan %s (non-fatal): %s", plan_id, exc
-            )
+            logger.warning("write_plan_history failed for plan %s (non-fatal): %s", plan_id, exc)
 
     def write_subtask_memory(self, subtask_id: str, subtask_data: dict[str, Any]) -> None:
         """Record a completed subtask in plan history.
@@ -168,9 +167,7 @@ class SharedMemory:
                 data = {**subtask_data, "subtask_id": subtask_id}
                 store.write_subtask_memory(data)
         except Exception as exc:
-            logger.warning(
-                "write_subtask_memory failed for subtask %s (non-fatal): %s", subtask_id, exc
-            )
+            logger.warning("write_subtask_memory failed for subtask %s (non-fatal): %s", subtask_id, exc)
 
     # ── Blackboard ────────────────────────────────────────────────────────
 

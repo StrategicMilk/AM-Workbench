@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "amw-foundation-contract.schema.json",
+  "title": "AM Workbench Rust Foundation Contract",
+  "type": "object",
+  "required": ["schema_version", "crate_apis", "generated_schemas", "lifecycle_error_semantics", "ci_gates", "downstream_dependency_handles", "approved_adr_ids"],
+  "properties": {
+    "schema_version": {"const": "amw-rust-foundation-contract.v1"},
+    "crate_apis": {
+      "type": "array",
+      "minItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["crate", "public_modules", "exports", "semantics"],
+        "additionalProperties": false,
+        "properties": {
+          "crate": {"enum": ["amw-kernel", "amw-protocol", "amw-test-support"]},
+          "public_modules": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}},
+          "exports": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}},
+          "semantics": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}}
+        }
+      }
+    },
+    "generated_schemas": {
+      "type": "array",
+      "minItems": 3,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^schemas/amw-.+\\.schema\\.json$"}
+    },
+    "lifecycle_error_semantics": {
+      "type": "array",
+      "minItems": 4,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "ci_gates": {
+      "type": "array",
+      "minItems": 5,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "cargo test --workspace",
+          "cargo fmt --check",
+          "cargo clippy --workspace -- -D warnings",
+          "python -m pytest tests/test_rust_workspace_contract.py -q",
+          "python scripts/check_rust_workspace.py --strict"
+        ]
+      }
+    },
+    "downstream_dependency_handles": {
+      "type": "array",
+      "minItems": 6,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["pack", "handle", "consumes"],
+        "additionalProperties": false,
+        "properties": {
+          "pack": {"pattern": "^AMW-FULL-[0-9]{2}$"},
+          "handle": {"type": "string", "minLength": 1},
+          "consumes": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+        }
+      }
+    },
+    "approved_adr_ids": {
+      "type": "array",
+      "minItems": 13,
+      "maxItems": 13,
+      "uniqueItems": true,
+      "items": {"pattern": "^AMW-FULL-02-ADR-[0-9]{2}$"}
+    }
+  },
+  "additionalProperties": false,
+  "generated_from": ["amw-kernel", "amw-protocol"]
+}

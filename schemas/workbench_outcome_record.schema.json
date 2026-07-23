@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_outcome_record.schema.json",
+  "title": "Workbench RAG Runtime Outcome Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "outcome_id",
+    "project_id",
+    "query_digest",
+    "answer_digest",
+    "model_version_id",
+    "runtime_ref",
+    "retrieval_index_ref",
+    "source_health_report_id",
+    "captured_at_utc",
+    "stage_scores",
+    "resource_pressure",
+    "governance",
+    "retention"
+  ],
+  "properties": {
+    "outcome_id": {"type": "string", "minLength": 1},
+    "project_id": {"type": "string", "minLength": 1},
+    "query_digest": {"type": "string", "minLength": 1},
+    "answer_digest": {"type": "string", "minLength": 1},
+    "model_version_id": {"type": "string", "minLength": 1},
+    "runtime_ref": {"type": "string", "minLength": 1},
+    "retrieval_index_ref": {"type": "string", "minLength": 1},
+    "source_health_report_id": {"type": "string", "minLength": 1},
+    "captured_at_utc": {"type": "string", "format": "date-time"},
+    "stage_scores": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/stage_score"}
+    },
+    "resource_pressure": {"$ref": "#/$defs/resource_pressure"},
+    "governance": {"$ref": "#/$defs/governance"},
+    "retention": {"$ref": "#/$defs/retention"},
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "stage_score": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "score", "evidence_refs", "failure_kinds"],
+      "properties": {
+        "stage": {
+          "type": "string",
+          "enum": ["query", "retrieval", "rerank", "context", "answer", "runtime"]
+        },
+        "score": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "failure_kinds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "citation_failure",
+              "parser_failure",
+              "duplicate_chunk",
+              "embedding_drift",
+              "provider_acceptance_failed",
+              "fallback_used",
+              "cancellation",
+              "queue_delay",
+              "memory_pressure",
+              "gpu_pressure",
+              "cost_exceeded",
+              "latency_exceeded"
+            ]
+          }
+        }
+      }
+    },
+    "resource_pressure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "latency_ms",
+        "token_cost_usd",
+        "memory_pressure",
+        "gpu_pressure",
+        "queue_delay_ms",
+        "fallback_used",
+        "cancelled",
+        "provider_acceptance_failed"
+      ],
+      "properties": {
+        "latency_ms": {"type": "integer", "minimum": 0},
+        "token_cost_usd": {"type": "number", "minimum": 0},
+        "memory_pressure": {"type": "number", "minimum": 0, "maximum": 1},
+        "gpu_pressure": {"type": "number", "minimum": 0, "maximum": 1},
+        "queue_delay_ms": {"type": "integer", "minimum": 0},
+        "fallback_used": {"type": "boolean"},
+        "cancelled": {"type": "boolean"},
+        "provider_acceptance_failed": {"type": "boolean"}
+      }
+    },
+    "governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_refs",
+        "provenance_refs",
+        "authority_refs",
+        "safety_refs",
+        "budget_ref",
+        "persisted_state_ref",
+        "confidence"
+      ],
+      "properties": {
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "provenance_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "authority_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "safety_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "budget_ref": {"type": "string", "minLength": 1},
+        "persisted_state_ref": {"type": "string", "minLength": 1},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["content_taint", "redaction_ref", "raw_content_ref", "raw_content_retention_days"],
+      "properties": {
+        "content_taint": {"type": "string", "enum": ["clean", "private", "restricted"]},
+        "redaction_ref": {"type": "string"},
+        "raw_content_ref": {"type": "string"},
+        "raw_content_retention_days": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

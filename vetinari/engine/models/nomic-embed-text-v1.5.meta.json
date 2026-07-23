@@ -1,0 +1,8 @@
+{
+  "id": "nomic-embed-text-v1.5",
+  "path": "nomic-embed-text-v1.5.gguf",
+  "aliases": [
+    "text-embedding-nomic-embed-text-v1.5"
+  ],
+  "draft_pair": null
+}

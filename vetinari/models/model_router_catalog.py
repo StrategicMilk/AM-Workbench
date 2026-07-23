@@ -1,7 +1,7 @@
-"""Catalog mixin for DynamicModelRouter.
+"""Catalog support for DynamicModelRouter.
 
 Provides model registration, performance tracking, health checks, and
-query methods as a mixin so ``DynamicModelRouter`` can focus on selection logic.
+query methods so ``DynamicModelRouter`` can focus on selection logic.
 """
 
 from __future__ import annotations
@@ -13,14 +13,18 @@ from datetime import datetime, timezone
 from typing import Any
 
 from vetinari.models.model_router_types import RouterModelInfo, TaskType
+from vetinari.utils.bounded_collections import BoundedList
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ModelRouterCatalogMixin"]
+
+__all__ = ["ModelRouterCatalogAccess"]
+
+_PERFORMANCE_CACHE_MAX_ENTRIES = 1024
 
 
-class ModelRouterCatalogMixin:
-    """Mixin providing catalog management for DynamicModelRouter.
+class ModelRouterCatalogAccess:
+    """Catalog management behavior for DynamicModelRouter.
 
     Requires the host class to define:
     - ``self.models: dict[str, RouterModelInfo]``
@@ -90,6 +94,7 @@ class ModelRouterCatalogMixin:
             "success": success,
             "timestamp": time.time(),
         }
+        self._trim_performance_cache()
 
     def get_performance_cache(self, cache_key: str) -> dict[str, Any]:
         """Retrieve cached performance data for a model/task-type key.
@@ -116,6 +121,13 @@ class ModelRouterCatalogMixin:
         existing = self._performance_cache.get(cache_key, {})
         existing.update(data)
         self._performance_cache[cache_key] = existing
+        self._trim_performance_cache()
+
+    def _trim_performance_cache(self) -> None:
+        """Evict oldest performance entries when external scores overflow the cap."""
+        while len(self._performance_cache) > _PERFORMANCE_CACHE_MAX_ENTRIES:
+            oldest_key = next(iter(self._performance_cache))
+            self._performance_cache.pop(oldest_key, None)
 
     def get_model_by_id(self, model_id: str) -> RouterModelInfo | None:
         """Return the model registered under ``model_id``, or None.
@@ -204,4 +216,42 @@ class ModelRouterCatalogMixin:
             "models_used": model_counts,
             "available_models": len(self.get_available_models()),
             "total_models": len(self.models),
+            "telemetry": self.get_router_telemetry_metrics(),
+        }
+
+    def get_router_telemetry_metrics(self) -> dict[str, Any]:
+        """Return aggregate router telemetry derived from live performance cache entries.
+
+        Returns:
+            Dict with cache coverage, cached success rate, average latency, and
+            timestamp coverage. Missing or malformed cache rows are excluded
+            instead of being treated as successful observations.
+        """
+        valid_entries: BoundedList[dict[str, Any]] = BoundedList(_PERFORMANCE_CACHE_MAX_ENTRIES)
+        for entry in self._performance_cache.values():
+            if not isinstance(entry, dict):
+                continue
+            latency = entry.get("latency_ms")
+            success = entry.get("success")
+            timestamp = entry.get("timestamp")
+            if isinstance(success, bool) and isinstance(latency, (int, float)) and not isinstance(latency, bool):
+                row = {
+                    "latency_ms": float(latency),
+                    "success": success,
+                }
+                if isinstance(timestamp, (int, float)) and not isinstance(timestamp, bool):
+                    row["timestamp"] = float(timestamp)
+                valid_entries.append(row)
+
+        latencies = [entry["latency_ms"] for entry in valid_entries]
+        successes = [entry["success"] for entry in valid_entries]
+        timestamps = [entry["timestamp"] for entry in valid_entries if "timestamp" in entry]
+
+        return {
+            "performance_cache_entries": len(self._performance_cache),
+            "valid_performance_observations": len(valid_entries),
+            "cached_success_rate": (sum(1 for success in successes if success) / len(successes)) if successes else None,
+            "average_cached_latency_ms": (sum(latencies) / len(latencies)) if latencies else None,
+            "oldest_observation_timestamp": min(timestamps) if timestamps else None,
+            "newest_observation_timestamp": max(timestamps) if timestamps else None,
         }

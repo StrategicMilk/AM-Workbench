@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
 Example: Vetinari Dashboard — Python API Usage  (Phase 4)
 
@@ -10,15 +10,10 @@ Demonstrates:
   5. Adding traces and querying them
 
 Run from the project root:
-    python examples/dashboard_example.py
+    python.cmd examples/dashboard_example.py
 """
 
-import sys
-import time
-from pathlib import Path
-
-# Make sure the project root is on the path when run directly
-sys.path.insert(0, str(Path(__file__).parent.parent))
+import logging
 
 from vetinari.telemetry import get_telemetry_collector
 from vetinari.dashboard.api import get_dashboard_api, TraceDetail
@@ -34,7 +29,6 @@ from vetinari.dashboard.log_aggregator import (
     AggregatorHandler,
 )
 
-import logging
 logging.basicConfig(level=logging.WARNING)   # keep output tidy
 
 
@@ -249,5 +243,5 @@ kv("Bridge-captured records:", len(after_bridge))
 section("Summary")
 print("  All dashboard components exercised successfully.")
 print("  Start the REST API to access via browser:")
-print("    python vetinari/dashboard/rest_api.py")
+print("    .venv312/Scripts/python.exe -m vetinari.dashboard.api")
 print("    http://localhost:5000/dashboard")

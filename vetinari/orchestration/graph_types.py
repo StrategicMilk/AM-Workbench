@@ -25,25 +25,30 @@ from typing import TYPE_CHECKING, Any
 
 from vetinari.types import StatusEnum
 
+logger = logging.getLogger(__name__)
+
+
 if TYPE_CHECKING:
     from vetinari.agents.contracts import AgentResult, Task
     from vetinari.agents.contracts import ExecutionPlan as ContractsExecutionPlan
 
-logger = logging.getLogger(__name__)
-
 
 class ExecutionStrategy(Enum):
-    """Strategy for task execution."""
+    """Strategy for task execution.
+
+    SCAFFOLD_THEN_FILL partitions tasks by TaskKind before topological layering.
+    """
 
     SEQUENTIAL = "sequential"
     PARALLEL = "parallel"
     ADAPTIVE = "adaptive"
+    SCAFFOLD_THEN_FILL = "scaffold_then_fill"
 
 
 # ── Graph enhancement dataclasses (US-031) ────────────────────────────────
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ConditionalEdge:
     """A conditional edge in the execution DAG.
 

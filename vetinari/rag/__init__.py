@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from vetinari.rag.knowledge_base import (  # noqa: VET123 — ingest_project_docs has no external callers but removing causes VET120
+from vetinari.rag.knowledge_base import (
     KBDocument,
     KnowledgeBase,
     get_knowledge_base,

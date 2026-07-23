@@ -1,0 +1,17 @@
+schema_version: 1
+enabled: true
+storage:
+  state_dir: outputs/workbench/habit-health
+  audit_log: audit.jsonl
+privacy:
+  medical_claims_enabled: false
+  default_downstream_use: deny
+  local_only: true
+  retention_days: 90
+  require_source_context: true
+  require_consent_refs: true
+  require_downstream_contract_refs: true
+review:
+  export_visible: true
+  delete_visible: true
+  denied_downstream_use_visible: true

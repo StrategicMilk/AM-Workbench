@@ -1,0 +1,15 @@
+storage_root: outputs/workbench/feature_store
+registry_filename: definitions.jsonl
+default_max_staleness_seconds: 3600
+policy_defaults:
+  stale_action: reject
+  require_dataset_revision_id: true
+  require_quality_report_id: true
+  require_lineage_graph_id: true
+  allow_hidden_memory_fallback: false
+online_context:
+  missing_required_value: reject
+  stale_required_value: reject
+training_extraction:
+  future_observation_policy: reject
+  duplicate_observation_policy: newest_event_time_before_as_of

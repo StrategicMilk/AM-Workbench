@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_agent_watcher.schema.json",
+  "title": "Workbench Agent Watcher Observation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "observation_id",
+    "run_id",
+    "actor_id",
+    "transition_kind",
+    "action",
+    "evidence_refs",
+    "observed_at_utc"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "observation_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "actor_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "transition_kind": {
+      "enum": [
+        "shell",
+        "file",
+        "network",
+        "tool",
+        "memory",
+        "token",
+        "cost",
+        "loop",
+        "side_effect",
+        "permission"
+      ]
+    },
+    "action": {
+      "enum": [
+        "observe",
+        "pause",
+        "escalate",
+        "require_approval",
+        "terminate"
+      ]
+    },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "observed_at_utc": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 1
+    },
+    "summary": {
+      "type": "string"
+    },
+    "tool_name": {
+      "type": "string"
+    },
+    "workspace_path": {
+      "type": "string"
+    },
+    "network_endpoint": {
+      "type": "string"
+    },
+    "memory_scope": {
+      "type": "string"
+    },
+    "token_budget_remaining": {
+      "type": [
+        "number",
+        "string",
+        "null"
+      ]
+    },
+    "cost_budget_remaining": {
+      "type": [
+        "number",
+        "string",
+        "null"
+      ]
+    },
+    "loop_iteration": {
+      "type": [
+        "integer",
+        "string",
+        "null"
+      ]
+    },
+    "loop_limit": {
+      "type": [
+        "integer",
+        "string",
+        "null"
+      ]
+    },
+    "expected_side_effect_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "observed_side_effect_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "authority_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "metadata": {
+      "type": "object"
+    }
+  }
+}

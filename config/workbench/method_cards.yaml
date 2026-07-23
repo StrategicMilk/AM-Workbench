@@ -1,0 +1,130 @@
+schema_version: 1
+methods:
+  - id: retrieval_first_classification
+    display_label: "Retrieval-First Classification"
+    description: "Pull top-k similar prior cases before classifying; classify against the retrieved evidence."
+    when_to_use:
+      - "Long-tail label spaces where prior labelled cases reveal the right cut points."
+      - "Inputs whose features drift across deploys, making memorized rules stale."
+    when_not_to_use:
+      - "Hot-path single-token decisions where retrieval latency is unacceptable."
+      - "Strictly closed-vocabulary classification with a frozen training set."
+    expected_cost: "Adds one vector search per inference; +50-150 ms p50 for a local FAISS-style index of 100k records."
+    known_failure_modes:
+      - "Retrieval recall collapses on novel inputs that diverge from the training distribution."
+      - "Stale embeddings give confidently wrong neighbours when the embedder version drifts."
+    compatible_task_profiles:
+      - "low_latency_classification"
+      - "drift_resistant_classification"
+  - id: multi_pass_review_aggregation
+    display_label: "Multi-Pass Review Aggregation"
+    description: "Run independent reviewer passes and aggregate via majority plus an explicit tie-break rule."
+    when_to_use:
+      - "High-stakes review where one-shot agreement is unreliable."
+      - "Tasks with documented inter-annotator disagreement such as red-team triage or code review."
+    when_not_to_use:
+      - "Tasks where reviewers always agree and the added cost buys no signal."
+      - "Latency budgets below 300 ms p50."
+    expected_cost: "N x single-pass review cost plus roughly 20 ms aggregation overhead."
+    known_failure_modes:
+      - "Reviewer pool collusion when the same prompt template converges to the same wrong answer."
+      - "Tie-break bias silently drops borderline true positives."
+    compatible_task_profiles:
+      - "high_stakes_review"
+      - "ambiguous_judgment"
+  - id: mutation_aware_test_generation
+    display_label: "Mutation-Aware Test Generation"
+    description: "Generate tests by mutating known-good fixtures and asserting that the new fixture should fail."
+    when_to_use:
+      - "Coverage gaps that elude property-based testing because the mutation requires domain insight."
+      - "Regression prevention around a fixed bug."
+    when_not_to_use:
+      - "Greenfield modules with no canonical fixtures yet."
+      - "Pure-function math libraries where property-based tests already saturate."
+    expected_cost: "+5-20 s per generated test on a local 7B model; +30-100 s on a 70B model."
+    known_failure_modes:
+      - "Mutator over-fits to the original fixture and produces a test that still passes."
+      - "Mutation produces meaningless input that fails validation rather than the intended logic."
+    compatible_task_profiles:
+      - "regression_prevention"
+      - "coverage_expansion"
+  - id: trace_to_eval_generation
+    display_label: "Trace-to-Eval Generation"
+    description: "Convert a captured WorkbenchTrace into a replayable eval case."
+    when_to_use:
+      - "Production failure traces that must become regression eval cases."
+      - "Tracing-derived synthetic eval generation for under-covered code paths."
+    when_not_to_use:
+      - "Traces dominated by transient infrastructure noise rather than logic."
+      - "Traces whose replay dependencies cannot be stabilized."
+    expected_cost: "Spine read plus replay scaffold construction; typically tens of milliseconds before eval execution."
+    known_failure_modes:
+      - "Trace size exceeds replay scaffold limits."
+      - "Trace schema drift between capture and replay invalidates the scaffold."
+    compatible_task_profiles:
+      - "regression_eval_generation"
+      - "incident_postmortem"
+  - id: self_consistency_voting
+    display_label: "Self-Consistency Voting"
+    description: "Sample multiple candidates from the same model and vote across the discrete answers."
+    when_to_use:
+      - "Inputs where greedy decoding lands on a confidently wrong answer."
+      - "Math or multi-step reasoning tasks with a discrete answer space."
+    when_not_to_use:
+      - "Open-ended generation where a mode vote is not meaningful."
+      - "Latency-sensitive paths where N x base inference is unacceptable."
+    expected_cost: "N x base inference; typical N=5 adds 200-1000 ms p50."
+    known_failure_modes:
+      - "All samples collapse to the same wrong answer when temperature is too low."
+      - "Mode-vote ties fall back to first-seen and inherit first-sample bias."
+    compatible_task_profiles:
+      - "math_reasoning"
+      - "discrete_classification"
+  - id: cross_validated_routing
+    display_label: "Cross-Validated Routing"
+    description: "Hold out route candidates over time to detect biased or regressed model choices."
+    when_to_use:
+      - "Routing decisions whose prior evidence may be biased by always picking the same model."
+      - "Detecting that a previously favoured model has regressed without replaying every route."
+    when_not_to_use:
+      - "Single-model deployments."
+      - "Hot-path inference where route bookkeeping outweighs diversity benefit."
+    expected_cost: "Per-request inference cost is unchanged; overhead is route bookkeeping and delayed convergence."
+    known_failure_modes:
+      - "Rotation collapses to round-robin when candidate count is too small."
+      - "Low-volume buckets give noisy comparisons."
+    compatible_task_profiles:
+      - "drift_aware_routing"
+      - "model_regression_detection"
+  - id: scaffold_then_fill_planning
+    display_label: "Scaffold-Then-Fill Planning"
+    description: "Plan in two passes: scaffold the structure, then fill implementation and verification steps against it."
+    when_to_use:
+      - "Plans whose structure matters more than immediate per-step content."
+      - "Workflows where scaffold failure should cancel dependent fills."
+    when_not_to_use:
+      - "Trivial plans with no scaffolding step."
+      - "Workflows where scaffolding cost exceeds total fill cost."
+    expected_cost: "+1 planning layer transition; measured deltas are linked through ADR-0123 follow-up evals."
+    known_failure_modes:
+      - "Subtask kind is not propagated, so the partition silently becomes a no-op."
+      - "A kill switch or policy flag exists without a reader."
+    compatible_task_profiles:
+      - "structured_plan_execution"
+      - "kind_partitioned_scheduling"
+  - id: red_team_prompt_mutation
+    display_label: "Red-Team Prompt Mutation"
+    description: "Apply adversarial prompt mutations and assert the model rejects or escalates instead of complying."
+    when_to_use:
+      - "Pre-deployment safety hardening for prompts that handle untrusted input."
+      - "Continuous red-team CI for prompts that drift across model upgrades."
+    when_not_to_use:
+      - "Prompts whose threat model is already covered by deterministic input validation."
+      - "Exploratory ideation where adversarial hardening is not the bottleneck."
+    expected_cost: "One mutated prompt suite per baseline prompt; cost scales with mutation count and judge pass."
+    known_failure_modes:
+      - "Mutations become syntactic noise and stop exercising real attacker intent."
+      - "The judge accepts refusals that are policy-shaped but operationally useless."
+    compatible_task_profiles:
+      - "prompt_security"
+      - "safety_regression"

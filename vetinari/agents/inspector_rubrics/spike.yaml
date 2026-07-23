@@ -1,0 +1,35 @@
+kind: spike
+version: "1.0"
+grading_criteria:
+  - id: hypothesis_resolution_stated
+    name: Hypothesis resolution stated
+    required: true
+    description: Spike output says whether the hypothesis was confirmed or rejected.
+    evidence_type: criterion_field
+    evidence_key: hypothesis_outcome
+    allowed_values: ["confirmed", "rejected"]
+    rejection_reason: Spike hypothesis outcome must be confirmed or rejected.
+  - id: deletion_or_promotion_artifact_present
+    name: Deletion or promotion artifact present
+    required: true
+    description: Spike output names either deletion cleanup or promotion follow-up artifact.
+    evidence_type: artifact_path
+    evidence_key_any_of: [deletion_artifact, promotion_artifact]
+    rejection_reason: Spike is missing both deletion and promotion artifacts.
+  - id: test_results_secondary
+    name: Test results secondary
+    required: false
+    description: Optional tests may support a spike but do not define success.
+    evidence_type: criterion_field
+    evidence_key: test_results
+    allowed_values: ["passed", "not_applicable"]
+    rejection_reason: Optional spike test evidence is invalid.
+  - id: direct_surface_reference_current
+    name: Direct surface reference current
+    required: false
+    description: Spike evidence may name whether referenced source/config/doc surfaces were checked for stale paths.
+    evidence_type: criterion_field
+    evidence_key: direct_surface_reference_status
+    allowed_values: ["current", "not_applicable"]
+    rejection_reason: Spike direct surface reference status is invalid.
+rejection_policy: all_required

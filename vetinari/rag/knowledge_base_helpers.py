@@ -8,6 +8,7 @@ import paths remain valid.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sqlite3
 import struct
@@ -22,6 +23,7 @@ from vetinari.constants import (
 
 logger = logging.getLogger(__name__)
 
+
 _EMBEDDING_API_URL = DEFAULT_EMBEDDING_API_URL
 _EMBEDDING_MODEL = os.environ.get("VETINARI_EMBEDDING_MODEL", "text-embedding-nomic-embed-text-v1.5")
 _EMBEDDING_DIMENSIONS = int(os.environ.get("VETINARI_EMBEDDING_DIMENSIONS", "768"))
@@ -32,7 +34,7 @@ _LOCAL_EMBEDDING_HOSTS = {"localhost", "127.0.0.1", "::1"}
 # ── Data Class ────────────────────────────────────────────────────────────
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class KBDocument:
     """A document chunk in the knowledge base."""
 
@@ -83,7 +85,7 @@ def kb_embed(text: str) -> list[float] | None:
         )
         resp.raise_for_status()
         data = resp.json()
-        return data["data"][0]["embedding"]
+        return validate_embedding_vector(data["data"][0]["embedding"], source="embedding_endpoint")
     except Exception as exc:
         logger.warning("KB embedding endpoint unavailable: %s", exc)
         return None
@@ -122,8 +124,39 @@ def pack_embedding(vec: list[float]) -> bytes:
 
     Returns:
         Little-endian float32 bytes.
+
+    Raises:
+        ValueError: If the input is not a list of finite numbers.
     """
-    return struct.pack(f"<{len(vec)}f", *vec)
+    if not isinstance(vec, list):
+        raise ValueError("pack_embedding embedding must be a list")
+    validated: list[float] = []
+    for index, value in enumerate(vec):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"pack_embedding embedding[{index}] must be a finite number")
+        validated.append(float(value))
+    return struct.pack(f"<{len(validated)}f", *validated)
+
+
+def validate_embedding_vector(vec: object, *, source: str) -> list[float]:
+    """Validate embedding dimensions and numeric values before storage/search.
+
+    Returns:
+        Normalized float embedding vector with the expected dimensionality.
+
+    Raises:
+        ValueError: If the embedding is not a finite numeric vector of the expected size.
+    """
+    if not isinstance(vec, list):
+        raise ValueError(f"{source} embedding must be a list")
+    if len(vec) != _EMBEDDING_DIMENSIONS:
+        raise ValueError(f"{source} embedding dimension {len(vec)} != expected {_EMBEDDING_DIMENSIONS}")
+    validated: list[float] = []
+    for index, value in enumerate(vec):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"{source} embedding[{index}] must be a finite number")
+        validated.append(float(value))
+    return validated
 
 
 def unpack_embedding(blob: bytes) -> list[float]:

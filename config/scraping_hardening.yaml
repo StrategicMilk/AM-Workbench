@@ -1,0 +1,36 @@
+# URL security controls. The URL validator is always registered; these values
+# define allowed schemes, optional host allow/deny lists, and DNS cache TTL.
+#
+# Denylist pattern semantics:
+#   "evil.com"   matches the apex AND every subdomain (sub.evil.com, a.b.evil.com)
+#   "*.evil.com" matches subdomains only — apex evil.com is allowed
+#   ".evil.com"  same as "*.evil.com" (legacy form)
+url:
+  schemes: ["http", "https"]       # Only web fetches are allowed.
+  host_allowlist: []                # Empty = permissive after the IP block rule.
+  host_denylist: []                 # Always blocks listed hosts (apex + subdomains).
+  dns_cache_ttl_s: 60               # DNS rebinding validation window in seconds.
+                                    # Lower than 10s makes the cache useless under
+                                    # burst traffic; full closure is tracked as
+                                    # LW-RT-SCRAPE-EGRESS-PINNING in the roadmap.
+
+# Local filesystem cache. Operators can clear outputs/scraping_cache safely.
+cache:
+  enabled: true
+  cache_dir: "outputs/scraping_cache"   # Directory-sharded JSON cache root.
+  ttl_s: 86400                           # 24h default entry TTL.
+  max_value_bytes: 5_000_000             # Do not cache oversized extracted text.
+
+# Retry policy for transient backend failures only.
+retry:
+  enabled: true
+  max_attempts: 3        # Total attempts including the first request.
+  base_delay_s: 1.0      # First retry delay before jitter.
+  max_delay_s: 30.0      # Upper delay bound for any retry.
+  jitter: 0.1            # +/- 10 percent spread to avoid synchronized retries.
+
+# Completion telemetry emitted once per dispatcher fetch result.
+telemetry:
+  enabled: true
+  topic: "scraping.fetch.completed"   # EventBus event_type string.
+  log_payload_at_debug: false         # Reserved for verbose local debugging.

@@ -16,10 +16,11 @@ Import those classes directly from ``vetinari.dashboard.log_backends``.
 
 Usage
 -----
+    from vetinari.constants import LOGS_DIR
     from vetinari.dashboard.log_aggregator import get_log_aggregator, LogRecord
 
     agg = get_log_aggregator()
-    agg.configure_backend("file", path="logs/audit.jsonl")  # noqa: VET230
+    agg.configure_backend("file", path=str(LOGS_DIR / "audit.jsonl"))
     agg.ingest(LogRecord(
         message="Plan approved",
         level="INFO",
@@ -40,9 +41,11 @@ import time
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
+from vetinari.boundary_guards import account_evidence_drop
 from vetinari.exceptions import ConfigurationError
+from vetinari.safety.guardrails import redact_pii_payload
 from vetinari.types import StatusEnum
 from vetinari.utils.serialization import dataclass_to_dict
 
@@ -53,7 +56,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LogRecord:
     """A structured log record ready for aggregation."""
 
@@ -81,7 +84,7 @@ class LogRecord:
         result = dataclass_to_dict(self)
         extras = result.pop("extra", {})
         result.update(extras)
-        return result
+        return cast(dict[str, Any], redact_pii_payload(result))
 
     def to_json(self) -> str:
         """Serialize this LogRecord to a JSON string.
@@ -271,14 +274,32 @@ class LogAggregator:
         if not self._pending:
             return
         batch = list(self._pending)
-        self._pending.clear()
+        if not self._backends:
+            self._pending.clear()
+            return
+        delivered = True
         for name, backend in self._backends.items():
             try:
                 ok = backend.send(batch)
                 if not ok:
+                    delivered = False
+                    account_evidence_drop(
+                        logger=logger,
+                        evidence_ref=f"log_batch:{name}",
+                        reason="log_backend_delivery_failed",
+                    )
                     logger.warning("Backend '%s' returned False for batch of %d", name, len(batch))
             except Exception as exc:
+                delivered = False
+                account_evidence_drop(
+                    logger=logger,
+                    evidence_ref=f"log_batch:{name}",
+                    reason="log_backend_delivery_failed",
+                )
                 logger.error("Backend '%s' raised during send: %s", name, exc)
+        if delivered:
+            for _ in batch:
+                self._pending.popleft()
 
     # ------------------------------------------------------------------
     # Search / correlation
@@ -440,7 +461,7 @@ class AggregatorHandler(logging.Handler):
                 },
             )
             agg.ingest(lr)
-        except Exception:  # pragma: no cover
+        except Exception:
             self.handleError(record)
 
 
@@ -469,11 +490,11 @@ def reset_log_aggregator() -> None:
 # Backend implementations live in log_backends.py to keep this module focused
 # on the aggregator core. These re-exports preserve the public API so callers
 # can write ``from vetinari.dashboard.log_aggregator import FileBackend``.
-# The noqa comments below suppress E402 (module-level import not at top).
+# These re-exports stay here instead of at module top.
 # The imports MUST be here (not at the top) because log_backends itself imports
 # BackendBase and LogRecord from this module — placing these at the top would
 # create a true circular import failure.
-from vetinari.dashboard.log_backends import (  # noqa: E402 - late import is required after bootstrap setup
+from vetinari.dashboard.log_backends import (
     DatadogBackend,
     FileBackend,
     SSEBackend,

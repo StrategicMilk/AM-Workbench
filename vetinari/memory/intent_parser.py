@@ -18,6 +18,7 @@ from enum import Enum
 
 logger = logging.getLogger(__name__)
 
+
 # -- Stop words excluded from keyword extraction --
 _STOP_WORDS: frozenset[str] = frozenset({
     "a",
@@ -332,7 +333,8 @@ class IntentParser:
             topic=None,
         )
 
-    def _detect_episode_intent(self, lower: str) -> tuple[bool | None, bool]:
+    @staticmethod
+    def _detect_episode_intent(lower: str) -> tuple[bool | None, bool]:
         """Check whether the query asks about past episodes.
 
         Checks failure signals first, then success signals.
@@ -354,7 +356,8 @@ class IntentParser:
                 return True, True
         return None, False
 
-    def _has_timeline_signal(self, lower: str) -> bool:
+    @staticmethod
+    def _has_timeline_signal(lower: str) -> bool:
         """Return True when *lower* contains any timeline keyword.
 
         Args:
@@ -421,7 +424,8 @@ class IntentParser:
 
         return None, None
 
-    def _extract_task_type(self, lower: str) -> str | None:
+    @staticmethod
+    def _extract_task_type(lower: str) -> str | None:
         """Extract a known task-type keyword from an episode recall query.
 
         Args:
@@ -435,7 +439,8 @@ class IntentParser:
             return match.group(1).lower()
         return None
 
-    def _extract_topic(self, lower: str) -> str | None:
+    @staticmethod
+    def _extract_topic(lower: str) -> str | None:
         """Extract the subject phrase from a knowledge-base query.
 
         First tries the compiled regex for structured KB phrases, then

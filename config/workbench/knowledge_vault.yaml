@@ -1,0 +1,27 @@
+vault_root: outputs/workbench/knowledge_vault/
+index_file: INDEX.md
+refinement_journal_path: outputs/workbench/memory_refinement/journal.jsonl
+default_export_scope: shareable
+allowed_export_scopes:
+  shareable: true
+  private: true
+  sensitive: false
+confidence_decay:
+  half_life_days: 30
+  floor: 0.1
+quiet_window:
+  start_hour: 1
+  end_hour: 5
+resource_busy_thresholds:
+  cpu_pct: 80
+  gpu_pct: 85
+wiki_link_style: obsidian-double-bracket
+privacy_substantiation:
+  finding_ids:
+    - FSA-0680
+  known_bad_predicate: "Knowledge-vault exports can include sensitive scope by default."
+  known_good_predicate: "default_export_scope is shareable and allowed_export_scopes.sensitive is false."
+  negative_control_predicate: "A sensitive export scope cannot be selected unless this config explicitly flips it to true."
+  direct_surface_refs:
+    - config/workbench/knowledge_vault.yaml
+    - tests/operator/test_wave3_anchored_mismatch_followup_01_p04.py

@@ -1,21 +1,109 @@
-"""Training script builders for SimPO and DAPO-reward/DPO-loss subprocess execution.
-
-Each function returns a Python source string that is written to disk and
-executed in a subprocess so that heavy ML dependencies (torch, trl, peft,
-transformers) are only loaded in the child process, not in the main server.
-
-Naming honesty (2026-04-25): the "DAPO" path here uses DAPO-derived rewards
-(see ``vetinari/training/dapo_rewards.py``) but the *training loss* is DPO
-via ``trl.DPOTrainer`` with reward-weighted preference pairs. The script-
-builder name ``build_dapo_reward_dpo_script`` reflects this hybrid. A future
-real DAPO implementation (verl- or trl-DAPOTrainer-based) would warrant a
-new function under a different name; the current path is honest about being
-DAPO-reward-ranked DPO training.
-"""
+"""Training script builders for SimPO and DAPO-reward/DPO-loss subprocess execution."""
 
 from __future__ import annotations
 
 import json as _json
+
+from vetinari.security.fail_closed import sanitize_untrusted_text
+from vetinari.training.loss import SIMPO_BETA_DEFAULT, SIMPO_GAMMA_DEFAULT
+
+LORA_R_DEFAULT: int = 16
+LORA_ALPHA_DEFAULT: int = 32
+LORA_DROPOUT_DEFAULT: float = 0.05
+DAPO_BETA_DEFAULT: float = 0.1
+DAPO_LR_DEFAULT: float = 1e-6
+
+_COMMON_DPO_SCRIPT_PREFIX = """import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from peft import LoraConfig, get_peft_model
+from trl import DPOTrainer, DPOConfig
+from datasets import Dataset, load_dataset
+
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_compute_dtype=torch.bfloat16,
+)
+
+model = AutoModelForCausalLM.from_pretrained(
+    {model_literal},
+    revision={revision_literal},
+    local_files_only={local_files_only_literal},
+    quantization_config=bnb_config,
+    device_map="auto",
+)
+tokenizer = AutoTokenizer.from_pretrained(
+    {model_literal},
+    revision={revision_literal},
+    local_files_only={local_files_only_literal},
+)
+tokenizer.pad_token = tokenizer.eos_token
+
+lora_config = LoraConfig(
+    r={lora_r},
+    lora_alpha={lora_alpha},
+    lora_dropout={lora_dropout},
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+    task_type="CAUSAL_LM",
+    use_dora=True,
+)
+model = get_peft_model(model, lora_config)
+
+dataset = load_dataset("json", data_files={dataset_path_literal}, split="train")
+"""
+
+_SIMPO_TRAINER_TEMPLATE = """
+trainer = DPOTrainer(
+    model=model,
+    processing_class=tokenizer,
+    train_dataset=dataset,
+    args=DPOConfig(
+        output_dir={output_dir_literal},
+        loss_type="simpo",
+        beta={beta_literal!r},
+        simpo_gamma={simpo_gamma_literal!r},
+        num_train_epochs={epochs},
+        per_device_train_batch_size=1,
+        learning_rate={lr},
+        logging_steps=10,
+        save_strategy="epoch",
+    ),
+)
+trainer.train()
+model.save_pretrained({adapter_dir_literal})
+"""
+
+_DAPO_REWARD_DPO_TRAINER_TEMPLATE = """
+def _expand_reward_weighted_preferences(source_dataset):
+    expanded_rows = []
+    for row in source_dataset:
+        chosen_reward = float(row.get("chosen_reward", 0.0) or 0.0)
+        rejected_reward = float(row.get("rejected_reward", 0.0) or 0.0)
+        reward_gap = max(0.0, chosen_reward - rejected_reward)
+        repeats = max(1, min(5, 1 + int(round(reward_gap * 4))))
+        for _ in range(repeats):
+            expanded_rows.append(row)
+    return Dataset.from_list(expanded_rows) if expanded_rows else source_dataset
+
+dataset = _expand_reward_weighted_preferences(dataset)
+
+trainer = DPOTrainer(
+    model=model,
+    processing_class=tokenizer,
+    train_dataset=dataset,
+    args=DPOConfig(
+        output_dir={output_dir_literal},
+        beta={beta},
+        num_train_epochs={epochs},
+        per_device_train_batch_size=1,
+        learning_rate={lr},
+        logging_steps=10,
+        save_strategy="epoch",
+    ),
+)
+trainer.train()
+model.save_pretrained({adapter_dir_literal})
+"""
 
 
 def _revision_literal(model_revision: str | None) -> str:
@@ -26,89 +114,66 @@ def _local_files_only_literal(model_revision: str | None) -> str:
     return "False" if model_revision else "True"
 
 
+def _script_literals(model: str, dataset_path: str, output_dir: str, model_revision: str | None) -> dict[str, str]:
+    safe_model = sanitize_untrusted_text(model, max_length=2048)
+    safe_dataset_path = sanitize_untrusted_text(dataset_path, max_length=4096)
+    safe_output_dir = sanitize_untrusted_text(output_dir, max_length=4096)
+    safe_revision = sanitize_untrusted_text(model_revision, max_length=512) if model_revision else None
+    return {
+        "model_literal": _json.dumps(safe_model),
+        "revision_literal": _revision_literal(safe_revision),
+        "local_files_only_literal": _local_files_only_literal(safe_revision),
+        "dataset_path_literal": _json.dumps(safe_dataset_path),
+        "output_dir_literal": _json.dumps(safe_output_dir),
+        "adapter_dir_literal": _json.dumps(safe_output_dir + "/lora_adapter"),
+    }
+
+
 def build_simpo_script(
     model: str,
     dpo_path: str,
     output_dir: str,
     epochs: int = 1,
     model_revision: str | None = None,
+    beta: float = SIMPO_BETA_DEFAULT,
+    simpo_gamma: float = SIMPO_GAMMA_DEFAULT,
+    lora_r: int = LORA_R_DEFAULT,
+    lora_alpha: int = LORA_ALPHA_DEFAULT,
+    lora_dropout: float = LORA_DROPOUT_DEFAULT,
+    lr: float = DAPO_LR_DEFAULT,
 ) -> str:
-    """Return a Python script string for SimPO (reference-free alignment) training.
-
-    The generated script uses trl's DPOTrainer with ``loss_type="simpo"``
-    and 4-bit QLoRA via bitsandbytes. All string parameters are JSON-encoded
-    to prevent injection via model names or paths that contain special characters.
+    """Return a Python script string for SimPO reference-free alignment training.
 
     Args:
-        model: Path or identifier of the base model to fine-tune.
-        dpo_path: Path to the JSONL preference dataset (chosen/rejected pairs).
-        output_dir: Directory for saving the LoRA adapter and training artefacts.
-        epochs: Number of training epochs.
-        model_revision: Optional immutable Hugging Face revision for remote base models.
+        model: Model value consumed by build_simpo_script().
+        dpo_path: Filesystem path read or written by the operation.
+        output_dir: Output dir value consumed by build_simpo_script().
+        epochs: Epochs value consumed by build_simpo_script().
+        model_revision: Model revision value consumed by build_simpo_script().
+        beta: Beta value consumed by build_simpo_script().
+        simpo_gamma: Simpo gamma value consumed by build_simpo_script().
+        lora_r: LoRA rank interpolated into the subprocess script.
+        lora_alpha: LoRA alpha interpolated into the subprocess script.
+        lora_dropout: LoRA dropout interpolated into the subprocess script.
+        lr: Learning rate value reserved for caller parity with DAPO builders.
 
     Returns:
-        Python source code as a string, ready to be written to a ``.py`` file
-        and executed with ``subprocess.run([sys.executable, script_path])``.
+        Value produced for the caller.
     """
-    model_literal = _json.dumps(str(model))
-    revision_literal = _revision_literal(model_revision)
-    local_files_only_literal = _local_files_only_literal(model_revision)
-    return f"""import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from peft import LoraConfig, get_peft_model
-from trl import DPOTrainer, DPOConfig
-from datasets import load_dataset
-
-bnb_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_compute_dtype=torch.bfloat16,
-)
-
-model = AutoModelForCausalLM.from_pretrained(
-    {model_literal},
-    revision={revision_literal},
-    local_files_only={local_files_only_literal},
-    quantization_config=bnb_config,
-    device_map="auto",
-)
-tokenizer = AutoTokenizer.from_pretrained(
-    {model_literal},
-    revision={revision_literal},
-    local_files_only={local_files_only_literal},
-)
-tokenizer.pad_token = tokenizer.eos_token
-
-lora_config = LoraConfig(
-    r=16,
-    lora_alpha=32,
-    lora_dropout=0.05,
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-    task_type="CAUSAL_LM",
-    use_dora=True,
-)
-model = get_peft_model(model, lora_config)
-
-dataset = load_dataset("json", data_files={_json.dumps(str(dpo_path))}, split="train")
-
-trainer = DPOTrainer(
-    model=model,
-    tokenizer=tokenizer,
-    train_dataset=dataset,
-    args=DPOConfig(
-        output_dir={_json.dumps(str(output_dir))},
-        loss_type="simpo",
-        beta=2.0,
-        num_train_epochs={int(epochs)},
-        per_device_train_batch_size=1,
-        learning_rate=5e-6,
-        logging_steps=10,
-        save_strategy="epoch",
-    ),
-)
-trainer.train()
-model.save_pretrained({_json.dumps(str(output_dir) + "/lora_adapter")})
-"""
+    literals = _script_literals(model, dpo_path, output_dir, model_revision)
+    prefix = _COMMON_DPO_SCRIPT_PREFIX.format(
+        **literals,
+        lora_r=int(lora_r),
+        lora_alpha=int(lora_alpha),
+        lora_dropout=float(lora_dropout),
+    )
+    return prefix + _SIMPO_TRAINER_TEMPLATE.format(
+        **literals,
+        beta_literal=float(beta),
+        simpo_gamma_literal=float(simpo_gamma),
+        lr=float(lr),
+        epochs=int(epochs),
+    )
 
 
 def build_dapo_reward_dpo_script(
@@ -117,86 +182,39 @@ def build_dapo_reward_dpo_script(
     output_dir: str,
     epochs: int = 1,
     model_revision: str | None = None,
+    lora_r: int = LORA_R_DEFAULT,
+    lora_alpha: int = LORA_ALPHA_DEFAULT,
+    lora_dropout: float = LORA_DROPOUT_DEFAULT,
+    beta: float = DAPO_BETA_DEFAULT,
+    lr: float = DAPO_LR_DEFAULT,
 ) -> str:
     """Return a Python script string for DAPO-reward-weighted DPO training.
 
-    The generated script trains with ``trl.DPOTrainer`` (DPO loss, low beta=0.1)
-    over preference pairs whose chosen/rejected ranking comes from DAPO rewards
-    (see ``vetinari/training/dapo_rewards.py::compute_dapo_reward``). It is NOT
-    a real DAPO trainer — the loss is DPO, the *ranking signal* is DAPO. All
-    string parameters are JSON-encoded to prevent injection. 4-bit QLoRA via
-    bitsandbytes for memory.
-
-    Renamed 2026-04-25 from ``build_dapo_script`` to make the DAPO-reward / DPO-
-    loss hybrid explicit at the call site (SHARD-01-revised).
-
     Args:
-        model: Path or identifier of the base model to fine-tune.
-        dapo_dataset_path: Path to the JSONL preference dataset produced by
-            the DAPO reward scoring step (chosen/rejected pairs).
-        output_dir: Directory for saving the LoRA adapter and training artefacts.
-        epochs: Number of training epochs.
-        model_revision: Optional immutable Hugging Face revision for remote base models.
+        model: Model value consumed by build_dapo_reward_dpo_script().
+        dapo_dataset_path: Filesystem path read or written by the operation.
+        output_dir: Output dir value consumed by build_dapo_reward_dpo_script().
+        epochs: Epochs value consumed by build_dapo_reward_dpo_script().
+        model_revision: Model revision value consumed by build_dapo_reward_dpo_script().
+        lora_r: LoRA rank interpolated into the subprocess script.
+        lora_alpha: LoRA alpha interpolated into the subprocess script.
+        lora_dropout: LoRA dropout interpolated into the subprocess script.
+        beta: DAPO beta interpolated into the subprocess script.
+        lr: DAPO learning rate interpolated into the subprocess script.
 
     Returns:
-        Python source code as a string, ready to be written to a ``.py`` file
-        and executed with ``subprocess.run([sys.executable, script_path])``.
+        Value produced for the caller.
     """
-    model_literal = _json.dumps(str(model))
-    revision_literal = _revision_literal(model_revision)
-    local_files_only_literal = _local_files_only_literal(model_revision)
-    return f"""import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from peft import LoraConfig, get_peft_model
-from trl import DPOTrainer, DPOConfig
-from datasets import load_dataset
-
-bnb_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_compute_dtype=torch.bfloat16,
-)
-
-model = AutoModelForCausalLM.from_pretrained(
-    {model_literal},
-    revision={revision_literal},
-    local_files_only={local_files_only_literal},
-    quantization_config=bnb_config,
-    device_map="auto",
-)
-tokenizer = AutoTokenizer.from_pretrained(
-    {model_literal},
-    revision={revision_literal},
-    local_files_only={local_files_only_literal},
-)
-tokenizer.pad_token = tokenizer.eos_token
-
-lora_config = LoraConfig(
-    r=16,
-    lora_alpha=32,
-    lora_dropout=0.05,
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-    task_type="CAUSAL_LM",
-    use_dora=True,
-)
-model = get_peft_model(model, lora_config)
-
-dataset = load_dataset("json", data_files={_json.dumps(str(dapo_dataset_path))}, split="train")
-
-trainer = DPOTrainer(
-    model=model,
-    tokenizer=tokenizer,
-    train_dataset=dataset,
-    args=DPOConfig(
-        output_dir={_json.dumps(str(output_dir))},
-        beta=0.1,
-        num_train_epochs={int(epochs)},
-        per_device_train_batch_size=1,
-        learning_rate=1e-6,
-        logging_steps=10,
-        save_strategy="epoch",
-    ),
-)
-trainer.train()
-model.save_pretrained({_json.dumps(str(output_dir) + "/lora_adapter")})
-"""
+    literals = _script_literals(model, dapo_dataset_path, output_dir, model_revision)
+    prefix = _COMMON_DPO_SCRIPT_PREFIX.format(
+        **literals,
+        lora_r=int(lora_r),
+        lora_alpha=int(lora_alpha),
+        lora_dropout=float(lora_dropout),
+    )
+    return prefix + _DAPO_REWARD_DPO_TRAINER_TEMPLATE.format(
+        **literals,
+        beta=float(beta),
+        lr=float(lr),
+        epochs=int(epochs),
+    )

@@ -26,6 +26,7 @@ from vetinari.integrations.issue_tracker import (
 
 logger = logging.getLogger(__name__)
 
+
 # -- Constants ----------------------------------------------------------------
 
 _LINEAR_API_URL = "https://api.linear.app/graphql"

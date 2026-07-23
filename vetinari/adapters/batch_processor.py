@@ -44,19 +44,29 @@ from concurrent.futures import Future
 from dataclasses import dataclass, field
 from typing import Any
 
+from vetinari.adapters.base import InferenceResponse
 from vetinari.adapters.batch_backends import (
     _AnthropicBatchBackend,
     _OpenAIBatchBackend,
 )
+from vetinari.boundary_guards import require_nonempty
 from vetinari.constants import (
     THREAD_JOIN_TIMEOUT,
 )
 
 logger = logging.getLogger(__name__)
 
-_FLUSH_INTERVAL = float(os.environ.get("BATCH_FLUSH_INTERVAL", "60"))
-_MAX_BATCH_SIZE = int(os.environ.get("BATCH_MAX_SIZE", "100"))
-_BATCH_ENABLED = os.environ.get("BATCH_ENABLED", "1").lower() not in ("0", "false", "no")
+
+def _default_flush_interval() -> float:
+    return float(os.environ.get("BATCH_FLUSH_INTERVAL", "60"))
+
+
+def _default_max_batch_size() -> int:
+    return int(os.environ.get("BATCH_MAX_SIZE", "100"))
+
+
+def _default_batch_enabled() -> bool:
+    return os.environ.get("BATCH_ENABLED", "1").lower() not in ("0", "false", "no")
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +90,7 @@ class BatchItem:
         return f"BatchItem(item_id={self.item_id!r}, model={model!r}, provider={self.provider!r})"
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class BatchResult:
     """Result for a single batch item."""
 
@@ -114,13 +124,13 @@ class BatchProcessor:
 
     def __init__(
         self,
-        flush_interval: float = _FLUSH_INTERVAL,
-        max_batch_size: int = _MAX_BATCH_SIZE,
-        enabled: bool = _BATCH_ENABLED,
+        flush_interval: float | None = None,
+        max_batch_size: int | None = None,
+        enabled: bool | None = None,
     ):
-        self.flush_interval = flush_interval
-        self.max_batch_size = max_batch_size
-        self.enabled = enabled
+        self.flush_interval = _default_flush_interval() if flush_interval is None else flush_interval
+        self.max_batch_size = _default_max_batch_size() if max_batch_size is None else max_batch_size
+        self.enabled = _default_batch_enabled() if enabled is None else enabled
 
         self._queue: dict[str, list[BatchItem]] = {}  # provider -> items
         self._lock = threading.Lock()
@@ -181,7 +191,7 @@ class BatchProcessor:
             provider=provider,
             request=request,
             future=future,
-            metadata=metadata or {},  # noqa: VET112 - empty fallback preserves optional request metadata contract
+            metadata=metadata or {},
         )
 
         with self._lock:
@@ -242,12 +252,10 @@ class BatchProcessor:
             for item in items:
                 result = results.get(item.item_id)
                 if result and result.success:
-                    item.future.set_result(result.response)
+                    item.future.set_result(_validated_batch_response(result))
                 else:
                     err = result.error if result else "No result returned"
                     # Return error response rather than exception so callers can handle gracefully
-                    from vetinari.adapters.base import InferenceResponse
-
                     item.future.set_result(
                         InferenceResponse(
                             model_id=item.request.model_id,
@@ -260,7 +268,6 @@ class BatchProcessor:
                     )
         except Exception as exc:
             logger.error("Batch flush failed for %s: %s", provider, exc)
-            from vetinari.adapters.base import InferenceResponse
 
             for item in items:
                 if not item.future.done():
@@ -277,7 +284,8 @@ class BatchProcessor:
 
         return len(items)
 
-    def _execute_sync(self, request: Any, provider: str, future: Future[Any]) -> None:
+    @staticmethod
+    def _execute_sync(request: Any, provider: str, future: Future[Any]) -> None:
         """Execute a single request synchronously and resolve the future."""
         try:
             from vetinari.adapter_manager import get_adapter_manager
@@ -287,8 +295,6 @@ class BatchProcessor:
             if adapter:
                 response = adapter.infer(request)
             else:
-                from vetinari.adapters.base import InferenceResponse
-
                 response = InferenceResponse(
                     model_id=request.model_id,
                     output="",
@@ -299,8 +305,6 @@ class BatchProcessor:
                 )
             future.set_result(response)
         except Exception as exc:
-            from vetinari.adapters.base import InferenceResponse
-
             future.set_result(
                 InferenceResponse(
                     model_id=getattr(request, "model_id", "unknown"),
@@ -358,6 +362,25 @@ class BatchProcessor:
                 "backends_registered": list(self._backends.keys()),
                 "flush_thread_active": self._flush_thread is not None and self._flush_thread.is_alive(),
             }
+
+
+def _cached_response_provenance(response: Any) -> str | None:
+    direct = getattr(response, "provenance", None)
+    if direct:
+        return str(direct)
+    metadata = getattr(response, "metadata", None)
+    if isinstance(metadata, dict):
+        value = metadata.get("provenance") or metadata.get("provenance_ref") or metadata.get("provenance_id")
+        if value:
+            return str(value)
+    return None
+
+
+def _validated_batch_response(result: BatchResult) -> Any:
+    response = result.response
+    if result.cached:
+        require_nonempty(_cached_response_provenance(response), field_name="cache_hit_provenance")
+    return response
 
 
 # ---------------------------------------------------------------------------

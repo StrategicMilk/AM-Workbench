@@ -12,11 +12,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from vetinari.boundary_guards import account_evidence_drop, require_nonempty
 from vetinari.database import get_connection
 from vetinari.memory.interfaces import MemoryEntry
 from vetinari.memory.memory_storage import _cosine_similarity, _unpack_embedding
 
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -55,7 +57,8 @@ def _fts_search(
     conn = get_connection()
     # Build FTS5 query: each word becomes a separate OR term for broad matching.
     # Escape FTS5 special characters first, then join words with spaces (implicit AND).
-    words = [w for w in query.split() if w]
+    checked_query = require_nonempty(query, field_name="query")
+    words = [w for w in checked_query.split() if w]
     if not words:
         return []
     # Use individual word matching (AND semantics): "word1 word2" in FTS5 = AND
@@ -104,9 +107,13 @@ def _fts_search(
                 (safe_words, limit),
             ).fetchall()
         return [(row[0], float(row[1] or 0.0)) for row in rows]
-    except Exception as exc:
-        logger.warning("FTS search failed (%s) — falling back to empty results, memory recall degraded", exc)
-        return []
+    except Exception:
+        account_evidence_drop(
+            logger=logger,
+            evidence_ref="fts_search",
+            reason="memory_search_failure",
+        )
+        raise
 
 
 def _semantic_search(
@@ -130,10 +137,14 @@ def _semantic_search(
 
     conn = get_connection()
     try:
-        q_vec = get_embedder().embed(query)
-    except Exception as exc:
-        logger.warning("Embedding failed during search: %s", exc)
-        return []
+        q_vec = get_embedder().embed(require_nonempty(query, field_name="query"))
+    except Exception:
+        account_evidence_drop(
+            logger=logger,
+            evidence_ref="semantic_search_embed",
+            reason="memory_search_failure",
+        )
+        raise
 
     if scope_filter and scope_filter != "global":
         if agent_type_filter:
@@ -175,8 +186,12 @@ def _semantic_search(
             sim = _cosine_similarity(q_vec, stored_vec)
             scored.append((row[0], sim))
         except Exception:
-            logger.warning("Malformed embedding in memory row %s — skipping during similarity scan", row[0])
-            continue  # Skip malformed embeddings during similarity scan
+            account_evidence_drop(
+                logger=logger,
+                evidence_ref=f"memory_embedding:{row[0]}",
+                reason="memory_search_failure",
+            )
+            raise
     scored.sort(key=lambda x: x[1], reverse=True)
     return scored[:limit]
 
@@ -218,7 +233,7 @@ def _fetch_entries(ids: list[str]) -> list[MemoryEntry]:
     conn = get_connection()
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
-        f"SELECT * FROM memories WHERE id IN ({placeholders}) AND forgotten = 0",  # noqa: S608 - SQL identifiers are constrained while values stay parameterized
+        f"SELECT * FROM memories WHERE id IN ({placeholders}) AND forgotten = 0",
         ids,
     ).fetchall()
     by_id: dict[str, Any] = {row["id"]: row for row in rows}
@@ -306,6 +321,10 @@ class MemorySearch:
         Returns:
             List of sufficiently relevant
             :class:`~vetinari.memory.interfaces.MemoryEntry` objects.
+
+        Raises:
+            Exception: Re-raises embedding failures after evidence-drop
+                accounting.
         """
         from vetinari.embeddings import get_embedder
 
@@ -315,24 +334,33 @@ class MemorySearch:
 
         # Score each result against the query embedding
         try:
-            q_vec = get_embedder().embed(query)
+            q_vec = get_embedder().embed(require_nonempty(query, field_name="query"))
         except Exception:
-            logger.warning("Embedder unavailable for query %r — returning unranked entries", query[:50])
-            return entries[:limit]
+            account_evidence_drop(
+                logger=logger,
+                evidence_ref="relevance_check_embed",
+                reason="memory_search_failure",
+            )
+            raise
 
         conn = get_connection()
         filtered: list[MemoryEntry] = []
         for entry in entries:
             row = conn.execute("SELECT embedding_blob FROM embeddings WHERE memory_id = ?", (entry.id,)).fetchone()
             if row is None:
-                filtered.append(entry)  # no embedding — keep by default
+                logger.debug("CRAG: excluding unembedded memory %s from relevance-filtered results", entry.id)
                 continue
             try:
                 sim = _cosine_similarity(q_vec, _unpack_embedding(row[0]))
                 if sim >= relevance_threshold:
                     filtered.append(entry)
             except Exception:
-                filtered.append(entry)
+                account_evidence_drop(
+                    logger=logger,
+                    evidence_ref=f"crag_embedding:{entry.id}",
+                    reason="memory_search_failure",
+                )
+                raise
 
         if not filtered:
             # Reformulate: strip common stop words and retry once

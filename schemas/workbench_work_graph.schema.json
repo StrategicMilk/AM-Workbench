@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_work_graph.schema.json",
+  "title": "Workbench Work Graph Snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["graph_id", "priority_policy", "nodes", "edges", "components", "priority_scores"],
+  "properties": {
+    "graph_id": { "type": "string", "minLength": 1 },
+    "priority_policy": { "const": "score-components" },
+    "weighted_priority_policy": false,
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "edges": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/edge" }
+    },
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/component" }
+    },
+    "priority_scores": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/priority_score" }
+    }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "kind", "label", "source_id", "provenance_refs", "stale_evidence_refs", "metadata"],
+      "properties": {
+        "node_id": { "type": "string", "minLength": 1 },
+        "kind": {
+          "enum": [
+            "roadmap_item",
+            "automation_asset",
+            "improvement_proposal",
+            "eval_failure",
+            "knowledge_backfeed_item",
+            "run_record"
+          ]
+        },
+        "label": { "type": "string", "minLength": 1 },
+        "source_id": { "type": "string", "minLength": 1 },
+        "provenance_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "stale_evidence_refs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["edge_id", "source_node_id", "target_node_id", "kind", "source_id", "provenance_refs", "metadata"],
+      "properties": {
+        "edge_id": { "type": "string", "minLength": 1 },
+        "source_node_id": { "type": "string", "minLength": 1 },
+        "target_node_id": { "type": "string", "minLength": 1 },
+        "kind": {
+          "enum": [
+            "blocks",
+            "shared-reference",
+            "concept",
+            "produced-by-run",
+            "replayed-by-automation",
+            "evidenced-by-eval"
+          ]
+        },
+        "source_id": { "type": "string", "minLength": 1 },
+        "provenance_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component_id", "node_ids"],
+      "properties": {
+        "component_id": { "type": "string", "minLength": 1 },
+        "node_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "priority_score": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "component_id",
+        "transitive_fanout",
+        "blocked_downstream_count",
+        "stale_evidence_count",
+        "replay_eval_evidence_count"
+      ],
+      "properties": {
+        "node_id": { "type": "string", "minLength": 1 },
+        "component_id": { "type": "string", "minLength": 1 },
+        "transitive_fanout": { "type": "integer", "minimum": 0 },
+        "blocked_downstream_count": { "type": "integer", "minimum": 0 },
+        "stale_evidence_count": { "type": "integer", "minimum": 0 },
+        "replay_eval_evidence_count": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "vetinari-ui-audit",
+  "private": true,
+  "description": "Isolated audit-extras manifest for axe-core, Lighthouse, and Playwright audit lanes. Not part of the main Svelte build.",
+  "scripts": {
+    "audit:axe": "cd .. && node node_modules/@playwright/test/cli.js test tests/e2e/help_a11y.spec.ts --config=playwright.config.js --grep axe_no_violations_term",
+    "install:browsers": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "axe-core": ">=4.8.0",
+    "@axe-core/playwright": ">=4.8.0",
+    "lighthouse": ">=12.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": ">=1.44.0"
+  }
+}

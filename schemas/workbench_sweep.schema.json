@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_sweep.schema.json",
+  "title": "Workbench Sweep Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sweep_id",
+    "project_id",
+    "experiment_id",
+    "status",
+    "scheduled_variant_ids",
+    "trials",
+    "budget",
+    "termination_reason",
+    "baseline_ref",
+    "candidate_ref"
+  ],
+  "properties": {
+    "sweep_id": { "$ref": "#/$defs/nonEmptyString" },
+    "project_id": { "$ref": "#/$defs/nonEmptyString" },
+    "experiment_id": { "$ref": "#/$defs/nonEmptyString" },
+    "status": { "enum": ["pending", "running", "terminated"] },
+    "scheduled_variant_ids": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "trials": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/SweepTrial" }
+    },
+    "budget": {
+      "type": "object",
+      "required": ["max_trials", "max_cost_usd", "max_latency_ms", "spent_cost_usd"],
+      "properties": {
+        "max_trials": { "type": "integer", "minimum": 1 },
+        "max_cost_usd": { "type": "number", "minimum": 0 },
+        "max_latency_ms": { "type": ["number", "null"], "minimum": 0 },
+        "spent_cost_usd": { "type": "number", "minimum": 0 }
+      }
+    },
+    "termination_reason": {
+      "enum": [
+        "not_terminated",
+        "budget_exhausted",
+        "objective_met",
+        "max_trials_reached",
+        "no_candidates",
+        "safety_constraints"
+      ]
+    },
+    "baseline_ref": { "$ref": "#/$defs/nonEmptyString" },
+    "candidate_ref": { "$ref": "#/$defs/nonEmptyString" }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "runMetric": {
+      "type": "object",
+      "required": ["name", "value", "unit"],
+      "properties": {
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "value": { "type": "number" },
+        "unit": { "type": "string" }
+      }
+    },
+    "SweepTrial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trial_id",
+        "variant_id",
+        "run",
+        "eval_result",
+        "cost_usd",
+        "latency_ms",
+        "resource_metrics",
+        "artifact_refs"
+      ],
+      "properties": {
+        "trial_id": { "$ref": "#/$defs/nonEmptyString" },
+        "variant_id": { "$ref": "#/$defs/nonEmptyString" },
+        "run": { "$ref": "#/$defs/trialRun" },
+        "eval_result": { "$ref": "#/$defs/trialEvalResult" },
+        "cost_usd": { "type": "number", "minimum": 0 },
+        "latency_ms": { "type": "number", "minimum": 0 },
+        "resource_metrics": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/runMetric" }
+        },
+        "artifact_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "trialRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "status", "started_at_utc", "completed_at_utc", "evidence_refs"],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/nonEmptyString" },
+        "status": { "enum": ["passed", "failed", "blocked"] },
+        "started_at_utc": { "$ref": "#/$defs/nonEmptyString" },
+        "completed_at_utc": { "$ref": "#/$defs/nonEmptyString" },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "trialEvalResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eval_id", "score", "passed", "evidence_refs"],
+      "properties": {
+        "eval_id": { "$ref": "#/$defs/nonEmptyString" },
+        "score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "passed": { "type": "boolean" },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    }
+  }
+}

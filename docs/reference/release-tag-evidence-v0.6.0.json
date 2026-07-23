@@ -1,0 +1,13 @@
+{
+  "checked_at_utc": "2026-05-21T03:55:43Z",
+  "evidence_command": "git tag --list v0.6.0",
+  "expected_tag": "v0.6.0",
+  "certified_claims_ledger": null,
+  "closure_note": "The v0.6.0 tag is not present in this checkout. The unsupported provisional claims ledger was retracted; this remains a historical, unverified, not-released record until a real tag and independent matching artifact proof exist.",
+  "historical_claims_status": "unverified-retracted",
+  "release_blocker": true,
+  "release_version": "0.6.0",
+  "schema_version": 1,
+  "status": "not-released",
+  "tag_present": false
+}

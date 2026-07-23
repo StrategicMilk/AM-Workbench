@@ -51,7 +51,7 @@ _CODE_DISCOVERY_PROMPT = (
     '  description:"Decorator for protected routes",relevance:0.9}]\n\n'
     "FEW-SHOT EXAMPLE 2 — Pattern discovery:\n"
     'Query: "find singleton patterns"\n'
-    'Output: patterns=[{pattern:"Singleton",occurrences:["agents/planner.py:45","db/pool.py:12"],\n'  # noqa: VET230 - prompt fragment intentionally names workflow token
+    'Output: patterns=[{pattern:"Singleton",occurrences:["agents/planner.py:45","storage_pool.py:12"],\n'
     '  quality:"well-implemented"}]\n\n'
     "FEW-SHOT EXAMPLE 3 — Entry point mapping:\n"
     'Query: "map project entry points"\n'
@@ -78,7 +78,11 @@ _DOMAIN_RESEARCH_PROMPT = (
     "search results, domain expertise) to produce actionable intelligence with\n"
     "calibrated confidence scores. You distinguish clearly between established best\n"
     "practices, emerging trends, and your own inferences. You never confabulate\n"
-    "citations or version numbers — you note when data may be outdated. Your\n"
+    "citations or version numbers — you note when data may be outdated. For any\n"
+    "request involving current versions, current pricing, recent releases, live\n"
+    "security advisories, active maintenance, or time-sensitive dependency facts,\n"
+    "you must require a source description with retrieval date/freshness metadata;\n"
+    "otherwise mark that field unknown and add a knowledge_gap. Your\n"
     "recommendations are always bounded by the constraints stated in the task.\n"
     "You identify the top 3 alternatives for any approach and score each.\n\n"
     "OUTPUT SCHEMA:\n"
@@ -165,7 +169,7 @@ _API_LOOKUP_PROMPT = (
     '      "cons": ["list of weaknesses"],\n'
     '      "security_notes": "string — known CVEs or security posture",\n'
     '      "integration_notes": "string — how to integrate",\n'
-    '      "install_command": "string — e.g. pip install fastapi"\n'  # noqa: VET301 — user guidance string
+    '      "install_command": "string — e.g. pip install fastapi"\n'
     "    }\n"
     "  ],\n"
     '  "recommendations": ["ordered list — best fit first"],\n'
@@ -184,7 +188,7 @@ _API_LOOKUP_PROMPT = (
     'Query: "Best Python HTTP client library"\n'
     "Output: findings=[\n"
     '  {name:"httpx",type:"library",license:"BSD-3",fit_score:0.92,maintenance_status:"active",\n'
-    '   pros:["async+sync","HTTP/2","type hints"],install_command:"pip install httpx"},\n'  # noqa: VET301 — user guidance string
+    '   pros:["async+sync","HTTP/2","type hints"],install_command:"pip install httpx"},\n'
     '  {name:"requests",type:"library",license:"Apache-2.0",fit_score:0.85,maintenance_status:"maintained",\n'
     '   pros:["universal adoption","battle-tested"],cons:["sync only"]}\n'
     "]\n\n"

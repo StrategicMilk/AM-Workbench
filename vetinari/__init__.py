@@ -8,23 +8,29 @@ import logging as _logging
 import os as _os
 import pathlib as _pathlib
 import shlex as _shlex
-import sys as _sys
 from typing import TYPE_CHECKING
-
-logger = _logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from types import ModuleType
 
+    from vetinari import public_api as public_api
+
+    adapters: ModuleType
     cli: ModuleType
     code_sandbox: ModuleType
     kaizen: ModuleType
     memory: ModuleType
     model_discovery: ModuleType
+    orchestration: ModuleType
+    public_api: ModuleType
     token_optimizer: ModuleType
     tool_interface: ModuleType
     training: ModuleType
     utils: ModuleType
+
+
+def _logger() -> _logging.Logger:
+    return _logging.getLogger(__name__)
 
 
 def _parse_env_value(value: str) -> str:
@@ -33,6 +39,7 @@ def _parse_env_value(value: str) -> str:
     if not stripped:
         return ""
     if stripped[0] in {"'", '"'}:
+        logger = _logger()
         try:
             parsed = _shlex.split(stripped, comments=False, posix=True)
         except ValueError:
@@ -64,11 +71,11 @@ def _load_env_file() -> None:
                     # Don't overwrite values already in the environment
                     if key and key not in _os.environ:
                         _os.environ[key] = value
-            except (OSError, UnicodeDecodeError):  # noqa: VET022 - best-effort optional path must not fail the primary flow
+            except (OSError, UnicodeDecodeError):
                 # .env file exists but is unreadable (permission error, encoding issue,
                 # etc.) — skip it silently so that startup is never blocked by env loading.
                 # Logging is not used here because this runs before logging is configured.
-                logger.warning("Unable to load environment file %s", env_path, exc_info=True)
+                _logger().warning("Unable to load environment file %s", env_path, exc_info=True)
             return  # Stop after first .env found
 
 
@@ -77,39 +84,17 @@ def bootstrap_environment() -> None:
     _load_env_file()
 
 
-def _patch_litestar_logging_compat() -> None:
-    """Patch Litestar's Python 3.12 default logging listener to a real class object."""
-    if _sys.version_info < (3, 12):
-        return
-    try:
-        from litestar.logging.config import default_handlers
-        from litestar.logging.standard import LoggingQueueListener
-    except ImportError:
-        logger.info("Litestar is unavailable; skipping logging compatibility patch", exc_info=True)
-        return
-    except Exception:
-        logger.warning("Unable to apply Litestar logging compatibility patch", exc_info=True)
-        return
-
-    queue_listener = default_handlers.get("queue_listener")
-    if isinstance(queue_listener, dict) and queue_listener.get("listener") == (
-        "litestar.logging.standard.LoggingQueueListener"
-    ):
-        queue_listener["listener"] = LoggingQueueListener
-
-
-_patch_litestar_logging_compat()
-
-
 __all__ = [
+    "adapters",
     "bootstrap_environment",
-    # Core
     "cli",
     "code_sandbox",
     "kaizen",
     "memory",
     "model_discovery",
     "models",
+    "orchestration",
+    "public_api",
     "token_optimizer",
     "tool_interface",
     "training",

@@ -24,6 +24,7 @@ from vetinari.types import MemoryType
 
 logger = logging.getLogger(__name__)
 
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 # Similarity thresholds for each compaction stage
@@ -43,6 +44,11 @@ _COMPACTION_LEVELS: set[MemoryType] = {
     MemoryType.PATTERN,
     MemoryType.PRINCIPLE,
     MemoryType.RULE,
+}
+_LEVEL_RANK: dict[MemoryType, int] = {
+    MemoryType.PATTERN: 1,
+    MemoryType.PRINCIPLE: 2,
+    MemoryType.RULE: 3,
 }
 
 
@@ -132,6 +138,7 @@ class KnowledgeCompactor:
                 summary=f"Pattern derived from {len(cluster)} similar episodes",
                 provenance="knowledge_compactor",
                 supersedes_id=representative.id,
+                source_entry_ids=[entry.id for entry in cluster],
             )
             patterns.append(entry)
             logger.debug(
@@ -178,6 +185,7 @@ class KnowledgeCompactor:
                 summary=f"Principle synthesized from {len(cluster)} patterns",
                 provenance="knowledge_compactor",
                 supersedes_id=representative.id,
+                source_entry_ids=_lineage_ids(cluster),
             )
             principles.append(entry)
             logger.debug(
@@ -222,6 +230,7 @@ class KnowledgeCompactor:
                 summary=f"Rule codified from principle {principle.id!r}",
                 provenance="knowledge_compactor",
                 supersedes_id=principle.id,
+                source_entry_ids=_lineage_ids([principle]),
             )
             rules.append(entry)
             logger.debug(
@@ -255,48 +264,43 @@ class KnowledgeCompactor:
             objects with category ``"contradiction"`` and severity
             ``"warning"``.
         """
-        # Partition by level: higher = PATTERN/PRINCIPLE/RULE, lower = everything else
-        higher: list[MemoryEntry] = [e for e in entries if e.entry_type in _COMPACTION_LEVELS]
-        lower: list[MemoryEntry] = [e for e in entries if e.entry_type not in _COMPACTION_LEVELS]
-
         findings: list[LintFinding] = []
 
-        for high_entry in higher:
+        for high_entry, low_entry in _cross_level_pairs(entries):
             high_content = (high_entry.content or "").lower().strip()
             if not high_content:
                 continue
 
-            for low_entry in lower:
-                low_content = (low_entry.content or "").lower().strip()
-                if not low_content:
-                    continue
+            low_content = (low_entry.content or "").lower().strip()
+            if not low_content:
+                continue
 
-                ratio = difflib.SequenceMatcher(None, high_content, low_content).ratio()
+            ratio = difflib.SequenceMatcher(None, high_content, low_content).ratio()
 
-                if ratio > _CROSS_LEVEL_CONTRADICTION and high_content != low_content:
-                    finding_id = f"lint_{uuid.uuid4().hex[:8]}"
-                    findings.append(
-                        LintFinding(
-                            finding_id=finding_id,
-                            category="contradiction",
-                            description=(
-                                f"Higher-level entry {high_entry.id!r} "
-                                f"({high_entry.entry_type.value}) "
-                                f"and episode {low_entry.id!r} "
-                                f"({low_entry.entry_type.value}) "
-                                f"share {ratio:.0%} content similarity but differ — "
-                                "possible cross-level contradiction"
-                            ),
-                            severity="warning",
-                            entry_ids=(high_entry.id, low_entry.id),
-                        )
+            if ratio > _CROSS_LEVEL_CONTRADICTION and high_content != low_content:
+                finding_id = f"lint_{uuid.uuid4().hex[:8]}"
+                findings.append(
+                    LintFinding(
+                        finding_id=finding_id,
+                        category="contradiction",
+                        description=(
+                            f"Higher-level entry {high_entry.id!r} "
+                            f"({high_entry.entry_type.value}) "
+                            f"and lower-level entry {low_entry.id!r} "
+                            f"({low_entry.entry_type.value}) "
+                            f"share {ratio:.0%} content similarity but differ - "
+                            "possible cross-level contradiction"
+                        ),
+                        severity="warning",
+                        entry_ids=(high_entry.id, low_entry.id),
                     )
-                    logger.debug(
-                        "Cross-level contradiction: %r vs %r similarity=%.2f",
-                        high_entry.id,
-                        low_entry.id,
-                        ratio,
-                    )
+                )
+                logger.debug(
+                    "Cross-level contradiction: %r vs %r similarity=%.2f",
+                    high_entry.id,
+                    low_entry.id,
+                    ratio,
+                )
 
         return findings
 
@@ -401,6 +405,33 @@ def _cluster_entries(
         clusters.append(cluster)
 
     return clusters
+
+
+def _entry_rank(entry: MemoryEntry) -> int:
+    return _LEVEL_RANK.get(entry.entry_type, 0)
+
+
+def _cross_level_pairs(entries: list[MemoryEntry]) -> list[tuple[MemoryEntry, MemoryEntry]]:
+    pairs: list[tuple[MemoryEntry, MemoryEntry]] = []
+    for index, left in enumerate(entries):
+        for right in entries[index + 1 :]:
+            left_rank = _entry_rank(left)
+            right_rank = _entry_rank(right)
+            if left_rank == right_rank:
+                continue
+            pairs.append((left, right) if left_rank > right_rank else (right, left))
+    return pairs
+
+
+def _lineage_ids(entries: list[MemoryEntry]) -> list[str]:
+    lineage: list[str] = []
+    for entry in entries:
+        if entry.id and entry.id not in lineage:
+            lineage.append(entry.id)
+        for source_id in entry.source_entry_ids:
+            if source_id not in lineage:
+                lineage.append(source_id)
+    return lineage
 
 
 def run_compaction_step() -> CompactionReport:

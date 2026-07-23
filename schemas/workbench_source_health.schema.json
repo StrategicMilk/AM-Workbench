@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_source_health.schema.json",
+  "title": "Workbench RAG Source Health Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_id",
+    "project_id",
+    "passed",
+    "degraded",
+    "findings",
+    "eval_refs",
+    "annotation_refs",
+    "source_card_refs",
+    "data_revision_refs",
+    "model_routing_hints",
+    "user_trust_labels"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "report_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "passed": {
+      "type": "boolean"
+    },
+    "degraded": {
+      "type": "boolean"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue_kind", "severity", "message", "evidence_refs"],
+        "properties": {
+          "issue_kind": {
+            "enum": [
+              "stale_source",
+              "parser_failure",
+              "citation_mismatch",
+              "chunk_collision",
+              "duplicate_chunk",
+              "embedding_drift",
+              "retrieval_latency",
+              "missing_source",
+              "answer_source_disagreement"
+            ]
+          },
+          "severity": {
+            "enum": ["info", "warning", "error", "critical"]
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_refs": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "eval_refs": {
+      "$ref": "#/$defs/non_empty_string_array"
+    },
+    "annotation_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "source_card_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "data_revision_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "model_routing_hints": {
+      "$ref": "#/$defs/non_empty_string_array"
+    },
+    "user_trust_labels": {
+      "$ref": "#/$defs/non_empty_string_array"
+    }
+  },
+  "$defs": {
+    "non_empty_string_array": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

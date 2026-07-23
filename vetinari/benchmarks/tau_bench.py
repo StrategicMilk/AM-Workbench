@@ -24,8 +24,11 @@ from vetinari.benchmarks.runner import (
     BenchmarkSuiteAdapter,
     BenchmarkTier,
 )
+from vetinari.boundary_guards import require_nonempty
+from vetinari.context import count_tokens
 
 logger = logging.getLogger(__name__)
+
 
 # -- Sample Tau-bench-style cases --
 
@@ -219,7 +222,7 @@ class TauBenchAdapter(BenchmarkSuiteAdapter):
         Returns:
             The BenchmarkResult result.
         """
-        start = time.time()
+        start = time.monotonic()
 
         error: str | None = None
         try:
@@ -234,7 +237,7 @@ class TauBenchAdapter(BenchmarkSuiteAdapter):
                 "benchmark_mode": "unavailable",
             }
 
-        latency = (time.time() - start) * 1000
+        latency = (time.monotonic() - start) * 1000
 
         return BenchmarkResult(
             case_id=case.case_id,
@@ -243,7 +246,7 @@ class TauBenchAdapter(BenchmarkSuiteAdapter):
             passed=False,
             score=0.0,
             latency_ms=round(latency, 2),
-            tokens_consumed=len(case.input_data.get("user_instruction", "")) * 3,
+            tokens_consumed=count_tokens(str(case.input_data.get("user_instruction", ""))),
             output=result_data,
             error=error,
         )
@@ -258,9 +261,14 @@ class TauBenchAdapter(BenchmarkSuiteAdapter):
           - 0.2 weight: no extraneous/harmful actions
 
         Returns:
-            The computed value.
+            float value produced by evaluate().
+
+        Raises:
+            TypeError: If a typed output field cannot be scored safely.
         """
         if not result.output:
+            return 0.0
+        if result.output.get("benchmark_mode") == "unavailable" or result.error:
             return 0.0
 
         expected = None
@@ -269,8 +277,9 @@ class TauBenchAdapter(BenchmarkSuiteAdapter):
                 expected = item
                 break
 
+        require_nonempty(result.case_id, field_name="case_id")
         if expected is None:
-            return 0.3
+            return 0.0
 
         score = 0.0
 
@@ -282,14 +291,22 @@ class TauBenchAdapter(BenchmarkSuiteAdapter):
             action_score = action_overlap / len(expected_actions)
             score += 0.4 * action_score
 
-        # Output field accuracy (0.4)
         expected_out = expected["expected_output"]
         actual_out = result.output.get("output", {})
+        if not isinstance(actual_out, dict):
+            return 0.0
+
+        # Output field accuracy (0.4)
         if expected_out:
             matching_fields = 0
             for key, expected_val in expected_out.items():
+                field = require_nonempty(str(key), field_name="field")
                 actual_val = actual_out.get(key)
                 if actual_val is not None:
+                    if isinstance(actual_val, bool):
+                        raise TypeError(
+                            f"tau_bench: unsupported output type {type(actual_val).__name__!r} for field {field!r}"
+                        )
                     if isinstance(expected_val, (int, float)):
                         if abs(float(actual_val) - float(expected_val)) < 0.02:
                             matching_fields += 1
@@ -314,12 +331,4 @@ class TauBenchAdapter(BenchmarkSuiteAdapter):
         return {
             "actions_taken": result.get("tools_called", []),
             "output": result.get("final_output", {}),
-        }
-
-    def _mock_run(self, case: BenchmarkCase) -> dict[str, Any]:
-        """Compatibility helper retained for tests; not used by run_case."""
-        expected = case.expected or {}
-        return {
-            "actions_taken": expected.get("expected_actions", []),
-            "output": expected.get("expected_output", {}),
         }

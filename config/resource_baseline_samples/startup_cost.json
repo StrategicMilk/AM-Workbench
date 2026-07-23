@@ -1,0 +1,33 @@
+{
+  "workload": "startup_cost",
+  "_consumer": "config.resource_baseline_samples consumed by scripts/check_vetinari_rules.py resource-baseline validation",
+  "recorded_at": "2026-05-08T00:00:00Z",
+  "machine_profile": "windows-local-dev-ci-safe",
+  "samples": [
+    {
+      "duration_ms": 650,
+      "max_rss_mb": 372,
+      "cpu_percent": 58
+    },
+    {
+      "duration_ms": 800,
+      "max_rss_mb": 381,
+      "cpu_percent": 63
+    },
+    {
+      "duration_ms": 900,
+      "max_rss_mb": 389,
+      "cpu_percent": 67
+    },
+    {
+      "duration_ms": 1200,
+      "max_rss_mb": 397,
+      "cpu_percent": 61
+    },
+    {
+      "duration_ms": 1600,
+      "max_rss_mb": 405,
+      "cpu_percent": 72
+    }
+  ]
+}

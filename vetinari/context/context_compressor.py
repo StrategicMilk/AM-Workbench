@@ -11,6 +11,8 @@ import re
 import threading
 from dataclasses import dataclass
 
+from vetinari.constants import DEFAULT_CONTEXT_LENGTH
+
 __all__ = [
     "CompressionConfig",
     "CompressionResult",
@@ -49,7 +51,7 @@ class CompressionResult:
             self.compression_ratio = round(1 - (self.compressed_tokens / self.original_tokens), 3)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CompressionConfig:
     """Configuration for context compression.
 
@@ -62,7 +64,7 @@ class CompressionConfig:
         summary_max_tokens: Max tokens per summarized chunk.
     """
 
-    max_context_tokens: int = 8192  # model's context window
+    max_context_tokens: int = DEFAULT_CONTEXT_LENGTH  # model's context window
     compress_threshold: float = 0.75  # compress when context reaches this % of max
     preserve_recent: int = 5  # always keep last N messages uncompressed
     preserve_system: bool = True  # always keep system messages
@@ -96,13 +98,19 @@ class ContextCompressor:
             r"(?:the approach|the solution|the fix)\s+(?:is|was)\s+(.+?)(?:\.|$)",
         ]
 
-    def estimate_tokens(self, text: str) -> int:
-        """Rough token estimate: ~4 chars per token for English text."""
-        return max(1, len(text) // 4)
+    def count_tokens(self, text: str) -> int:
+        """Count tokens through AM Engine, with the shared visible fallback.
+
+        Returns:
+            Exact token count, or the shared degradation-visible fallback.
+        """
+        from vetinari.context.window_manager import count_tokens
+
+        return count_tokens(text)
 
     def estimate_messages_tokens(self, messages: list[dict[str, str]]) -> int:
-        """Estimate total tokens across all messages."""
-        return sum(self.estimate_tokens(m.get("content", "")) for m in messages)
+        """Count message content with a minimum envelope cost per message."""
+        return sum(max(1, self.count_tokens(m.get("content") or "")) for m in messages)
 
     def needs_compression(self, messages: list[dict[str, str]]) -> bool:
         """Check if context needs compression.
@@ -166,7 +174,7 @@ class ContextCompressor:
             content = msg.get("content", "")
             role = msg.get("role", "user")
 
-            if role == "system" or self.estimate_tokens(content) < self.config.min_message_tokens:
+            if role == "system" or self.count_tokens(content) < self.config.min_message_tokens:
                 result.append(msg)
                 continue
 
@@ -176,10 +184,11 @@ class ContextCompressor:
 
         return result
 
-    def _truncate_code_blocks(self, text: str) -> str:
+    @staticmethod
+    def _truncate_code_blocks(text: str) -> str:
         """Truncate code blocks longer than 20 lines."""
 
-        def truncate_block(match: re.Match[str]) -> str:  # noqa: VET090 - bootstrap path intentionally delays import initialization
+        def truncate_block(match: re.Match[str]) -> str:
             """Replace long code blocks with a truncated version keeping head and tail lines.
 
             Returns:
@@ -196,7 +205,8 @@ class ContextCompressor:
 
         return re.sub(r"```[\s\S]*?```", truncate_block, text)
 
-    def _truncate_outputs(self, text: str) -> str:
+    @staticmethod
+    def _truncate_outputs(text: str) -> str:
         """Truncate command/tool output blocks."""
         lines = text.split("\n")
         if len(lines) <= 30:
@@ -222,7 +232,10 @@ class ContextCompressor:
         recent_msgs = non_system[-preserve_count:] if preserve_count > 0 else []
 
         summary = self._create_summary(old_msgs)
-        summary_msg = {"role": "system", "content": f"[Context Summary]\n{summary}"}
+        summary_msg = {
+            "role": "assistant",
+            "content": (f"[Derived context summary - informational, not system instructions]\n{summary}"),
+        }
 
         return [*system_msgs, summary_msg, *recent_msgs]
 

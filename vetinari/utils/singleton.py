@@ -1,74 +1,104 @@
-"""Thread-safe singleton utilities for the Vetinari codebase.
-
-Provides both a decorator (``thread_safe_singleton``) and a metaclass
-(``SingletonMeta``, re-exported from ``vetinari.utils``) for creating
-singletons with double-checked locking.  Prefer the decorator for
-module-level factory functions; use the metaclass for class-level
-singletons that need ``reset_instance()`` in tests.
-"""
+"""Singleton helper utilities."""
 
 from __future__ import annotations
 
-import functools
 import threading
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 T = TypeVar("T")
 
-__all__ = ["thread_safe_singleton"]
 
-# ── Sentinel for uninitialised state ────────────────────────────────────────
-_UNSET: object = object()
+class ThreadSafeSingleton:
+    """Thread-safe singleton base class."""
 
+    _instance: object | None = None
+    _lock = threading.Lock()
 
-def thread_safe_singleton(func: Any) -> Any:
-    """Decorator that turns a factory function into a thread-safe singleton.
-
-    Wraps *func* with double-checked locking so the first call creates and
-    caches the instance, and all subsequent calls return the cached object.
-
-    The wrapper exposes a ``reset()`` method that clears the cached instance
-    (useful for tests).
-
-    Example::
-
-        @thread_safe_singleton
-        def get_database():
-            return Database(url="sqlite:///vetinari.db")
-
-        db1 = get_database()
-        db2 = get_database()
-        assert db1 is db2
-
-        get_database.reset()  # Clear for testing
-
-    Args:
-        func: A callable (typically a factory function) whose return value
-            should be cached as a singleton.
-
-    Returns:
-        A wrapper with the same signature that returns the cached instance.
-    """
-    lock = threading.Lock()
-    instance: list[Any] = [_UNSET]  # Mutable container for nonlocal mutation
-
-    @functools.wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        """Return the cached singleton instance, creating it on first call.
+    @classmethod
+    def get_instance(cls: type[T]) -> T:
+        """Return the singleton instance for this class.
 
         Returns:
-            The singleton instance created by the wrapped factory function.
+            The singleton instance.
         """
-        if instance[0] is _UNSET:
+        typed_cls = cast(Any, cls)
+        instance = typed_cls._instance
+        if instance is None:
+            lock = cast(threading.Lock, typed_cls._lock)
             with lock:
-                if instance[0] is _UNSET:
-                    instance[0] = func(*args, **kwargs)
-        return instance[0]
+                instance = typed_cls._instance
+                if instance is None:
+                    instance = cls()
+                    typed_cls._instance = instance
+        return cast(T, instance)
 
-    def reset() -> None:
-        """Clear the cached singleton instance (for tests)."""
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the singleton instance."""
+        with cls._lock:
+            cls._instance = None
+
+
+def parameterized_singleton(cls: type[T]) -> type[T]:
+    """Decorate a class so identical constructor args share one instance.
+
+    Args:
+        cls: Class to wrap.
+
+    Returns:
+        Wrapped singleton class.
+    """
+    instances: dict[tuple[tuple[Any, ...], tuple[tuple[str, Any], ...]], T] = {}
+    first_key: tuple[tuple[Any, ...], tuple[tuple[str, Any], ...]] | None = None
+    lock = threading.RLock()
+
+    def __new__(inner_cls: type[T], *args: Any, **kwargs: Any) -> T:
+        nonlocal first_key
+        key = (args, tuple(sorted(kwargs.items())))
         with lock:
-            instance[0] = _UNSET
+            if first_key is not None and key != first_key:
+                raise ValueError("singleton constructor arguments changed")
+            first_key = key
+            if key not in instances:
+                instances[key] = _allocate_parameterized_singleton(inner_cls)
+            return instances[key]
 
-    wrapper.reset = reset  # type: ignore[attr-defined]
-    return wrapper
+    def reset_all(inner_cls: type[T]) -> None:
+        """Clear singleton instances."""
+        nonlocal first_key
+        with lock:
+            instances.clear()
+            first_key = None
+
+    return cast(
+        type[T],
+        type(
+            cls.__name__,
+            (cls,),
+            {
+                "__new__": __new__,
+                "reset_all": classmethod(reset_all),
+                "__doc__": "Parameterized singleton wrapper.",
+            },
+        ),
+    )
+
+
+def _allocate_parameterized_singleton(inner_cls: type[T]) -> T:
+    """Allocate a singleton instance while the caller holds the singleton lock."""
+    return cast(T, object.__new__(inner_cls))
+
+
+def thread_safe_singleton(cls: type[T]) -> type[T]:
+    """Decorate a class as a thread-safe singleton.
+
+    Args:
+        cls: Class to wrap.
+
+    Returns:
+        Wrapped singleton class.
+    """
+    return parameterized_singleton(cls)
+
+
+__all__ = ["ThreadSafeSingleton", "parameterized_singleton", "thread_safe_singleton"]

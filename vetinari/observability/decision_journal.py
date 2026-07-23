@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any
 
 from vetinari.constants import get_user_dir
+from vetinari.security.fail_closed import sanitize_untrusted_text
+from vetinari.security.redaction import redact_text, redact_value
 from vetinari.types import ConfidenceLevel, DecisionType
 
 logger = logging.getLogger(__name__)
@@ -146,6 +148,9 @@ class DecisionJournal:
         Returns:
             The unique decision_id for this entry.
         """
+        description = sanitize_untrusted_text(description, max_length=4_000)
+        action_taken = sanitize_untrusted_text(action_taken or "none", max_length=1_000)
+        confidence_score = float(confidence_score)
         decision_id = f"dec_{uuid.uuid4().hex[:12]}"
         now = datetime.now(timezone.utc).isoformat()
 
@@ -161,12 +166,12 @@ class DecisionJournal:
                     (
                         decision_id,
                         decision_type.value,
-                        description,
+                        redact_text(description),
                         confidence_score,
                         confidence_level.value,
-                        json.dumps(confidence_factors or {}),  # noqa: VET112 — param is dict | None
-                        action_taken,
-                        json.dumps(context or {}),  # noqa: VET112 — param is dict | None
+                        json.dumps(redact_value(confidence_factors or {})),
+                        redact_text(action_taken),
+                        json.dumps(redact_value(context or {})),
                         "",
                         now,
                     ),
@@ -195,12 +200,14 @@ class DecisionJournal:
         Returns:
             True if updated, False if decision_id not found.
         """
+        decision_id = sanitize_untrusted_text(decision_id, max_length=64)
+        outcome = sanitize_untrusted_text(outcome, max_length=4_000)
         with self._lock:
             conn = self._get_connection()
             try:
                 cursor = conn.execute(
                     "UPDATE decisions SET outcome = ? WHERE decision_id = ?",
-                    (outcome, decision_id),
+                    (redact_text(outcome), decision_id),
                 )
                 conn.commit()
                 updated = cursor.rowcount > 0

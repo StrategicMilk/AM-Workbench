@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_command_safety.schema.json",
+  "title": "Workbench Command Safety",
+  "type": "object",
+  "required": ["schema_version", "profiles"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "profiles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "surfaces", "safe_prefixes", "require_tool_pin"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "surfaces": { "type": "array", "minItems": 1, "items": { "enum": ["shell", "terminal", "mcp_tool", "connector", "automation", "package_manager"] } },
+          "safe_prefixes": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "approval_prefixes": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "blocked_patterns": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "allowed_cwd_roots": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "require_tool_pin": { "type": "boolean" },
+          "allow_without_human_approval": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "decision": {
+      "type": "object",
+      "required": ["decision_id", "schema_version", "verdict", "allowed", "reasons", "receipt_payload"],
+      "properties": {
+        "decision_id": { "type": "string", "minLength": 1 },
+        "schema_version": { "const": "1.0" },
+        "project_id": { "type": "string" },
+        "run_id": { "type": "string" },
+        "session_id": { "type": "string" },
+        "surface_id": { "type": "string" },
+        "surface": { "type": "string" },
+        "profile_id": { "type": "string" },
+        "command_fingerprint": { "type": "string" },
+        "normalized_command": { "type": "string" },
+        "verdict": { "enum": ["allow", "require_human_approval", "block", "degraded_missing_policy"] },
+        "allowed": { "type": "boolean" },
+        "human_approval_required": { "type": "boolean" },
+        "reasons": { "type": "array", "items": { "type": "string" } },
+        "classifier": { "type": "object" },
+        "approval_chain": { "type": "object" },
+        "tool_surface": { "type": "object" },
+        "cwd_state": { "type": "object" },
+        "receipt_ref": { "type": "string" },
+        "receipt_payload": { "type": "object" },
+        "decided_at_utc": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

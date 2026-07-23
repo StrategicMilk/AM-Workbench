@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_automation.schema.json",
+  "title": "Workbench Automation Definition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "automation_id",
+    "name",
+    "trigger",
+    "condition",
+    "action",
+    "approval",
+    "rollback",
+    "budget",
+    "quiet_hours",
+    "rate_limit",
+    "resource_lease",
+    "failure_policy"
+  ],
+  "properties": {
+    "automation_id": {"type": "string", "minLength": 1},
+    "name": {"type": "string", "minLength": 1},
+    "enabled": {"type": "boolean", "default": true},
+    "trigger": {
+      "type": "string",
+      "enum": [
+        "file_change",
+        "source_staleness",
+        "new_trace",
+        "failed_eval",
+        "new_model",
+        "dataset_drift",
+        "benchmark_change",
+        "cost_threshold",
+        "annotation_queue",
+        "training_completion"
+      ]
+    },
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "required_context"],
+      "properties": {
+        "description": {"type": "string", "minLength": 1},
+        "required_context": {"type": "object"}
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action_type", "target_ref", "high_impact"],
+      "properties": {
+        "action_type": {"type": "string", "minLength": 1},
+        "target_ref": {"type": "string", "minLength": 1},
+        "high_impact": {"type": "boolean"},
+        "self_promote": {"type": "boolean", "default": false},
+        "parameters": {"type": "object"}
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "approver_role"],
+      "properties": {
+        "required": {"type": "boolean"},
+        "approver_role": {"type": "string"},
+        "evidence_ref": {"type": "string", "default": ""}
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "target_ref"],
+      "properties": {
+        "strategy": {"type": "string", "minLength": 1},
+        "target_ref": {"type": "string", "minLength": 1}
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_cost_usd", "max_runtime_minutes"],
+      "properties": {
+        "max_cost_usd": {"type": "number", "exclusiveMinimum": 0},
+        "max_runtime_minutes": {"type": "integer", "minimum": 1}
+      }
+    },
+    "quiet_hours": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timezone", "start_hour", "end_hour"],
+      "properties": {
+        "timezone": {"type": "string", "minLength": 1},
+        "start_hour": {"type": "integer", "minimum": 0, "maximum": 23},
+        "end_hour": {"type": "integer", "minimum": 0, "maximum": 23}
+      }
+    },
+    "rate_limit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_runs", "window_minutes"],
+      "properties": {
+        "max_runs": {"type": "integer", "minimum": 1},
+        "window_minutes": {"type": "integer", "minimum": 1}
+      }
+    },
+    "resource_lease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lane", "resource_ref", "required"],
+      "properties": {
+        "lane": {"type": "string", "minLength": 1},
+        "resource_ref": {"type": "string", "minLength": 1},
+        "required": {"type": "boolean"}
+      }
+    },
+    "failure_policy": {
+      "type": "string",
+      "enum": ["propose_only", "pause_automation", "escalate"]
+    }
+  }
+}

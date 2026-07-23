@@ -1,10 +1,15 @@
 param(
     [string]$Distro = "Ubuntu",
+    [ValidateRange(1, 65535)]
     [int]$Port = 8000
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($Distro)) {
+    throw "Distro must be a non-empty WSL distribution name."
+}
 
 function Quote-ForBash {
     param([string]$Value)
@@ -41,3 +46,6 @@ $bashScript = $bashScript.Replace("PIDFILE_PLACEHOLDER", $pidFilePath).Replace("
 
 $quotedBashScript = Quote-ForBash -Value $bashScript
 & wsl -d $Distro bash -lc $quotedBashScript | Write-Host
+if ($LASTEXITCODE -ne 0) {
+    throw "WSL bash script failed with exit code $LASTEXITCODE while stopping vLLM on port $Port."
+}

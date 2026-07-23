@@ -19,14 +19,16 @@ from typing import Any
 from vetinari.constants import MCP_PROCESS_TIMEOUT
 from vetinari.exceptions import MCPError
 from vetinari.mcp.config import build_mcp_subprocess_env, validate_mcp_launch_command
+from vetinari.mcp.protocol import DEFAULT_PROTOCOL_VERSION, is_supported_protocol_version
 
 logger = logging.getLogger(__name__)
+
 
 # JSON-RPC protocol version used for all requests.
 _JSONRPC_VERSION = "2.0"
 
-# MCP protocol version this client targets.
-_MCP_PROTOCOL_VERSION = "2024-11-05"
+# Latest MCP protocol version this client targets during initialization.
+_MCP_PROTOCOL_VERSION = DEFAULT_PROTOCOL_VERSION
 
 # Seconds to wait for the MCP server to respond before raising a timeout error.
 _READLINE_TIMEOUT = 30.0
@@ -79,7 +81,7 @@ class MCPClient:
             raise MCPError(f"Unsafe MCP server command: {exc}") from exc
 
         try:
-            self._process = subprocess.Popen(  # noqa: S603 - launch command is validated before execution.
+            self._process = subprocess.Popen(
                 self._command,
                 stdin=PIPE,
                 stdout=PIPE,
@@ -191,28 +193,10 @@ class MCPClient:
                 ID does not match the request ID.
         """
         process = self._require_started()
-        request_id = self._next_id
-        self._next_id += 1
-
-        request: dict[str, Any] = {
-            "jsonrpc": _JSONRPC_VERSION,
-            "id": request_id,
-            "method": method,
-        }
-        if params is not None:
-            request["params"] = params
-
-        raw_request = json.dumps(request) + "\n"
+        request_id, request = self._build_request(method, params)
         logger.debug("MCP -> %s (id=%s)", method, request_id)
 
-        try:
-            assert process.stdin is not None  # guarded by Popen(stdin=PIPE)
-            process.stdin.write(raw_request.encode("utf-8"))
-            process.stdin.flush()
-        except OSError as exc:
-            raise MCPError(
-                f"Failed to write to MCP server stdin: {exc}",
-            ) from exc
+        self._write_request_frame(process, request)
 
         # stdout is guaranteed non-None by Popen(stdout=PIPE); assert once
         # outside the loop so it is not repeated on every iteration.
@@ -226,70 +210,10 @@ class MCPClient:
         deadline = time.monotonic() + _REQUEST_TIMEOUT
         frames_seen = 0
         while frames_seen < _MAX_FRAMES_PER_REQUEST:
-            try:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    self.stop()
-                    raise MCPError(
-                        f"MCP server did not respond within {_REQUEST_TIMEOUT:.0f} seconds"
-                        f" (method={method}, id={request_id})"
-                    )
-                raw_response = self._readline_with_timeout(
-                    process,
-                    min(_READLINE_TIMEOUT, remaining),
-                    method,
-                    request_id,
-                )
-            except OSError as exc:
-                raise MCPError(
-                    f"Failed to read from MCP server stdout: {exc}",
-                ) from exc
+            response = self._read_response_frame(process, deadline, method, request_id)
             frames_seen += 1
-
-            if not raw_response:
-                raise MCPError(
-                    "MCP server closed stdout unexpectedly (no response received)",
-                )
-
-            try:
-                response = json.loads(raw_response.decode("utf-8"))
-            except json.JSONDecodeError as exc:
-                raise MCPError(
-                    f"Invalid JSON received from MCP server: {exc}",
-                ) from exc
-
-            # Guard against servers that return a JSON array, string, or number
-            # instead of a JSON object — calling .get() on those would raise
-            # AttributeError and produce a confusing traceback.
-            if not isinstance(response, dict):
-                raise RuntimeError(
-                    f"Expected JSON object response from MCP server, got"
-                    f" {type(response).__name__} (method={method}, id={request_id})"
-                )
-
-            # JSON-RPC 2.0 notifications have a "method" key but no "id" — they
-            # are fire-and-forget server pushes and must not be treated as a
-            # response to our request.  Log and continue reading the next frame.
-            if "method" in response and "id" not in response:
-                logger.debug(
-                    "MCP received notification method=%s while waiting for id=%s — skipping",
-                    response.get("method"),
-                    request_id,
-                )
+            if self._is_ignorable_response_frame(response, method, request_id):
                 continue
-
-            # A mismatched ID belongs to another in-flight or previously emitted
-            # JSON-RPC frame. It is not this request's answer, so skip it and
-            # continue until the matching response arrives.
-            if response.get("id") != request_id:
-                logger.debug(
-                    "MCP skipped response id=%s while waiting for id=%s (method=%s)",
-                    response.get("id"),
-                    request_id,
-                    method,
-                )
-                continue
-
             if "error" in response:
                 error = response["error"]
                 code = error.get("code", "unknown")
@@ -303,9 +227,85 @@ class MCPClient:
 
         self.stop()
         raise MCPError(
-            f"MCP server exceeded {_MAX_FRAMES_PER_REQUEST} frames before responding"
-            f" (method={method}, id={request_id})"
+            f"MCP server exceeded {_MAX_FRAMES_PER_REQUEST} frames before responding (method={method}, id={request_id})"
         )
+
+    def _build_request(self, method: str, params: dict[str, Any] | None) -> tuple[int, dict[str, Any]]:
+        """Allocate a request id and return a JSON-RPC request object."""
+        request_id = self._next_id
+        self._next_id += 1
+        request: dict[str, Any] = {
+            "jsonrpc": _JSONRPC_VERSION,
+            "id": request_id,
+            "method": method,
+        }
+        if params is not None:
+            request["params"] = params
+        return request_id, request
+
+    @staticmethod
+    def _write_request_frame(process: subprocess.Popen[bytes], request: dict[str, Any]) -> None:
+        """Write one newline-delimited JSON-RPC request frame."""
+        raw_request = json.dumps(request) + "\n"
+        try:
+            assert process.stdin is not None  # guarded by Popen(stdin=PIPE)
+            process.stdin.write(raw_request.encode("utf-8"))
+            process.stdin.flush()
+        except OSError as exc:
+            raise MCPError(f"Failed to write to MCP server stdin: {exc}") from exc
+
+    def _read_response_frame(
+        self,
+        process: subprocess.Popen[bytes],
+        deadline: float,
+        method: str,
+        request_id: int,
+    ) -> dict[str, Any]:
+        """Read and validate one JSON-RPC response object from stdout."""
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.stop()
+                raise MCPError(
+                    f"MCP server did not respond within {_REQUEST_TIMEOUT:.0f} seconds"
+                    f" (method={method}, id={request_id})"
+                )
+            raw_response = self._readline_with_timeout(process, min(_READLINE_TIMEOUT, remaining), method, request_id)
+        except OSError as exc:
+            raise MCPError(f"Failed to read from MCP server stdout: {exc}") from exc
+
+        if not raw_response:
+            raise MCPError("MCP server closed stdout unexpectedly (no response received)")
+        try:
+            response = json.loads(raw_response.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise MCPError(f"Invalid JSON received from MCP server: {exc}") from exc
+        if not isinstance(response, dict):
+            raise RuntimeError(
+                f"Expected JSON object response from MCP server, got"
+                f" {type(response).__name__} (method={method}, id={request_id})"
+            )
+        return response
+
+    @staticmethod
+    def _is_ignorable_response_frame(response: dict[str, Any], method: str, request_id: int) -> bool:
+        """Return True for notifications or responses belonging to another id."""
+        if "method" in response and "id" not in response:
+            logger.debug(
+                "MCP received notification method=%s while waiting for id=%s - skipping",
+                response.get("method"),
+                request_id,
+            )
+            return True
+        if response.get("id") != request_id:
+            logger.debug(
+                "MCP skipped response id=%s while waiting for id=%s (method=%s)",
+                response.get("id"),
+                request_id,
+                method,
+            )
+            return True
+        return False
 
     def _readline_with_timeout(
         self,
@@ -331,8 +331,7 @@ class MCPClient:
             self.stop()
             reader.join(0.2)
             raise MCPError(
-                f"MCP server did not respond within {timeout:.0f} seconds"
-                f" (method={method}, id={request_id})"
+                f"MCP server did not respond within {timeout:.0f} seconds (method={method}, id={request_id})"
             )
 
         item = result_queue.get_nowait()
@@ -393,8 +392,7 @@ class MCPClient:
 
         Raises:
             MCPError: If the server rejects the handshake or communication fails.
-            RuntimeError: If the server reports a different protocol version
-                than ``_MCP_PROTOCOL_VERSION``.
+            RuntimeError: If the server reports an unsupported protocol version.
         """
         params: dict[str, Any] = {
             "protocolVersion": _MCP_PROTOCOL_VERSION,
@@ -407,12 +405,12 @@ class MCPClient:
         result = self._send_request("initialize", params)
         self._capabilities = result.get("capabilities", {})
 
-        # Reject servers that advertise a different protocol version — proceeding
+        # Reject servers that advertise a different protocol version â€” proceeding
         # with a mismatched version risks silent incompatibilities in method
         # semantics or required fields.
         server_version = result.get("protocolVersion", "")
-        if server_version != _MCP_PROTOCOL_VERSION:
-            raise RuntimeError(f"MCP protocol version mismatch: expected {_MCP_PROTOCOL_VERSION}, got {server_version}")
+        if not isinstance(server_version, str) or not is_supported_protocol_version(server_version):
+            raise RuntimeError(f"MCP protocol version unsupported: {server_version}")
 
         logger.info(
             "MCP server initialized; protocolVersion=%s",
@@ -455,7 +453,7 @@ class MCPClient:
         """
         params: dict[str, Any] = {
             "name": name,
-            "arguments": arguments or {},  # noqa: VET112 - empty fallback preserves optional request metadata contract
+            "arguments": arguments or {},
         }
         result = self._send_request("tools/call", params)
         if result.get("isError") is True:

@@ -2,7 +2,8 @@
 
 Provides a unified API for creating, updating, and querying issues across
 GitHub Issues, Linear, and Jira. Adapters are instantiated via the
-``create_issue_tracker`` factory, which reads ``config/integrations.yaml``.
+``create_issue_tracker`` factory, using the shape shown in
+``config/integrations.yaml.example``.
 
 This is a standalone integration layer — it is not part of the core agent
 pipeline. It allows Vetinari tasks and quality gates to file issues in an
@@ -12,12 +13,15 @@ external tracker without coupling to any specific vendor API.
 from __future__ import annotations
 
 import logging
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
 
 # -- Enumerations -------------------------------------------------------------
 
@@ -116,8 +120,8 @@ class IssueTracker(ABC):
     Linear GraphQL, or Jira REST v3) while exposing a uniform surface so
     that callers never need to know which tracker is configured.
 
-    All methods must be thread-safe — Litestar workers may call them
-    concurrently.
+    All methods must be thread-safe because runtime workers and background
+    dispatchers may call them concurrently.
     """
 
     @abstractmethod
@@ -206,8 +210,9 @@ def create_issue_tracker(config: dict[str, Any]) -> IssueTracker | None:
     constructs the appropriate adapter. Returns None (with a warning log)
     if the configuration is absent, incomplete, or specifies an unknown type.
 
-    The ``config`` dict is typically loaded from ``config/integrations.yaml``
-    by the caller; this function does not perform file I/O itself.
+    The ``config`` dict is typically loaded from an operator-owned integrations
+    file shaped like ``config/integrations.yaml.example`` by the caller; this
+    function does not perform file I/O itself.
 
     Args:
         config: Dictionary containing an ``issue_tracker`` sub-key with at
@@ -224,7 +229,7 @@ def create_issue_tracker(config: dict[str, Any]) -> IssueTracker | None:
         from pathlib import Path
         from vetinari.integrations.issue_tracker import create_issue_tracker
 
-        cfg = yaml.safe_load(Path("config/integrations.yaml").read_text(encoding="utf-8"))
+        cfg = yaml.safe_load(Path("config/integrations.yaml.example").read_text(encoding="utf-8"))
         tracker = create_issue_tracker(cfg)
         if tracker:
             issue = tracker.create_issue(CreateIssueRequest(title="Bug found"))
@@ -244,7 +249,7 @@ def create_issue_tracker(config: dict[str, Any]) -> IssueTracker | None:
 
     if tracker_type == "github":
         gh = tracker_cfg.get("github", {})
-        token = gh.get("token", "")
+        token = _resolve_secret_value(gh.get("token", ""), field_name="github.token")
         owner = gh.get("owner", "")
         repo = gh.get("repo", "")
         if not (token and owner and repo):
@@ -254,7 +259,7 @@ def create_issue_tracker(config: dict[str, Any]) -> IssueTracker | None:
 
     if tracker_type == "linear":
         lin = tracker_cfg.get("linear", {})
-        api_key = lin.get("api_key", "")
+        api_key = _resolve_secret_value(lin.get("api_key", ""), field_name="linear.api_key")
         team_id = lin.get("team_id", "")
         if not (api_key and team_id):
             logger.warning("Linear issue tracker config is incomplete (need api_key, team_id) — disabled")
@@ -265,7 +270,7 @@ def create_issue_tracker(config: dict[str, Any]) -> IssueTracker | None:
         jira = tracker_cfg.get("jira", {})
         url = jira.get("url", "")
         email = jira.get("email", "")
-        api_token = jira.get("api_token", "")
+        api_token = _resolve_secret_value(jira.get("api_token", ""), field_name="jira.api_token")
         project_key = jira.get("project_key", "")
         if not (url and email and api_token and project_key):
             logger.warning(
@@ -279,6 +284,34 @@ def create_issue_tracker(config: dict[str, Any]) -> IssueTracker | None:
         tracker_type,
     )
     return None
+
+
+def _resolve_secret_value(value: object, *, field_name: str) -> str:
+    """Resolve env-backed secret config and reject file-path secret references."""
+    if not isinstance(value, str):
+        return ""
+    raw = value.strip()
+    if not raw:
+        return ""
+    if raw.startswith("${") and raw.endswith("}"):
+        raw = f"env:{raw[2:-1]}"
+    if raw.lower().startswith("env:"):
+        env_name = raw[4:].strip()
+        if not env_name:
+            raise IssueTrackerError(f"{field_name} env reference is empty")
+        return os.environ.get(env_name, "").strip()
+    if _looks_like_secret_path(raw):
+        raise IssueTrackerError(f"{field_name} must come from an environment variable, not a repository file path")
+    if raw in {"<token>", "changeme", "replace-me", "TODO"}:
+        return ""
+    return raw
+
+
+def _looks_like_secret_path(value: str) -> bool:
+    path = Path(value)
+    if path.suffix.lower() in {".yaml", ".yml", ".json", ".toml", ".env", ".txt"}:
+        return True
+    return "\\" in value or "/" in value
 
 
 # -- Exception ----------------------------------------------------------------

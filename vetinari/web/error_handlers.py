@@ -14,11 +14,11 @@ from typing import Any
 
 import yaml
 
+from vetinari.boundary_guards import account_evidence_drop
 from vetinari.config_paths import resolve_config_path
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_PATH = resolve_config_path("error_messages.yaml")
 
 # Module-level cache — loaded once at first use, never reloaded.
 # Who writes: _load_config() on first call.
@@ -37,25 +37,38 @@ def _load_config() -> dict[str, Any]:
     global _config
     if _config is not None:
         return _config
+    config_path = resolve_config_path("error_messages.yaml")
     try:
-        with open(_CONFIG_PATH, encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             raw = yaml.safe_load(f)
         if not isinstance(raw, dict):
             logger.warning(
                 "Error message config at %s has unexpected root type %s — using built-in defaults",
-                _CONFIG_PATH,
+                config_path,
                 type(raw).__name__,
             )
             _config = {}
         else:
             _config = raw
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
+        logger.error("config load failed: %s", exc)
+        account_evidence_drop(
+            logger=logger,
+            evidence_ref=str(config_path),
+            reason="error_message_config_load_failure",
+        )
         logger.warning(
             "Error message config not found at %s — using built-in defaults",
-            _CONFIG_PATH,
+            config_path,
         )
         _config = {}
-    except Exception:
+    except (PermissionError, OSError, yaml.YAMLError) as exc:
+        logger.error("config load failed: %s", exc)
+        account_evidence_drop(
+            logger=logger,
+            evidence_ref=str(config_path),
+            reason="error_message_config_load_failure",
+        )
         logger.exception("Failed to load error message config — using built-in defaults")
         _config = {}
     return _config

@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_evidence_budget.schema.json",
+  "title": "Workbench Evidence Budget Accounting Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "mechanism_id",
+    "mechanism_kind",
+    "project_id",
+    "captured_at_utc",
+    "costs",
+    "value",
+    "provenance_refs",
+    "authority_ref",
+    "target_ref",
+    "mechanism_version",
+    "owner"
+  ],
+  "properties": {
+    "mechanism_id": {"type": "string", "minLength": 1},
+    "mechanism_kind": {
+      "type": "string",
+      "enum": [
+        "monitor",
+        "eval_suite",
+        "red_team_pack",
+        "graph_rag_preprocessing",
+        "synthetic_data_generation",
+        "training_recipe",
+        "automation"
+      ]
+    },
+    "project_id": {"type": "string", "minLength": 1},
+    "captured_at_utc": {"type": "string", "minLength": 1},
+    "target_ref": {"type": "string", "minLength": 1},
+    "mechanism_version": {"type": "string", "minLength": 1},
+    "owner": {"type": "string", "minLength": 1},
+    "provenance_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "authority_ref": {"type": "string", "minLength": 1},
+    "costs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cost_to_diagnose_usd",
+        "cost_to_fix_usd",
+        "cost_to_prevent_regression_usd",
+        "human_review_minutes"
+      ],
+      "properties": {
+        "cost_to_diagnose_usd": {"type": "number", "minimum": 0},
+        "cost_to_fix_usd": {"type": "number", "minimum": 0},
+        "cost_to_prevent_regression_usd": {"type": "number", "minimum": 0},
+        "human_review_minutes": {"type": "number", "minimum": 0}
+      }
+    },
+    "value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "avoided_repeat_failures",
+        "adoption_outcome",
+        "evidence_confidence",
+        "false_positive_rate",
+        "value_notes"
+      ],
+      "properties": {
+        "avoided_repeat_failures": {"type": "integer", "minimum": 0},
+        "adoption_outcome": {
+          "type": "string",
+          "enum": ["unknown", "unused", "pilot", "adopted", "retired"]
+        },
+        "evidence_confidence": {
+          "anyOf": [
+            {"type": "number", "minimum": 0, "maximum": 1},
+            {"type": "null"}
+          ]
+        },
+        "false_positive_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "value_notes": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    }
+  }
+}

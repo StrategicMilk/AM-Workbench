@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_managed_agent.schema.json",
+  "title": "Workbench Managed Agent Workspace",
+  "type": "object",
+  "required": ["schema_version", "agents"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "agents": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/agent" }
+    }
+  },
+  "additionalProperties": false,
+  "\\$defs": {
+    "agent": {
+      "properties": {
+        "intervention": {
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "nonEmptyArray": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "agent": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "agent_id",
+        "project_id",
+        "template_id",
+        "display_name",
+        "purpose",
+        "kind",
+        "state",
+        "requested_tools",
+        "permissions",
+        "memory_scope",
+        "persona_ref",
+        "conversation_branch_ref",
+        "policy_receipt_refs",
+        "cost_ceiling_ref",
+        "dependencies",
+        "intervention",
+        "created_by",
+        "created_at_utc",
+        "updated_at_utc",
+        "run_ids"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "agent_id": { "$ref": "#/$defs/nonEmptyString" },
+        "project_id": { "$ref": "#/$defs/nonEmptyString" },
+        "template_id": { "$ref": "#/$defs/nonEmptyString" },
+        "display_name": { "$ref": "#/$defs/nonEmptyString" },
+        "purpose": { "$ref": "#/$defs/nonEmptyString" },
+        "kind": { "enum": ["task", "chat", "watcher", "automation"] },
+        "state": { "enum": ["active", "paused", "retired"] },
+        "requested_tools": { "$ref": "#/$defs/nonEmptyArray" },
+        "permissions": { "$ref": "#/$defs/nonEmptyArray" },
+        "memory_scope": { "$ref": "#/$defs/nonEmptyArray" },
+        "persona_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "conversation_branch_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "policy_receipt_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "cost_ceiling_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "dependencies": { "$ref": "#/$defs/dependencies" },
+        "intervention": {
+          "type": "object",
+          "required": ["state", "why_running", "cost_ref", "cost_gate", "safe_actions", "requires_user_attention"],
+          "properties": {
+            "state": { "enum": ["active", "paused", "retired"] },
+            "why_running": { "$ref": "#/$defs/nonEmptyString" },
+            "cost_ref": { "$ref": "#/$defs/nonEmptyString" },
+            "cost_gate": { "const": "enforced_before_run" },
+            "safe_actions": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/nonEmptyString" }
+            },
+            "requires_user_attention": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "created_by": { "$ref": "#/$defs/nonEmptyString" },
+        "created_at_utc": { "$ref": "#/$defs/nonEmptyString" },
+        "updated_at_utc": { "$ref": "#/$defs/nonEmptyString" },
+        "run_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "dependencies": {
+      "type": "object",
+      "required": [
+        "template_id",
+        "mailbox_channel",
+        "sandbox_profile",
+        "route_ledger_ref",
+        "watcher_policy_ref",
+        "automation_recipe_refs",
+        "conversation_ref",
+        "promotion_targets",
+        "memory_policy_ref",
+        "monitoring_signal_ref",
+        "resource_lease_ref",
+        "trace_eval_ref"
+      ],
+      "properties": {
+        "template_id": { "$ref": "#/$defs/nonEmptyString" },
+        "mailbox_channel": { "enum": ["agent_queue", "automation", "memory_spine"] },
+        "sandbox_profile": { "$ref": "#/$defs/nonEmptyString" },
+        "route_ledger_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "watcher_policy_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "automation_recipe_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "conversation_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "promotion_targets": { "$ref": "#/$defs/nonEmptyArray" },
+        "memory_policy_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "monitoring_signal_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "resource_lease_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "trace_eval_ref": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

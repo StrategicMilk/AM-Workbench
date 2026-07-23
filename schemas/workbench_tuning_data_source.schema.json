@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_tuning_data_source.schema.json",
+  "title": "Workbench Tuning Data Source Registry Row",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source_id",
+    "kind",
+    "source_ref",
+    "source_revision",
+    "observed_at_utc",
+    "collected_at_utc",
+    "provenance_refs",
+    "collector_kind",
+    "split",
+    "confidence",
+    "project_id",
+    "synthetic_declared",
+    "reviewed_external_benchmark",
+    "governance"
+  ],
+  "properties": {
+    "source_id": { "$ref": "#/$defs/nonEmptyString" },
+    "kind": { "$ref": "#/$defs/sourceKind" },
+    "source_ref": { "$ref": "#/$defs/nonEmptyString" },
+    "source_revision": { "$ref": "#/$defs/nonEmptyString" },
+    "observed_at_utc": { "$ref": "#/$defs/nonEmptyString" },
+    "collected_at_utc": { "$ref": "#/$defs/nonEmptyString" },
+    "provenance_refs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "collector_kind": { "$ref": "#/$defs/collectorKind" },
+    "split": { "$ref": "#/$defs/splitName" },
+    "confidence": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+    "project_id": { "$ref": "#/$defs/nonEmptyString" },
+    "synthetic_declared": { "type": "boolean" },
+    "reviewed_external_benchmark": { "type": "boolean" },
+    "metadata": { "type": "object" },
+    "governance": { "$ref": "#/$defs/governance" }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sourceKind": {
+      "enum": ["external_dataset", "internal_trace", "feedback", "work_artifact", "source_card", "synthetic"]
+    },
+    "collectorKind": {
+      "enum": [
+        "feedback_store",
+        "implicit_feedback",
+        "receipt",
+        "execution_feedback",
+        "route_outcome",
+        "rag_source_health",
+        "plan_feedback",
+        "reviewed_external_benchmark"
+      ]
+    },
+    "consumerKind": {
+      "enum": ["eval_case", "route_default_signal", "preference_pair", "training_candidate", "roadmap_finding"]
+    },
+    "splitName": {
+      "enum": ["raw", "train", "validation", "eval_holdout", "production_feedback"]
+    },
+    "reviewState": {
+      "enum": ["observed", "reviewed", "revoked"]
+    },
+    "governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "consent_ref",
+        "license_ref",
+        "privacy_class",
+        "pii_classification",
+        "freshness_expires_at_utc",
+        "safety_review_ref",
+        "authority_ref",
+        "budget_ref",
+        "persisted_ref",
+        "review_state",
+        "allowed_consumers",
+        "taints",
+        "revocation_ref"
+      ],
+      "properties": {
+        "consent_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "license_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "privacy_class": { "$ref": "#/$defs/nonEmptyString" },
+        "pii_classification": { "$ref": "#/$defs/nonEmptyString" },
+        "freshness_expires_at_utc": { "$ref": "#/$defs/nonEmptyString" },
+        "safety_review_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "authority_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "budget_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "persisted_ref": { "$ref": "#/$defs/nonEmptyString" },
+        "review_state": { "$ref": "#/$defs/reviewState" },
+        "allowed_consumers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/consumerKind" }
+        },
+        "taints": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "revocation_ref": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "review_state": { "const": "revoked" } },
+            "required": ["review_state"]
+          },
+          "then": {
+            "properties": { "revocation_ref": { "$ref": "#/$defs/nonEmptyString" } }
+          }
+        }
+      ]
+    }
+  }
+}

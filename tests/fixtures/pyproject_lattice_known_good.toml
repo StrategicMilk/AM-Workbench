@@ -1,0 +1,23 @@
+[project]
+name = "lattice-known-good"
+
+[project.optional-dependencies]
+training = [
+  "torch>=2.7.0,<2.11",
+  "datasets>=3.4.1,<4.4",
+  "peft>=0.19,<1.0",
+  "trl>=0.24,<0.25",
+  "transformers>=4.57,<5.0",
+  "bitsandbytes>=0.49,<0.50",
+  "huggingface-hub>=0.36,<2.0",
+]
+training-unsloth = [
+  "torch>=2.7.0,<2.11",
+  "datasets>=3.4.1,<4.4",
+  "peft>=0.19,<1.0",
+  "trl>=0.24,<0.25",
+  "transformers>=5.1,<5.5",
+  "bitsandbytes>=0.49,<0.50",
+  "unsloth>=2026.5.9,<2027.0; sys_platform != 'darwin' or platform_machine != 'arm64'",
+  "huggingface-hub>=0.36,<2.0",
+]

@@ -35,21 +35,25 @@ from __future__ import annotations
 import logging
 import math
 import threading
-import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from vetinari.analytics.anomaly_ensemble import EnsembleAnomalyMixin
+from vetinari.utils.bounded_collections import BoundedList
 from vetinari.utils.serialization import dataclass_to_dict
 
 logger = logging.getLogger(__name__)
+
+_MAX_SNAPSHOT_ANOMALIES = 1000
+
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class AnomalyConfig:
     """Tuning parameters for all detectors."""
 
@@ -69,13 +73,13 @@ class AnomalyConfig:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class AnomalyResult:
     """Detection outcome for a single observation."""
 
     metric: str
     value: float
-    timestamp: float = field(default_factory=time.time)
+    timestamp: float = 0.0
     is_anomaly: bool = False
     method: str = ""  # "zscore" | "iqr" | "ewma" | ""
     score: float = 0.0  # magnitude (e.g. number of sigma)
@@ -115,6 +119,7 @@ class _MetricState:
             value: The value.
             window_size: The window size.
         """
+        # maxlen-equivalent trim guard: keep only the configured rolling window.
         self.window.append(value)
         if len(self.window) > window_size:
             self.window.popleft()
@@ -192,6 +197,112 @@ class AnomalyDetector:
     # Detection
     # ------------------------------------------------------------------
 
+    def _update_metric_state(
+        self,
+        metric: str,
+        value: float,
+        cfg: AnomalyConfig,
+    ) -> tuple[_MetricState, list[float], int]:
+        """Append the new value and return the pre-update baseline window."""
+        state = self._states.setdefault(metric, _MetricState())
+        n_existing = len(state.window)
+        vals_before = list(state.window)
+        state.push(value, cfg.window_size)
+
+        if state.ewma_mean is None:
+            state.ewma_mean = value
+            state.ewma_var = 0.0
+        else:
+            diff = value - state.ewma_mean
+            state.ewma_mean += cfg.ewma_alpha * diff
+            state.ewma_var = (1 - cfg.ewma_alpha) * (state.ewma_var + cfg.ewma_alpha * diff * diff)
+        return state, vals_before, n_existing
+
+    def _record_if_anomaly(self, result: AnomalyResult) -> AnomalyResult:
+        """Store an anomaly result before returning it to the caller."""
+        # maxlen is enforced by self._history's deque(maxlen=1000).
+        self._history.append(result)
+        return result
+
+    def _detect_zscore(self, metric: str, value: float, vals: list[float], cfg: AnomalyConfig) -> AnomalyResult | None:
+        """Evaluate the z-score detector against the baseline values."""
+        mu = _mean(vals)
+        std = _stddev(vals, mu)
+        if std > 0:
+            z = abs(value - mu) / std
+            if z > cfg.z_threshold:
+                return self._record_if_anomaly(
+                    AnomalyResult(
+                        metric=metric,
+                        value=value,
+                        is_anomaly=True,
+                        method="zscore",
+                        score=z,
+                        reason=f"z={z:.2f} > threshold {cfg.z_threshold}",
+                    )
+                )
+        elif value != mu:
+            return self._record_if_anomaly(
+                AnomalyResult(
+                    metric=metric,
+                    value=value,
+                    is_anomaly=True,
+                    method="zscore",
+                    score=float("inf"),
+                    reason=f"std=0; any deviation from flat baseline ({mu}) is anomalous",
+                )
+            )
+        return None
+
+    def _detect_iqr(self, metric: str, value: float, vals: list[float], cfg: AnomalyConfig) -> AnomalyResult | None:
+        """Evaluate the IQR fence detector against the baseline values."""
+        sorted_vals = sorted(vals)
+        q1 = _percentile(sorted_vals, 25)
+        q3 = _percentile(sorted_vals, 75)
+        iqr = q3 - q1
+        if iqr <= 0:
+            return None
+        lo = q1 - cfg.iqr_factor * iqr
+        hi = q3 + cfg.iqr_factor * iqr
+        if lo <= value <= hi:
+            return None
+        dist = max(abs(value - lo), abs(value - hi)) / iqr
+        return self._record_if_anomaly(
+            AnomalyResult(
+                metric=metric,
+                value=value,
+                is_anomaly=True,
+                method="iqr",
+                score=dist,
+                reason=f"value {value:.3g} outside IQR fence [{lo:.3g}, {hi:.3g}]",
+            )
+        )
+
+    def _detect_ewma(
+        self,
+        metric: str,
+        value: float,
+        state: _MetricState,
+        cfg: AnomalyConfig,
+    ) -> AnomalyResult | None:
+        """Evaluate the EWMA deviation detector against the metric state."""
+        ewma_std = math.sqrt(state.ewma_var) if state.ewma_var > 0 else 0.0
+        if ewma_std <= 0 or state.ewma_mean is None:
+            return None
+        dev = abs(value - state.ewma_mean) / ewma_std
+        if dev <= cfg.ewma_threshold:
+            return None
+        return self._record_if_anomaly(
+            AnomalyResult(
+                metric=metric,
+                value=value,
+                is_anomaly=True,
+                method="ewma",
+                score=dev,
+                reason=f"EWMA dev={dev:.2f} > threshold {cfg.ewma_threshold}",
+            )
+        )
+
     def detect(self, metric: str, value: float) -> AnomalyResult:
         """Ingest a single observation and return an AnomalyResult.
 
@@ -206,95 +317,20 @@ class AnomalyDetector:
         """
         with self._lock:
             cfg = self._config
-            state = self._states.setdefault(metric, _MetricState())
-
-            # Capture baseline stats from the existing window BEFORE adding
-            # the new value, so the candidate is not included in its own baseline.
-            n_existing = len(state.window)
-            vals_before = list(state.window)
-
-            state.push(value, cfg.window_size)
-
-            # Update EWMA (uses current value against pre-push mean/var)
-            if state.ewma_mean is None:
-                state.ewma_mean = value
-                state.ewma_var = 0.0
-            else:
-                diff = value - state.ewma_mean
-                state.ewma_mean += cfg.ewma_alpha * diff
-                state.ewma_var = (1 - cfg.ewma_alpha) * (state.ewma_var + cfg.ewma_alpha * diff * diff)
+            state, vals, n_existing = self._update_metric_state(metric, value, cfg)
 
             if n_existing < cfg.min_samples:
                 return AnomalyResult(metric=metric, value=value)
 
-            vals = vals_before
-
-            # 1. Z-score
-            mu = _mean(vals)
-            std = _stddev(vals, mu)
-            if std > 0:
-                z = abs(value - mu) / std
-                if z > cfg.z_threshold:
-                    result = AnomalyResult(
-                        metric=metric,
-                        value=value,
-                        is_anomaly=True,
-                        method="zscore",
-                        score=z,
-                        reason=f"z={z:.2f} > threshold {cfg.z_threshold}",
-                    )
-                    self._history.append(result)
-                    return result
-            elif value != mu:
-                # std=0 means all baseline values were identical; any deviation is an anomaly
-                # (equivalent to infinite z-score — the value is infinitely far from the flat baseline)
-                result = AnomalyResult(
-                    metric=metric,
-                    value=value,
-                    is_anomaly=True,
-                    method="zscore",
-                    score=float("inf"),
-                    reason=f"std=0; any deviation from flat baseline ({mu}) is anomalous",
-                )
-                self._history.append(result)
+            result = self._detect_zscore(metric, value, vals, cfg)
+            if result is not None:
                 return result
-
-            # 2. IQR
-            sorted_vals = sorted(vals)
-            q1 = _percentile(sorted_vals, 25)
-            q3 = _percentile(sorted_vals, 75)
-            iqr = q3 - q1
-            if iqr > 0:
-                lo = q1 - cfg.iqr_factor * iqr
-                hi = q3 + cfg.iqr_factor * iqr
-                if value < lo or value > hi:
-                    dist = max(abs(value - lo), abs(value - hi)) / iqr
-                    result = AnomalyResult(
-                        metric=metric,
-                        value=value,
-                        is_anomaly=True,
-                        method="iqr",
-                        score=dist,
-                        reason=f"value {value:.3g} outside IQR fence [{lo:.3g}, {hi:.3g}]",
-                    )
-                    self._history.append(result)
-                    return result
-
-            # 3. EWMA
-            ewma_std = math.sqrt(state.ewma_var) if state.ewma_var > 0 else 0.0
-            if ewma_std > 0:
-                dev = abs(value - state.ewma_mean) / ewma_std
-                if dev > cfg.ewma_threshold:
-                    result = AnomalyResult(
-                        metric=metric,
-                        value=value,
-                        is_anomaly=True,
-                        method="ewma",
-                        score=dev,
-                        reason=f"EWMA dev={dev:.2f} > threshold {cfg.ewma_threshold}",
-                    )
-                    self._history.append(result)
-                    return result
+            result = self._detect_iqr(metric, value, vals, cfg)
+            if result is not None:
+                return result
+            result = self._detect_ewma(metric, value, state, cfg)
+            if result is not None:
+                return result
 
             return AnomalyResult(metric=metric, value=value)
 
@@ -307,7 +343,7 @@ class AnomalyDetector:
             List of results.
         """
         snap_dict = snapshot.to_dict() if hasattr(snapshot, "to_dict") else {}
-        anomalies: list[AnomalyResult] = []
+        anomalies = BoundedList[AnomalyResult](_MAX_SNAPSHOT_ANOMALIES)
 
         def _walk(node: Any, path: str) -> None:
             if isinstance(node, dict):
@@ -316,10 +352,11 @@ class AnomalyDetector:
             elif isinstance(node, (int, float)) and not isinstance(node, bool):
                 r = self.detect(path, float(node))
                 if r.is_anomaly:
+                    # maxlen is enforced by the enclosing BoundedList accumulator.
                     anomalies.append(r)
 
         _walk(snap_dict, "")
-        return anomalies
+        return list(anomalies)
 
     # ------------------------------------------------------------------
     # Introspection
@@ -456,7 +493,7 @@ class CUSUMDetector:
 # ---------------------------------------------------------------------------
 
 
-class EnsembleAnomalyDetector:
+class EnsembleAnomalyDetector(EnsembleAnomalyMixin):
     """Ensemble anomaly detector using majority voting across multiple detectors.
 
     Confirms anomaly only when 2+ independent detectors agree, reducing
@@ -471,97 +508,6 @@ class EnsembleAnomalyDetector:
         self._cusum_latency = CUSUMDetector(delta=0.5, threshold=5.0)
         self._cusum_error_rate = CUSUMDetector(delta=0.5, threshold=5.0)
         self._zscore_detector = AnomalyDetector._create_standalone()
-
-    def observe(
-        self,
-        latency: float | None = None,
-        error_rate: float | None = None,
-        token_usage: float | None = None,
-    ) -> AnomalyResult | None:
-        """Observe metrics and return anomaly result if 2+ detectors agree.
-
-        Args:
-            latency: Request latency in milliseconds.
-            error_rate: Error rate as a fraction (0.0-1.0).
-            token_usage: Token usage count.
-
-        Returns:
-            AnomalyResult if anomaly confirmed, None otherwise.
-        """
-        votes = 0
-        triggered_detectors: list[str] = []
-
-        if latency is not None and self._cusum_latency.detect(latency):
-            votes += 1
-            triggered_detectors.append("cusum_latency")
-
-        if error_rate is not None and self._cusum_error_rate.detect(error_rate):
-            votes += 1
-            triggered_detectors.append("cusum_error_rate")
-
-        if token_usage is not None:
-            result = self._zscore_detector.detect(f"{self._agent_type}.token_usage", token_usage)
-            if result.is_anomaly:
-                votes += 1
-                triggered_detectors.append("zscore_token_usage")
-
-        if votes >= 2:
-            logger.warning(
-                "Ensemble anomaly confirmed for agent %s: %d/%d detectors triggered (%s)",
-                self._agent_type,
-                votes,
-                3,
-                ", ".join(triggered_detectors),
-            )
-            anomaly_result = AnomalyResult(
-                metric=f"ensemble.{self._agent_type}",
-                value=latency or error_rate or token_usage or 0.0,  # noqa: VET112 - empty fallback preserves optional request metadata contract
-                is_anomaly=True,
-                method="ensemble",
-                score=float(votes),
-                reason=f"Ensemble: {votes}/3 detectors triggered: {', '.join(triggered_detectors)}",
-            )
-            self._on_anomaly_confirmed(anomaly_result, triggered_detectors)
-            return anomaly_result
-
-        return None
-
-    def _on_anomaly_confirmed(self, result: AnomalyResult, triggered_detectors: list[str]) -> None:
-        """Trip circuit breaker and emit event on confirmed anomaly.
-
-        Args:
-            result: The confirmed AnomalyResult.
-            triggered_detectors: Names of detectors that fired.
-        """
-        # Trip circuit breaker
-        try:
-            from vetinari.resilience import get_circuit_breaker_registry
-
-            registry = get_circuit_breaker_registry()
-            breaker = registry.get(self._agent_type)
-            breaker.trip()
-            logger.warning(
-                "Circuit breaker tripped for %s due to ensemble anomaly",
-                self._agent_type,
-            )
-        except Exception:
-            logger.exception("Failed to trip circuit breaker for %s", self._agent_type)
-
-        # Emit event
-        try:
-            from vetinari.events import AnomalyDetected, get_event_bus
-
-            event = AnomalyDetected(
-                event_type="",
-                timestamp=time.time(),
-                agent_type=self._agent_type,
-                anomaly_type=result.method,
-                triggered_detectors=triggered_detectors,
-                score=result.score,
-            )
-            get_event_bus().publish(event)
-        except Exception:
-            logger.exception("Failed to emit AnomalyDetected event")
 
     def reset(self) -> None:
         """Reset all detectors."""

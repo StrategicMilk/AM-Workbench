@@ -10,13 +10,13 @@ Implements the assembly-line pattern:
   7. FINAL ASSEMBLY   — synthesize final output
 
 Split layout:
-    pipeline_engine.py       — PipelineEngineMixin: generate_and_execute, _execute_pipeline, _emit
-    pipeline_helpers.py      — PipelineHelpersMixin: agent routing, model selection, memory, analysis
-    pipeline_stages.py       — PipelineStagesMixin: execution stages 5-8 + telemetry
-    pipeline_agent_graph.py  — PipelineAgentGraphMixin: execute_with_agent_graph
-    pipeline_quality.py      — PipelineQualityMixin: prevention gate, review, assembly, corrections
-    pipeline_rework.py       — PipelineReworkMixin: quality rejection, rework decisions
-    two_layer.py              — TwoLayerOrchestrator (this file): __init__, Andon, singleton
+    pipeline_engine.py       — PipelineExecutionEngine: generate_and_execute, _execute_pipeline, _emit
+    pipeline_helpers.py      — PipelineSupportServices: agent routing, model selection, memory, analysis
+    pipeline_stages.py       — PipelineStageRunner: execution stages 5-8 + telemetry
+    pipeline_agent_graph.py  — PipelineAgentGraphRunner: execute_with_agent_graph
+    pipeline_quality.py      — PipelineQualityController: prevention gate, review, assembly, corrections
+    pipeline_rework.py       — PipelineReworkController: quality rejection, rework decisions
+    two_layer.py              — FactoryPipelineOrchestrator (this file): __init__, Andon, singleton
 """
 
 from __future__ import annotations
@@ -26,31 +26,35 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from vetinari.adapters.adapter_cache import get_local_inference_adapter
 from vetinari.orchestration.durable_execution import DurableExecutionEngine
 from vetinari.orchestration.execution_graph import ExecutionGraph
-from vetinari.orchestration.express_path import ExpressPathMixin
-from vetinari.orchestration.pipeline_engine import PipelineEngineMixin
+from vetinari.orchestration.express_path import ExpressPathExecution
+from vetinari.orchestration.pipeline_agent_graph import PipelineAgentGraphRunner
+from vetinari.orchestration.pipeline_engine import PipelineExecutionEngine
 from vetinari.orchestration.pipeline_events import (
     NullEventHandler,
     PipelineEventHandler,
 )
-from vetinari.orchestration.pipeline_helpers import PipelineHelpersMixin
-from vetinari.orchestration.pipeline_quality import PipelineQualityMixin
+from vetinari.orchestration.pipeline_helpers import PipelineSupportServices
+from vetinari.orchestration.pipeline_quality import PipelineQualityController
 from vetinari.orchestration.pipeline_rework import ReworkDecision
-from vetinari.orchestration.pipeline_stages import PipelineStagesMixin
+from vetinari.orchestration.pipeline_stages import PipelineStageRunner
 from vetinari.orchestration.plan_generator import PlanGenerator
 from vetinari.orchestration.request_routing import (
     RequestQueue,
 )
+from vetinari.orchestration.variant_system import VariantManager, get_variant_manager
 from vetinari.structured_logging import CorrelationContext
 from vetinari.types import AgentType
-from vetinari.web.variant_system import VariantManager, get_variant_manager
 from vetinari.workflow import AndonSignal, AndonSystem, get_andon_system
 
 logger = logging.getLogger(__name__)
 
+
 # Re-export for tests that patch tl.ReworkDecision
 __all__ = [
+    "FactoryPipelineOrchestrator",
     "ReworkDecision",
     "TwoLayerOrchestrator",
     "get_two_layer_orchestrator",
@@ -58,14 +62,15 @@ __all__ = [
 ]
 
 
-class TwoLayerOrchestrator(
-    PipelineEngineMixin,
-    PipelineHelpersMixin,
-    PipelineQualityMixin,
-    PipelineStagesMixin,
-    ExpressPathMixin,
+class FactoryPipelineOrchestrator(
+    PipelineExecutionEngine,
+    PipelineSupportServices,
+    PipelineQualityController,
+    PipelineStageRunner,
+    PipelineAgentGraphRunner,
+    ExpressPathExecution,
 ):
-    """Complete two-layer orchestration system implementing the assembly-line pattern.
+    """Complete Foreman -> Worker -> Inspector factory-pipeline orchestrator.
 
     Combines:
     - Layer 1: Graph-Based Planning (PlanGenerator)
@@ -106,7 +111,7 @@ class TwoLayerOrchestrator(
             max_concurrent=max_concurrent,
         )
         self.model_router = model_router
-        self.agent_context: dict[str, Any] = agent_context or {}  # noqa: VET112 - empty fallback preserves optional request metadata contract
+        self.agent_context: dict[str, Any] = agent_context or {}
         self._agents: dict[str, Any] = {}
         # Bug #15a: gate correction loop on VariantConfig.enable_verification so
         # LOW variant (enable_verification=False) never runs the correction loop
@@ -115,6 +120,7 @@ class TwoLayerOrchestrator(
         self.enable_correction_loop: bool = enable_correction_loop and _variant_enables_verification
         self.correction_loop_max_rounds: int = correction_loop_max_rounds
         self._request_queue = RequestQueue(max_concurrent=max_concurrent)
+        self._adapter = get_local_inference_adapter()
         self._andon = get_andon_system()
         self._andon.register_callback(self._on_andon_trigger)
         self._paused: bool = False
@@ -148,7 +154,7 @@ class TwoLayerOrchestrator(
         except (ImportError, AttributeError):
             logger.warning("ArchitectExecutorPipeline unavailable")
 
-        logger.info("TwoLayerOrchestrator initialized (assembly-line mode)")
+        logger.info("FactoryPipelineOrchestrator initialized (assembly-line mode)")
 
     # ── Andon integration ────────────────────────────────────────────────────
 
@@ -169,12 +175,12 @@ class TwoLayerOrchestrator(
             try:
                 # AsyncExecutor exposes shutdown(); fall back to pool if missing.
                 if hasattr(self._async_executor, "shutdown"):
-                    self._async_executor.shutdown(wait=False)
+                    self._async_executor.shutdown(wait=False)  # noqa: leak-rule-3 -- orchestrator teardown is best-effort fast shutdown; blocking on a stuck async task could hang Andon halt sequence.
                 elif hasattr(self._async_executor, "_pool") and hasattr(self._async_executor._pool, "shutdown"):
-                    self._async_executor._pool.shutdown(wait=False)
+                    self._async_executor._pool.shutdown(wait=False)  # noqa: leak-rule-3 -- fallback path when AsyncExecutor lacks shutdown(); same rationale as above — fast teardown over blocking.
             except Exception:
                 logger.warning(
-                    "AsyncExecutor shutdown failed during TwoLayerOrchestrator teardown"
+                    "AsyncExecutor shutdown failed during FactoryPipelineOrchestrator teardown"
                     " — resources may not be fully released"
                 )
 
@@ -323,28 +329,28 @@ class TwoLayerOrchestrator(
 # Global singleton
 # ---------------------------------------------------------------------------
 
-_two_layer_orchestrator: TwoLayerOrchestrator | None = None
+_two_layer_orchestrator: FactoryPipelineOrchestrator | None = None
 _two_layer_orchestrator_lock = threading.Lock()
 
 
-def get_two_layer_orchestrator() -> TwoLayerOrchestrator:
-    """Return the module-level singleton TwoLayerOrchestrator.
+def get_two_layer_orchestrator() -> FactoryPipelineOrchestrator:
+    """Return the module-level singleton FactoryPipelineOrchestrator.
 
     Creates it with default settings on first call. Subsequent calls return the
     same instance — never create a new orchestrator per task.
 
     Returns:
-        The shared TwoLayerOrchestrator singleton.
+        The shared FactoryPipelineOrchestrator singleton.
     """
     global _two_layer_orchestrator
     if _two_layer_orchestrator is None:
         with _two_layer_orchestrator_lock:
             if _two_layer_orchestrator is None:
-                _two_layer_orchestrator = TwoLayerOrchestrator()
+                _two_layer_orchestrator = FactoryPipelineOrchestrator()
     return _two_layer_orchestrator
 
 
-def init_two_layer_orchestrator(checkpoint_dir: str | None = None, **kwargs) -> TwoLayerOrchestrator:
+def init_two_layer_orchestrator(checkpoint_dir: str | None = None, **kwargs) -> FactoryPipelineOrchestrator:
     """Initialize a new two-layer orchestrator, replacing the singleton.
 
     Shuts down the previous singleton (if any) before constructing the new one
@@ -354,10 +360,10 @@ def init_two_layer_orchestrator(checkpoint_dir: str | None = None, **kwargs) -> 
 
     Args:
         checkpoint_dir: Directory for durable execution checkpoints.
-        **kwargs: Additional constructor arguments passed to TwoLayerOrchestrator.
+        **kwargs: Additional constructor arguments passed to FactoryPipelineOrchestrator.
 
     Returns:
-        A freshly created TwoLayerOrchestrator that replaces the singleton.
+        A freshly created FactoryPipelineOrchestrator that replaces the singleton.
     """
     global _two_layer_orchestrator
     with _two_layer_orchestrator_lock:
@@ -367,8 +373,13 @@ def init_two_layer_orchestrator(checkpoint_dir: str | None = None, **kwargs) -> 
                 old.shutdown()
             except Exception:
                 logger.warning(
-                    "Previous TwoLayerOrchestrator shutdown failed during reinit — proceeding with new instance",
+                    "Previous FactoryPipelineOrchestrator shutdown failed during reinit — proceeding with new instance",
                     exc_info=True,
                 )
-        _two_layer_orchestrator = TwoLayerOrchestrator(checkpoint_dir=checkpoint_dir, **kwargs)  # noqa: VET111 - stateful fallback preserves legacy compatibility
+        _two_layer_orchestrator = FactoryPipelineOrchestrator(checkpoint_dir=checkpoint_dir, **kwargs)
     return _two_layer_orchestrator
+
+
+# Backwards-compatible public alias. The primary implementation class is named
+# for the ADR-0061 Foreman -> Worker -> Inspector factory pipeline.
+TwoLayerOrchestrator = FactoryPipelineOrchestrator

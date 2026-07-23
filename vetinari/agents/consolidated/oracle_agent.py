@@ -64,11 +64,12 @@ class ConsolidatedOracleAgent(MultiModeAgent):
         if output is None:
             return VerificationResult(passed=False, issues=[{"message": "No output"}], score=0.0)
         if isinstance(output, dict):
+            analysis = output.get("analysis")
+            analysis_has_depth = isinstance(analysis, dict) and any(
+                value for key, value in analysis.items() if key != "summary"
+            )
             has_substance = bool(
-                output.get("analysis")
-                or output.get("recommendations")
-                or output.get("risks")
-                or output.get("insights"),
+                analysis_has_depth or output.get("recommendations") or output.get("risks") or output.get("insights"),
             )
             return VerificationResult(passed=has_substance, score=0.8 if has_substance else 0.3)
         return VerificationResult(

@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Any
 
 from vetinari.execution_context import ToolPermission, check_permission_unified, get_context_manager
-from vetinari.security.sandbox import enforce_blocked_paths
+from vetinari.learning.atomic_writers import _write_text_atomic
+from vetinari.security.sandbox import RustSandboxAuthorityBridge, enforce_blocked_paths
 from vetinari.tool_interface import (
     Tool,
     ToolCategory,
@@ -37,19 +38,15 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _safe_resolve(path: str, root: Path) -> Path:
+def _safe_resolve(path: str, root: Path, permission: str = "read") -> Path:
     """Resolve *path* and ensure it stays inside *root*.
 
     Raises ``PermissionError`` on traversal attempts.
     """
-    resolved = (root / path).resolve()
-    root_resolved = root.resolve()
-    if not resolved.is_relative_to(root_resolved):
-        raise PermissionError(f"Path traversal blocked: {path!r} resolves outside project root")
-    return resolved
+    return RustSandboxAuthorityBridge(root).require_path(permission, path)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class FileInfo:
     """Metadata about a single file or directory."""
 
@@ -101,7 +98,7 @@ class FileOperations:
             FileNotFoundError: If *path* does not point to a regular file.
             PermissionError: If *path* resolves outside the project root.
         """
-        target = _safe_resolve(path, self.root)
+        target = _safe_resolve(path, self.root, "read")
         if not target.is_file():
             raise FileNotFoundError(f"Not a file: {path}")
         return target.read_text(encoding=encoding)
@@ -115,7 +112,7 @@ class FileOperations:
         Returns:
             True if the path exists (file or directory), False otherwise.
         """
-        target = _safe_resolve(path, self.root)
+        target = _safe_resolve(path, self.root, "exists")
         return target.exists()
 
     def get_file_info(self, path: str) -> FileInfo:
@@ -132,15 +129,15 @@ class FileOperations:
             FileNotFoundError: If *path* does not exist.
             PermissionError: If *path* resolves outside the project root.
         """
-        target = _safe_resolve(path, self.root)
+        target = _safe_resolve(path, self.root, "info")
         if not target.exists():
             raise FileNotFoundError(f"Path does not exist: {path}")
-        st = target.stat()
+        st = target.stat(follow_symlinks=False)
         return FileInfo(
             path=str(target.relative_to(self.root)),
             name=target.name,
-            is_file=target.is_file(),
-            is_dir=target.is_dir(),
+            is_file=target.is_file() and not target.is_symlink(),
+            is_dir=target.is_dir() and not target.is_symlink(),
             size_bytes=st.st_size,
             modified=datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
             created=datetime.fromtimestamp(st.st_ctime, tz=timezone.utc).isoformat(),
@@ -161,26 +158,28 @@ class FileOperations:
             NotADirectoryError: If *path* is not a directory.
             PermissionError: If *path* resolves outside the project root.
         """
-        target = _safe_resolve(path, self.root)
+        target = _safe_resolve(path, self.root, "list")
         if not target.is_dir():
             raise NotADirectoryError(f"Not a directory: {path}")
         entries: list[FileInfo] = []
         for child in sorted(target.iterdir()):
             try:
-                st = child.stat()
+                relative_child = child.relative_to(self.root)
+                RustSandboxAuthorityBridge(self.root).require_path("info", relative_child)
+                st = child.stat(follow_symlinks=False)
                 entries.append(
                     FileInfo(
-                        path=str(child.relative_to(self.root)),
+                        path=str(relative_child),
                         name=child.name,
-                        is_file=child.is_file(),
-                        is_dir=child.is_dir(),
+                        is_file=child.is_file() and not child.is_symlink(),
+                        is_dir=child.is_dir() and not child.is_symlink(),
                         size_bytes=st.st_size,
                         modified=datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
                         created=datetime.fromtimestamp(st.st_ctime, tz=timezone.utc).isoformat(),
                     ),
                 )
-            except OSError:  # noqa: VET022 - best-effort optional path must not fail the primary flow
-                pass  # skip inaccessible entries
+            except (OSError, PermissionError):
+                logging.getLogger(__name__).debug("skipping inaccessible directory entry", exc_info=True)
         return entries
 
     # -- write --------------------------------------------------------------
@@ -200,10 +199,9 @@ class FileOperations:
             SandboxPolicyViolation: If the resolved target is on a sandbox
                 policy ``blocked_paths`` entry.
         """
-        target = _safe_resolve(path, self.root)
+        target = _safe_resolve(path, self.root, "write")
         enforce_blocked_paths(target)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding=encoding)
+        _write_text_atomic(target, content, encoding=encoding)
         return str(target.relative_to(self.root))
 
     def create_directory(self, path: str) -> str:
@@ -219,7 +217,7 @@ class FileOperations:
             SandboxPolicyViolation: If the resolved target is on a sandbox
                 policy ``blocked_paths`` entry.
         """
-        target = _safe_resolve(path, self.root)
+        target = _safe_resolve(path, self.root, "mkdir")
         enforce_blocked_paths(target)
         target.mkdir(parents=True, exist_ok=True)
         return str(target.relative_to(self.root))
@@ -243,8 +241,8 @@ class FileOperations:
                 there; moving a blocked source is removal of a blocked file —
                 both are mutations the policy is meant to prevent.
         """
-        src_path = _safe_resolve(src, self.root)
-        dst_path = _safe_resolve(dst, self.root)
+        src_path = _safe_resolve(src, self.root, "move")
+        dst_path = _safe_resolve(dst, self.root, "move")
         if not src_path.exists():
             raise FileNotFoundError(f"Source does not exist: {src}")
         enforce_blocked_paths(dst_path)
@@ -266,7 +264,7 @@ class FileOperations:
             SandboxPolicyViolation: If the resolved target is on a sandbox
                 policy ``blocked_paths`` entry.
         """
-        target = _safe_resolve(path, self.root)
+        target = _safe_resolve(path, self.root, "delete")
         if not target.exists():
             return False
         enforce_blocked_paths(target)

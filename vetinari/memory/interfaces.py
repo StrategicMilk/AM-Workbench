@@ -1,7 +1,7 @@
-"""Memory Abstraction Layer - Unified interface for dual memory backends.
+"""Memory abstraction types for the unified local memory store.
 
-This module provides the IMemoryStore interface and supporting types
-for Vetinari's dual-memory backend architecture.
+This module provides shared data contracts and compatibility environment flags
+for Vetinari's SQLite/FTS-backed memory runtime.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
-class MemoryEntry:  # noqa: VET114 — content/metadata mutated during secret sanitization in unified.py (_sanitize_entry)
+class MemoryEntry:
     """A single memory entry in the store."""
 
     id: str = field(default_factory=lambda: f"mem_{uuid.uuid4().hex[:8]}")
@@ -38,6 +38,7 @@ class MemoryEntry:  # noqa: VET114 — content/metadata mutated during secret sa
     recall_count: int = 0  # Times this memory has been retrieved — boosts Ebbinghaus retention
     last_accessed: int = 0  # Epoch-ms timestamp of most recent retrieval (0 = never accessed)
     supersedes_id: str | None = None  # ID of the memory this entry replaces (fact-graph chain)
+    source_entry_ids: list[str] = field(default_factory=list)  # Full lineage for compacted entries.
     relationship_type: str | None = None  # RelationshipType value linking this to supersedes_id
 
     def __repr__(self) -> str:
@@ -81,7 +82,7 @@ class MemoryStats:
         return dataclass_to_dict(self)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ApprovalDetails:
     """Details about an approval decision.
 

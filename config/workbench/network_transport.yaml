@@ -1,0 +1,13 @@
+policy:
+  bandwidth_budget_mbps: 25
+  max_retry_backoff_seconds: 30
+  cache_ttl_seconds: 900
+  stale_after_seconds: 300
+  preferred_providers:
+    - local
+    - primary
+  risky_change_requires_approval: true
+  allow_host_network_mutation: false
+redaction:
+  private_networks_fail_closed: true
+  persist_only_redacted: true

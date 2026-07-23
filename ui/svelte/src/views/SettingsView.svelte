@@ -4,6 +4,11 @@
    * model rules, and accessibility toggles.
    */
   import { appState } from '$lib/stores/app.svelte.js';
+  import { uiPreferences, HELP_DENSITY_VALUES } from '$lib/stores/uiPreferences.svelte.js';
+  import HelpTooltip from '$lib/components/help/HelpTooltip.svelte';
+  import HelpPopover from '$lib/components/help/HelpPopover.svelte';
+  import Term from '$lib/components/help/Term.svelte';
+  import SettingsWorkspace from '$components/views/settings/SettingsWorkspace.svelte';
   import * as api from '$lib/api.js';
   import { showToast } from '$lib/stores/toast.svelte.js';
 
@@ -14,9 +19,11 @@
   let loading = $state(true);
   let actionPending = $state(false);
   let activeTab = $state('appearance');
+  const settingsTabIds = ['appearance', 'prompts', 'credentials', 'rules', 'workspace'];
 
   let systemPrompt = $state('');
   let systemPromptSaved = $state(false);
+  let systemPromptSavedTimer = null;
 
   let newCredSource = $state('');
   let newCredKey = $state('');
@@ -34,35 +41,40 @@
     return `${Math.floor(diff / 86_400_000)} d ago`;
   }
 
+  function moveSettingsTabFocus(event, tabId) {
+    const currentIndex = settingsTabIds.indexOf(tabId);
+    if (currentIndex === -1) return;
+
+    let nextIndex = currentIndex;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      nextIndex = (currentIndex + 1) % settingsTabIds.length;
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      nextIndex = (currentIndex - 1 + settingsTabIds.length) % settingsTabIds.length;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = settingsTabIds.length - 1;
+    } else {
+      return;
+    }
+
+    event.preventDefault();
+    activeTab = settingsTabIds[nextIndex];
+    document.getElementById(`tab-${activeTab}`)?.focus();
+  }
+
   // -- Derived -----------------------------------------------------------------
 
   let isDark = $derived(appState.theme === 'dark');
 
-  // -- Internal fetch helpers (direct routes not yet in api.js) ---------------
+  // -- Global prompt API helpers ----------------------------------------------
 
   /**
    * GET /api/v1/rules/global-prompt — returns { prompt: string }.
    * Used to hydrate the system prompt textarea on load.
    */
-  async function fetchGlobalPrompt() {
-    const res = await fetch('/api/v1/rules/global-prompt', {
-      headers: { 'Content-Type': 'application/json' },
-    });
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    return res.json();
-  }
-
-  /**
-   * POST /api/v1/rules/global-prompt — persists { prompt: string } to the
-   * server's RulesManager so it applies to all agents at runtime.
-   *
-   * Delegates to api.saveGlobalPrompt() so the shared request() helper
-   * automatically adds the X-Requested-With: XMLHttpRequest header required
-   * by CSRFMiddleware (vetinari/web/csrf.py, ADR-0071). A raw fetch without
-   * that header returns 403 and silently discards the save.
-   */
-  function postGlobalPrompt(promptText) {
-    return api.saveGlobalPrompt(promptText);
+  function fetchGlobalPrompt() {
+    return api.getGlobalPrompt();
   }
 
   // -- Data loading ------------------------------------------------------------
@@ -100,6 +112,11 @@
     showToast(`Theme set to ${appState.theme}`, 'info');
   }
 
+  function setHelpDensity(value) {
+    uiPreferences.helpDensity = value;
+    showToast(`Help density set to ${value}`, 'info');
+  }
+
   // -- System prompt -----------------------------------------------------------
 
   async function saveSystemPrompt() {
@@ -107,16 +124,31 @@
     try {
       // POST to the dedicated global-prompt endpoint so the value reaches
       // RulesManager and applies to all agents at runtime.
-      await postGlobalPrompt(systemPrompt);
+      await api.saveGlobalPrompt(systemPrompt);
       systemPromptSaved = true;
       showToast('System prompt saved to server', 'success');
-      setTimeout(() => { systemPromptSaved = false; }, 2500);
+      if (systemPromptSavedTimer !== null) {
+        clearTimeout(systemPromptSavedTimer);
+      }
+      systemPromptSavedTimer = setTimeout(() => {
+        systemPromptSaved = false;
+        systemPromptSavedTimer = null;
+      }, 2500);
     } catch (err) {
       showToast(`Failed to save prompt: ${err.message}`, 'error');
     } finally {
       actionPending = false;
     }
   }
+
+  $effect(() => {
+    return () => {
+      if (systemPromptSavedTimer !== null) {
+        clearTimeout(systemPromptSavedTimer);
+        systemPromptSavedTimer = null;
+      }
+    };
+  });
 
   // -- Credentials -------------------------------------------------------------
 
@@ -174,7 +206,7 @@
 <div class="settings-view">
   <div class="view-header">
     <h2>
-      <i class="fas fa-cog"></i>
+      <i class="fas fa-cog" aria-hidden="true"></i>
       Settings
     </h2>
   </div>
@@ -186,17 +218,20 @@
       { id: 'prompts', icon: 'fas fa-comment-alt', label: 'System Prompts' },
       { id: 'credentials', icon: 'fas fa-key', label: 'Credentials' },
       { id: 'rules', icon: 'fas fa-ruler', label: 'Model Rules' },
+      { id: 'workspace', icon: 'fas fa-sliders-h', label: 'Workspace' },
     ] as tab (tab.id)}
       <button
         class="tab"
         class:active={activeTab === tab.id}
         onclick={() => { activeTab = tab.id; }}
+        onkeydown={(event) => moveSettingsTabFocus(event, tab.id)}
         role="tab"
         aria-selected={activeTab === tab.id}
         aria-controls="panel-{tab.id}"
         id="tab-{tab.id}"
+        tabindex={activeTab === tab.id ? 0 : -1}
       >
-        <i class="{tab.icon}"></i>
+        <i class="{tab.icon}" aria-hidden="true"></i>
         {tab.label}
       </button>
     {/each}
@@ -204,7 +239,7 @@
 
   {#if loading}
     <div class="loading-state" role="status" aria-live="polite">
-      <i class="fas fa-spinner fa-spin"></i>
+      <i class="fas fa-spinner fa-spin" aria-hidden="true"></i>
       Loading settings...
     </div>
   {:else}
@@ -224,9 +259,52 @@
               aria-pressed={isDark}
               aria-label="Toggle theme: currently {appState.theme}"
             >
-              <i class="fas {isDark ? 'fa-moon' : 'fa-sun'}"></i>
+              <i class="fas {isDark ? 'fa-moon' : 'fa-sun'}" aria-hidden="true"></i>
               {isDark ? 'Dark' : 'Light'}
             </button>
+          </div>
+        </section>
+
+        <section class="settings-section help-settings" aria-label="Help and glossary settings">
+          <h3>
+            Help density
+            <HelpTooltip text="Controls whether non-critical inline help appears across the UI." />
+          </h3>
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">
+                Contextual help
+                <Term term="CapabilityMaturity" fallback="Capability maturity" />
+              </span>
+              <span class="setting-desc">
+                Standard keeps help available, compact hides non-critical help, and verbose opens richer help by default.
+              </span>
+            </div>
+            <select
+              class="input density-select"
+              value={uiPreferences.helpDensity}
+              aria-label="Help density"
+              onchange={(event) => setHelpDensity(event.currentTarget.value)}
+            >
+              {#each HELP_DENSITY_VALUES as densityValue}
+                <option value={densityValue}>{densityValue}</option>
+              {/each}
+            </select>
+          </div>
+          <div class="help-demo-row" aria-label="Help component examples">
+            <HelpPopover
+              title="Help density modes"
+              body="Critical warnings always remain inline. Compact mode hides non-critical tips; verbose mode expands popovers so dense workflows can show more context."
+            />
+            <HelpTooltip
+              severity="critical"
+              text="Critical help remains visible even when compact density is selected."
+            />
+            <HelpPopover
+              severity="critical"
+              title="Critical warning"
+              body="This warning is rendered inline and does not require hover, focus, or click."
+            />
           </div>
         </section>
 
@@ -259,9 +337,9 @@
               aria-label="Save system prompt"
             >
               {#if systemPromptSaved}
-                <i class="fas fa-check"></i> Saved
+                <i class="fas fa-check" aria-hidden="true"></i> Saved
               {:else}
-                <i class="fas fa-save"></i> Save Prompt
+                <i class="fas fa-save" aria-hidden="true"></i> Save Prompt
               {/if}
             </button>
           </div>
@@ -281,7 +359,7 @@
               aria-expanded={showAddCred}
               aria-label="Add new credentials"
             >
-              <i class="fas fa-plus"></i> Add
+              <i class="fas fa-plus" aria-hidden="true"></i> Add
             </button>
           </div>
           <p class="section-desc">
@@ -328,7 +406,7 @@
               </div>
               <div class="form-actions">
                 <button type="submit" class="btn btn-primary" disabled={actionPending}>
-                  <i class="fas fa-save"></i> Save
+                  <i class="fas fa-save" aria-hidden="true"></i> Save
                 </button>
                 <button type="button" class="btn btn-secondary" onclick={() => { showAddCred = false; }}>
                   Cancel
@@ -339,7 +417,7 @@
 
           {#if credentials.length === 0}
             <div class="empty-state">
-              <i class="fas fa-key"></i>
+              <i class="fas fa-key" aria-hidden="true"></i>
               <p>No credentials configured.</p>
             </div>
           {:else}
@@ -349,7 +427,7 @@
                 <li class="cred-item">
                   <div class="cred-header">
                     <span class="cred-source">
-                      <i class="fas fa-shield-alt"></i>
+                      <i class="fas fa-shield-alt" aria-hidden="true"></i>
                       {source}
                     </span>
                     <div class="cred-meta">
@@ -373,14 +451,14 @@
                       disabled={actionPending}
                       aria-label="Rotate credentials for {source}"
                     >
-                      <i class="fas fa-sync-alt"></i> Rotate
+                      <i class="fas fa-sync-alt" aria-hidden="true"></i> Rotate
                     </button>
                     <button
                       class="btn btn-danger btn-sm"
                       onclick={() => handleDeleteCred(source)}
                       aria-label="Delete credentials for {source}"
                     >
-                      <i class="fas fa-trash-alt"></i> Delete
+                      <i class="fas fa-trash-alt" aria-hidden="true"></i> Delete
                     </button>
                   </div>
                 </li>
@@ -402,7 +480,7 @@
 
           {#if rules.length === 0}
             <div class="empty-state">
-              <i class="fas fa-ruler"></i>
+              <i class="fas fa-ruler" aria-hidden="true"></i>
               <p>No rules configured.</p>
             </div>
           {:else}
@@ -430,6 +508,12 @@
             </ul>
           {/if}
         </section>
+      </div>
+    {/if}
+
+    {#if activeTab === 'workspace'}
+      <div id="panel-workspace" role="tabpanel" aria-labelledby="tab-workspace" class="settings-panel">
+        <SettingsWorkspace />
       </div>
     {/if}
   {/if}
@@ -538,6 +622,21 @@
 
   .setting-info { flex: 1; }
 
+  .density-select {
+    width: 160px;
+    flex-shrink: 0;
+    text-transform: capitalize;
+  }
+
+  .help-demo-row {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-subtle);
+  }
+
   .setting-label {
     display: block;
     font-size: 0.9375rem;
@@ -589,9 +688,14 @@
   }
 
   .input:focus {
-    outline: none;
+    outline: 2px solid transparent;
+    outline-offset: 2px;
     border-color: var(--primary);
     box-shadow: 0 0 0 2px var(--primary-muted);
+  }
+
+  .input:focus-visible {
+    outline-color: var(--primary);
   }
 
   .textarea { resize: vertical; }
@@ -760,5 +864,41 @@
     margin-bottom: 8px;
     display: block;
     opacity: 0.4;
+  }
+
+  @media (max-width: 720px) {
+    .settings-view {
+      max-width: none;
+      padding: 16px;
+    }
+
+    .settings-section {
+      padding: 16px;
+    }
+
+    .tab {
+      flex: 1 1 11rem;
+      justify-content: center;
+    }
+
+    .setting-row,
+    .section-header,
+    .form-actions,
+    .cred-actions {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .density-select,
+    .theme-toggle,
+    .form-actions .btn,
+    .cred-actions .btn {
+      justify-content: center;
+      width: 100%;
+    }
+
+    .cred-meta {
+      flex-wrap: wrap;
+    }
   }
 </style>

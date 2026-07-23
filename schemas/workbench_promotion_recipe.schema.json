@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_promotion_recipe.schema.json",
+  "title": "Workbench Promotion Draft",
+  "type": "object",
+  "required": ["draft_id", "recipe", "source_range", "artifact_ref", "reversible_provenance_ref"],
+  "additionalProperties": false,
+  "properties": {
+    "draft_id": { "type": "string", "minLength": 1 },
+    "artifact_ref": { "type": "string", "minLength": 1 },
+    "reversible_provenance_ref": { "type": "string", "minLength": 1 },
+    "recipe": {
+      "type": "object",
+      "required": ["recipe_id", "kind", "target_schema_ref", "dependency_api_ref", "reversible", "contextual_action", "authority_ref", "safety_ref", "budget_ref"],
+      "additionalProperties": false,
+      "properties": {
+        "recipe_id": { "type": "string", "minLength": 1 },
+        "kind": {
+          "type": "string",
+          "enum": ["conversation_excerpt", "evidence_asset", "evidence_notebook", "preference_card", "eval_case", "automation_recipe", "data_asset"]
+        },
+        "target_schema_ref": { "type": "string", "minLength": 1 },
+        "dependency_api_ref": { "type": "string", "minLength": 1 },
+        "reversible": { "type": "boolean", "const": true },
+        "contextual_action": { "type": "boolean", "const": true },
+        "authority_ref": { "type": "string", "minLength": 1 },
+        "safety_ref": { "type": "string", "minLength": 1 },
+        "budget_ref": { "type": "string", "minLength": 1 }
+      }
+    },
+    "source_range": {
+      "type": "object",
+      "required": ["conversation_id", "start_turn", "end_turn", "excerpt_ref", "provenance_ref"],
+      "additionalProperties": false,
+      "properties": {
+        "conversation_id": { "type": "string", "minLength": 1 },
+        "start_turn": { "type": "integer", "minimum": 0 },
+        "end_turn": { "type": "integer", "minimum": 0 },
+        "excerpt_ref": { "type": "string", "minLength": 1 },
+        "provenance_ref": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

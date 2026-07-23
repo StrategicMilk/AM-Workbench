@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # ── Data types ─────────────────────────────────────────────────────────
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class GuardScanFinding:
     """A single finding from an LLM Guard scanner.
 
@@ -42,6 +42,14 @@ class GuardScanFinding:
     scanner_name: str
     is_safe: bool
     score: float
+    unavailable: bool = False
+
+    def __repr__(self) -> str:
+        """Show key identifying fields for debugging."""
+        return (
+            f"GuardScanFinding(scanner_name={self.scanner_name!r}, "
+            f"is_safe={self.is_safe!r}, unavailable={self.unavailable!r})"
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Converts scanner finding fields to a JSON-serializable dict."""
@@ -103,7 +111,7 @@ class LLMGuardScanner:
         Returns:
             ScanResult with is_safe=False to ensure callers block the content.
         """
-        finding = GuardScanFinding(scanner_name="llm_guard_stub", is_safe=False, score=0.0)
+        finding = GuardScanFinding(scanner_name="llm_guard_stub", is_safe=False, score=0.0, unavailable=True)
         return GuardScanResult(is_safe=False, sanitized_text=text, findings=[finding])
 
     def scan_output(self, prompt: str, output: str, context: str = "user_facing") -> GuardScanResult:
@@ -117,7 +125,7 @@ class LLMGuardScanner:
         Returns:
             ScanResult with is_safe=False to ensure callers block the content.
         """
-        finding = GuardScanFinding(scanner_name="llm_guard_stub", is_safe=False, score=0.0)
+        finding = GuardScanFinding(scanner_name="llm_guard_stub", is_safe=False, score=0.0, unavailable=True)
         return GuardScanResult(is_safe=False, sanitized_text=output, findings=[finding])
 
     def get_stats(self) -> dict[str, Any]:

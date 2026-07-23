@@ -1,0 +1,58 @@
+schema_version: "1.0"
+currency: USD
+tokens:
+  providers:
+    local:
+      models:
+        "*":
+          input_per_1k_usd: 0.0
+          output_per_1k_usd: 0.0
+        fixture-model:
+          input_per_1k_usd: 0.0
+          output_per_1k_usd: 0.0
+        local-model:
+          input_per_1k_usd: 0.0
+          output_per_1k_usd: 0.0
+        test-model:
+          input_per_1k_usd: 0.0
+          output_per_1k_usd: 0.0
+    cloud:
+      models:
+        "*":
+          input_per_1k_usd: 0.01
+          output_per_1k_usd: 0.03
+        audit-standard:
+          input_per_1k_usd: 0.02
+          output_per_1k_usd: 0.06
+gpu_hour_rates:
+  fixture-model: 0.25
+  generic_gpu: 0.50
+  local-model: 0.25
+  test-model: 0.25
+rotation:
+  experiments_jsonl:
+    max_bytes: 1048576
+    max_lines: 10000
+    backup_count: 10
+  ledger_jsonl:
+    max_bytes: 1048576
+    max_lines: 10000
+    backup_count: 10
+  failure_registry_jsonl:
+    max_bytes: 1048576
+    max_lines: 10000
+    backup_count: 10
+  prevention_rules_jsonl:
+    max_bytes: 1048576
+    max_lines: 10000
+    backup_count: 10
+  benchmarks_jsonl:
+    max_bytes: 1048576
+    max_lines: 10000
+    backup_count: 10
+  metadata_spine_jsonl:
+    max_bytes: 1048576
+    max_lines: 10000
+    backup_count: 10
+accounting:
+  lease_registry_path: outputs/workbench/resource_cockpit/lease_registry.json

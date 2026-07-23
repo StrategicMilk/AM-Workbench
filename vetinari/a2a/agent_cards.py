@@ -13,7 +13,7 @@ drifts from the live mode count.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from vetinari.constants import DEFAULT_A2A_BASE_URL
 from vetinari.types import AgentType
@@ -29,6 +29,21 @@ _A2A_BASE_URL = DEFAULT_A2A_BASE_URL
 # Single shared A2A endpoint — the per-agent path segments do not exist.
 # All three cards point here so external callers use the real mounted route.
 _A2A_ENDPOINT = f"{_A2A_BASE_URL}/api/v1/a2a"
+_A2A_PROTOCOL_VERSION = "a2a-0.2"
+_A2A_TRANSPORT = "jsonrpc"
+
+
+def _market_response_metadata(agent_type: AgentType) -> dict[str, str]:
+    """Return live A2A metadata that states local-first market posture."""
+    return {
+        "a2aCardVersion": _CARD_VERSION,
+        "agentType": agent_type.value,
+        "dataBoundary": "local-first",
+        "deployment": "single-user-localhost",
+        "qualityGate": "inspector-pass-fail",
+        "runtimePipeline": "Foreman -> Worker -> Inspector",
+    }
+
 
 # ── Worker skill descriptions ─────────────────────────────────────────────────
 # Maps each WorkerAgent mode name to a short human-readable description.
@@ -107,6 +122,9 @@ class AgentCard:
     supported_output_types: list[str]
     skills: list[dict]
     agent_type: AgentType = AgentType.FOREMAN
+    protocol_version: str = _A2A_PROTOCOL_VERSION
+    preferred_transport: str = _A2A_TRANSPORT
+    metadata: dict[str, str] = field(default_factory=dict)
 
     def __repr__(self) -> str:
         return f"AgentCard(name={self.name!r}, agent_type={self.agent_type!r}, url={self.url!r})"
@@ -127,6 +145,9 @@ class AgentCard:
             "supportedOutputTypes": self.supported_output_types,
             "skills": self.skills,
             "agentType": self.agent_type.value,
+            "protocolVersion": self.protocol_version,
+            "preferredTransport": self.preferred_transport,
+            "metadata": self.metadata or _market_response_metadata(self.agent_type),
         }
 
 
@@ -205,6 +226,7 @@ def get_foreman_card() -> AgentCard:
         supported_input_types=["application/json"],
         supported_output_types=["application/json"],
         skills=skills,
+        metadata=_market_response_metadata(AgentType.FOREMAN),
     )
 
 
@@ -282,6 +304,7 @@ def get_worker_card() -> AgentCard:
         supported_input_types=["application/json"],
         supported_output_types=["application/json"],
         skills=all_skills,
+        metadata=_market_response_metadata(AgentType.WORKER),
     )
 
 
@@ -340,6 +363,7 @@ def get_inspector_card() -> AgentCard:
         supported_input_types=["application/json"],
         supported_output_types=["application/json"],
         skills=skills,
+        metadata=_market_response_metadata(AgentType.INSPECTOR),
     )
 
 

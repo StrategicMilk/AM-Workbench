@@ -5,12 +5,13 @@ This package provides:
 - make_code_agent_task: Factory for creating coding AgentTasks
 - CodeArtifact: Generated code artifacts
 
-CodeTask was removed in M4 — use ``make_code_agent_task()`` instead.
+Legacy callers should use ``make_code_agent_task()`` to create normalized
+``AgentTask`` payloads.
 """
 
 from __future__ import annotations
 
-from .engine import (  # noqa: VET123 — init_coding_agent has no external callers but removing causes VET120
+from .engine import (
     CodeAgentEngine,
     CodeArtifact,
     CodingTaskType,
@@ -20,7 +21,12 @@ from .engine import (  # noqa: VET123 — init_coding_agent has no external call
     make_code_agent_task,
 )
 
+LEGACY_API_REPLACEMENTS = {
+    "CodeTask": "AgentTask via make_code_agent_task",
+}
+
 __all__ = [
+    "LEGACY_API_REPLACEMENTS",
     "CodeAgentEngine",
     "CodeArtifact",
     "CodingTaskType",

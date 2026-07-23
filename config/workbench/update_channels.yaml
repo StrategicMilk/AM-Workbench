@@ -1,0 +1,13 @@
+schema_version: "1.0"
+default_channel: stable
+channels:
+  stable:
+    enabled: false
+    manifest_path: ""
+    require_signature: true
+    allow_auto_install: false
+  beta:
+    enabled: false
+    manifest_path: ""
+    require_signature: false
+    allow_auto_install: false

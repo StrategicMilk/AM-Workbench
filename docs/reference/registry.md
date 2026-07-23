@@ -1,33 +1,35 @@
-# Vetinari Skill Registry
+# AM Workbench Skill Registry
 
 ## Overview
 
-The Skill Registry is a centralized system for managing and discovering all Vetinari skills. It provides a unified API for agents to discover available skills, their capabilities, permissions, and sample usage.
+The Skill Registry is the Python-backed discovery and validation surface for AM
+Workbench skills. It lets agents discover available skills, capabilities,
+permissions, and sample usage from the live catalog instead of from retired JSON
+registry files.
 
 ## Architecture
 
 ### Components
 
-1. **Central Registry** (`vetinari/skills_registry.json`)
-   - Master index of all skills
-   - Contains basic metadata, versions, and capabilities
-   - References per-skill manifests
+1. **Runtime Registry API** (`vetinari/skills/skill_registry.py`)
+   - Public entrypoint for discovering skills from Python
+   - Delegates storage, catalog loading, and governance checks to the
+     `vetinari/skills/skill_registry_*` modules
+   - Returns validated skill specs from the live catalog
 
-2. **Per-Skill Manifests** (`vetinari/skills/{skill_id}/manifest.json`)
-   - Machine-readable skill specification
-   - Input/output schemas
-   - Sample usage examples
-   - Context references
+2. **Catalog Skill Definitions** (`vetinari/skills/catalog/**/SKILL.md`)
+   - Source-of-truth skill instructions grouped by Foreman, Worker, and Inspector
+   - Parsed by `vetinari/skills/catalog_loader.py`
+   - Reflected into registry data through `vetinari/skills/skill_definitions.py`
 
-3. **Agent Mappings** (`vetinari/config/agent_skill_map.json`)
-   - Maps agents to their default skills
-   - Defines predefined workflows
-   - Environment-specific overrides
+3. **Registry Class and Governance** (`vetinari/skills/skill_registry_class.py`,
+   `vetinari/skills/skill_registry_governance.py`)
+   - Enforces schema, permissions, routing metadata, and compatibility checks
+   - Keeps registry behavior in code instead of a stale JSON index
 
-4. **Context Catalog** (`vetinari/context_registry.json`)
-   - Sample data for demonstrations
-   - Test fixtures
-   - Reference materials
+4. **Context Asset Registry** (`vetinari/workbench/context_assets/registry.py`)
+   - Registers workbench context packs and freshness metadata
+   - Replaces the retired JSON context-registry documentation path
 
 ## Usage
 
@@ -54,10 +56,6 @@ print(f"Required permissions: {manifest['permissions_required']}")
 agent_skills = registry.get_agent_skills("worker")
 print(f"Worker agent skills: {agent_skills}")
 
-# Get sample context
-context = registry.get_context("sample_code_snippet")
-print(f"Context data: {context['data']}")
-
 # Search skills
 results = registry.search_skills("review")
 print(f"Matching skills: {[s['id'] for s in results]}")
@@ -70,15 +68,22 @@ print(f"Warnings: {validation['warnings']}")
 
 ### CLI Usage
 
-There is no live `python -m vetinari.registry` CLI module. Use the Python API above, the Litestar `/api/v1/skills/*` routes when running the web app, or the project test suite for registry validation. If a registry CLI is added later, document the exact command and verification job that proves it.
+There is no dedicated registry CLI module. Use the Python API above or the
+project test suite for registry validation. The retired Litestar web host is not
+the primary runtime API boundary; document a Rust kernel route only after the
+route and validation job exist.
 
 ## Adding a New Skill
 
-1. Create manifest file: `vetinari/skills/{skill_id}/manifest.json`
-2. Update central registry: Add entry to `vetinari/skills_registry.json`
-3. Add sample contexts (optional): Update `vetinari/context_registry.json`
-4. Map to agents (optional): Update `vetinari/config/agent_skill_map.json`
-5. Run validation through `get_registry().validate()` or a focused registry test; do not document a CI or CLI validation path unless the job or command exists.
+1. Add or update the skill definition under `vetinari/skills/catalog/<role>/<skill-id>/SKILL.md`.
+2. Update `vetinari/skills/skill_definitions.py` only when the skill needs new
+   structured metadata or defaults beyond the catalog file.
+3. Update registry loaders or governance modules only when the new skill changes
+   parsing, permissions, routing metadata, or validation behavior.
+4. Add workbench context packs through `vetinari/workbench/context_assets/registry.py`
+   when the skill depends on reusable context assets.
+5. Run validation through `get_registry().validate()` or a focused registry test;
+   do not document a CI or CLI validation path unless the job or command exists.
 
 ## Manifest Schema
 
@@ -91,14 +96,14 @@ There is no live `python -m vetinari.registry` CLI module. Use the Python API ab
   "capabilities": ["string"],
   "thinking_modes": ["low", "medium", "high", "xhigh"],
   "triggers": ["string"],
-  "required_permissions": ["FILE_READ", ...],
+  "required_permissions": ["FILE_READ"],
   "allowed_modes": ["EXECUTION", "PLANNING"],
-  "sample_usage": {...},
-  "inputs": {...},
-  "outputs": {...},
+  "sample_usage": {},
+  "inputs": {},
+  "outputs": {},
   "contexts": ["context_id"],
   "external_endpoints": {
-    "allowed": boolean,
+    "allowed": false,
     "endpoints": ["url"]
   }
 }
@@ -108,41 +113,34 @@ There is no live `python -m vetinari.registry` CLI module. Use the Python API ab
 
 Predefined skill workflows follow the 3-agent factory pipeline (ADR-0061):
 
-- `code_review_pipeline`: Worker(code_discovery) → Inspector(code_review) → Worker(documentation)
-- `feature_implementation_pipeline`: Worker(code_discovery) → Worker(architecture) → Worker(build) → Inspector(code_review) → Worker(documentation)
-- `research_pipeline`: Worker(domain_research) → Worker(lateral_thinking) → Worker(architecture) → Worker(synthesis)
+- `code_review_pipeline`: Worker(code_discovery) -> Inspector(code_review) -> Worker(documentation)
+- `feature_implementation_pipeline`: Worker(code_discovery) -> Worker(architecture) -> Worker(build) -> Inspector(code_review) -> Worker(documentation)
+- `research_pipeline`: Worker(domain_research) -> Worker(lateral_thinking) -> Worker(architecture) -> Worker(synthesis)
 
 ### Skill Catalog Structure
 
 Skills are organized by agent type in `vetinari/skills/catalog/`:
-- `foreman/` — Planning and decomposition skills
-- `worker/` — 24 skills across research, architecture, build, and operations groups
-- `inspector/` — Review, audit, testing, and simplification skills
 
-Each skill has a `SKILL.md` definition file describing its purpose, inputs, outputs, and quality criteria.
+- `foreman/` - Planning and decomposition skills
+- `worker/` - Skills across research, architecture, build, and operations groups
+- `inspector/` - Review, audit, testing, and simplification skills
+
+Each skill has a `SKILL.md` definition file describing its purpose, inputs,
+outputs, and quality criteria.
 
 ## Version Compatibility
 
-The registry maintains a compatibility matrix between Vetinari core and skill versions:
-
-```json
-{
-  "version_matrix": {
-    "vetinari_core": {
-      "min": "0.1.0",
-      "recommended": "0.4.0",
-      "compatibility": {
-        "worker": ">=2.0.0",
-        ...
-      }
-    }
-  }
-}
-```
+Registry compatibility is enforced by the live registry API and tests. Do not
+add a static compatibility matrix to this document unless a runtime reader and
+validation test consume it.
 
 ## Security
 
-- All skills enforce permissions via `ToolMetadata.required_permissions`
-- External network access is explicitly whitelisted per skill
-- Registry validation must be run through the live registry API or tests. Do not claim CI coverage unless the workflow job and checked roots are named.
-- Skill proposal and validation routes are internal control-plane surfaces. Treat pending proposals as untrusted until reviewed; capability entries must be schema-validated strings before they are allowed to influence routing or trust decisions.
+- All skills enforce permissions via `ToolMetadata.required_permissions`.
+- External network access is explicitly whitelisted per skill.
+- Registry validation must be run through the live registry API or tests. Do not
+  claim CI coverage unless the workflow job and checked roots are named.
+- Skill proposal and validation routes are internal control-plane surfaces.
+  Treat pending proposals as untrusted until reviewed; capability entries must
+  be schema-validated strings before they are allowed to influence routing or
+  trust decisions.

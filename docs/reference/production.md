@@ -1,6 +1,6 @@
-# Vetinari — Production Deployment Guide
+# AM Workbench — Production Deployment Guide
 
-**Phase 6 | Last Updated: March 2026**
+**Operational deployment guide | Last drift check: 2026-05-20**
 
 ---
 
@@ -8,7 +8,7 @@
 
 1. [Prerequisites](#prerequisites)
 2. [Environment Configuration](#environment-configuration)
-3. [Running the Backend Server](#running-the-backend-server)
+3. [Running the Dashboard Server](#running-the-dashboard-server)
 4. [Configuring Alerts](#configuring-alerts)
 5. [Log Aggregation Setup](#log-aggregation-setup)
 6. [Analytics & SLA Monitoring](#analytics--sla-monitoring)
@@ -25,8 +25,8 @@
 
 | Requirement | Version |
 |---|---|
-| Python | 3.10+ (3.11 recommended) |
-| Litestar | 2.x (installed via pyproject.toml) |
+| Python | 3.11+ (project floor); CI also exercises 3.12 and 3.13 |
+| Rust toolchain | Stable Rust compatible with the workspace `rust-version` |
 | llama-cpp-python | latest (installed via pyproject.toml) |
 | OS | Linux (Ubuntu 22.04+), macOS 13+, Windows 10+ |
 | RAM | 8 GB minimum; 32 GB recommended for large models |
@@ -42,6 +42,10 @@ The supported runtime reads configuration from:
 2. `~/.vetinari/config.yaml`
 3. project defaults in `config/models.yaml`
 
+Python 3.11 remains within the official CPython security-support window
+through 2027-10. Do not publish production guidance that implies Python 3.10
+is supported unless `pyproject.toml` is lowered and CI re-adds 3.10 coverage.
+
 ```bash
 python -m venv .venv312
 source .venv312/bin/activate
@@ -52,7 +56,7 @@ pip install -e ".[dev,local,ml,search,notifications]"
 
 | Variable | Description | Example |
 |---|---|---|
-| `VETINARI_MODELS_DIR` | Directory containing GGUF fallback model files | `/var/lib/vetinari/models` |
+| `VETINARI_MODELS_DIR` | Directory containing llama-cpp GGUF model files (one backend among many — vLLM/SGLang/NIM resolve via HuggingFace repo IDs instead) | `/var/lib/vetinari/models` |
 
 ### Optional variables
 
@@ -61,8 +65,8 @@ pip install -e ".[dev,local,ml,search,notifications]"
 | `VETINARI_NATIVE_MODELS_DIR` | `./models/native` | Native-model directory for `vllm`/NIM |
 | `VETINARI_VLLM_ENDPOINT` | `http://localhost:8000` | OpenAI-compatible `vllm` endpoint |
 | `VETINARI_NIM_ENDPOINT` | `http://localhost:8001` | OpenAI-compatible NVIDIA NIM endpoint |
-| `VETINARI_WEB_PORT` | `5000` | Backend server port |
-| `VETINARI_WEB_HOST` | `127.0.0.1` | Backend bind address |
+| `VETINARI_WEB_PORT` | `5000` | Dashboard server port |
+| `VETINARI_WEB_HOST` | `127.0.0.1` | Dashboard bind address |
 | `VETINARI_LOG_LEVEL` | `INFO` | Python log level |
 | `LOG_FILE` | `logs/vetinari.log` | Log output path |
 | `TELEMETRY_EXPORT_PATH` | `logs/telemetry.json` | Telemetry export file |
@@ -72,13 +76,11 @@ pip install -e ".[dev,local,ml,search,notifications]"
 
 ### Native backend note
 
-On Windows, the supported `vllm` path is to run `vllm` inside WSL and export
-`VETINARI_VLLM_ENDPOINT` in the Windows shell that starts Vetinari. See
-`README.md` for the operator steps and download links.
+On Windows, the supported `vllm` path is to run `vllm` inside WSL and export `VETINARI_VLLM_ENDPOINT` in the Windows shell that starts AM Workbench. See [README.md](../../README.md) for the operator steps and download links.
 
 ---
 
-## Running the Backend Server
+## Running the Dashboard Server
 
 ### Development
 
@@ -86,26 +88,24 @@ On Windows, the supported `vllm` path is to run `vllm` inside WSL and export
 python -m vetinari serve --port 5000
 ```
 
-### Production (single-process uvicorn)
+### Production (native Rust kernel server)
 
 ```bash
 python -m pip install -e ".[dev,local,ml,search,notifications]"
-uvicorn vetinari.web.litestar_app:get_app --factory \
-    --host 127.0.0.1 \
-    --port 5000
+cargo run -p amw-kernel --bin amw-kernel-server -- --host 127.0.0.1 --port 5000
 ```
 
-The supported deployment topology is one Litestar/Uvicorn process with the
-current SQLite-backed state stores. Do not scale this guide with multi-worker
-Uvicorn/Gunicorn or PostgreSQL claims until that topology is implemented and
-verified publicly.
+The supported API-domain deployment topology is the native Rust kernel server
+serving the migrated AM Workbench route surface. Litestar compatibility modules
+remain for protected sibling surfaces and historical route tests, but they are
+not the live AM Workbench API host.
 
 ### systemd service
 
 ```ini
 # /etc/systemd/system/vetinari-dashboard.service
 [Unit]
-Description=AM Workbench Vetinari backend
+Description=AM Workbench Monitoring Dashboard
 After=network.target
 
 [Service]
@@ -113,8 +113,7 @@ Type=simple
 User=vetinari
 WorkingDirectory=/opt/vetinari
 Environment=PYTHONPATH=/opt/vetinari
-ExecStart=/opt/vetinari/.venv312/bin/uvicorn \
-    vetinari.web.litestar_app:get_app --factory \
+ExecStart=/usr/bin/cargo run -p amw-kernel --bin amw-kernel-server -- \
     --host 127.0.0.1 \
     --port 5000
 Restart=always
@@ -154,38 +153,47 @@ Register thresholds at startup. Recommended production defaults:
 
 ```python
 from vetinari.dashboard.alerts import (
-    get_alert_engine, AlertThreshold, AlertCondition, AlertSeverity,
+    get_alert_engine,
+    AlertThreshold,
+    AlertCondition,
+    AlertSeverity,
 )
 
 engine = get_alert_engine()
 
-engine.register_threshold(AlertThreshold(
-    name="high-adapter-latency",
-    metric_key="adapters.average_latency_ms",
-    condition=AlertCondition.GREATER_THAN,
-    threshold_value=500.0,
-    severity=AlertSeverity.HIGH,
-    channels=["log"],
-    duration_seconds=60,   # sustained for 1 min before firing
-))
+engine.register_threshold(
+    AlertThreshold(
+        name="high-adapter-latency",
+        metric_key="adapters.average_latency_ms",
+        condition=AlertCondition.GREATER_THAN,
+        threshold_value=500.0,
+        severity=AlertSeverity.HIGH,
+        channels=["log"],
+        duration_seconds=60,  # sustained for 1 min before firing
+    )
+)
 
-engine.register_threshold(AlertThreshold(
-    name="low-success-rate",
-    metric_key="adapters.total_failed",
-    condition=AlertCondition.GREATER_THAN,
-    threshold_value=10.0,
-    severity=AlertSeverity.HIGH,
-    channels=["log"],
-))
+engine.register_threshold(
+    AlertThreshold(
+        name="low-success-rate",
+        metric_key="adapters.total_failed",
+        condition=AlertCondition.GREATER_THAN,
+        threshold_value=10.0,
+        severity=AlertSeverity.HIGH,
+        channels=["log"],
+    )
+)
 
-engine.register_threshold(AlertThreshold(
-    name="low-plan-approval",
-    metric_key="plan.approval_rate",
-    condition=AlertCondition.LESS_THAN,
-    threshold_value=70.0,
-    severity=AlertSeverity.MEDIUM,
-    channels=["log"],
-))
+engine.register_threshold(
+    AlertThreshold(
+        name="low-plan-approval",
+        metric_key="plan.approval_rate",
+        condition=AlertCondition.LESS_THAN,
+        threshold_value=70.0,
+        severity=AlertSeverity.MEDIUM,
+        channels=["log"],
+    )
+)
 ```
 
 Run `engine.evaluate_all()` on a schedule (e.g. every 30 s via APScheduler
@@ -197,17 +205,22 @@ or a background thread).
 from vetinari.dashboard.alerts import DISPATCHERS, AlertRecord
 import requests
 
+
 def pagerduty_dispatcher(alert: AlertRecord) -> None:
-    requests.post("https://events.pagerduty.com/v2/enqueue", json={
-        "routing_key": "YOUR_INTEGRATION_KEY",
-        "event_action": "trigger",
-        "payload": {
-            "summary": f"[{alert.threshold.severity.value.upper()}] {alert.threshold.name}",
-            "source": "vetinari",
-            "severity": alert.threshold.severity.value,
-            "custom_details": alert.to_dict(),
+    requests.post(
+        "https://events.pagerduty.com/v2/enqueue",
+        json={
+            "routing_key": "YOUR_INTEGRATION_KEY",
+            "event_action": "trigger",
+            "payload": {
+                "summary": f"[{alert.threshold.severity.value.upper()}] {alert.threshold.name}",
+                "source": "vetinari",
+                "severity": alert.threshold.severity.value,
+                "custom_details": alert.to_dict(),
+            },
         },
-    })
+    )
+
 
 DISPATCHERS["pagerduty"] = pagerduty_dispatcher
 ```
@@ -220,6 +233,7 @@ DISPATCHERS["pagerduty"] = pagerduty_dispatcher
 
 ```python
 from vetinari.dashboard.log_aggregator import get_log_aggregator
+
 agg = get_log_aggregator()
 agg.configure_backend("file", path="logs/vetinari_audit.jsonl")
 ```
@@ -227,7 +241,8 @@ agg.configure_backend("file", path="logs/vetinari_audit.jsonl")
 ### Elasticsearch
 
 ```python
-agg.configure_backend("elasticsearch",
+agg.configure_backend(
+    "elasticsearch",
     url="https://elastic.yourhost.com:9200",
     index="vetinari-prod",
     api_key="YOUR_ES_API_KEY",
@@ -238,7 +253,9 @@ agg.configure_backend("elasticsearch",
 
 ```python
 import os
-agg.configure_backend("datadog",
+
+agg.configure_backend(
+    "datadog",
     api_key=os.environ["DD_API_KEY"],
     service="vetinari",
     ddsource="python",
@@ -250,6 +267,7 @@ agg.configure_backend("datadog",
 
 ```python
 import atexit
+
 atexit.register(get_log_aggregator().flush)
 ```
 
@@ -264,30 +282,35 @@ from vetinari.analytics.sla import get_sla_tracker, SLOTarget, SLOType
 
 sla = get_sla_tracker()
 
-sla.register_slo(SLOTarget(
-    name="adapter-p95-latency",
-    slo_type=SLOType.LATENCY_P95,
-    budget=500.0,
-    window_seconds=3600,
-    description="95% of adapter calls complete within 500 ms",
-))
+sla.register_slo(
+    SLOTarget(
+        name="adapter-p95-latency",
+        slo_type=SLOType.LATENCY_P95,
+        budget=500.0,
+        window_seconds=3600,
+        description="95% of adapter calls complete within 500 ms",
+    )
+)
 
-sla.register_slo(SLOTarget(
-    name="adapter-success-rate",
-    slo_type=SLOType.SUCCESS_RATE,
-    budget=99.0,
-    window_seconds=3600,
-    description="Adapter success rate >= 99%",
-))
+sla.register_slo(
+    SLOTarget(
+        name="adapter-success-rate",
+        slo_type=SLOType.SUCCESS_RATE,
+        budget=99.0,
+        window_seconds=3600,
+        description="Adapter success rate >= 99%",
+    )
+)
 ```
 
 ### Cost budget alerts
 
 ```python
 from vetinari.analytics.cost import get_cost_tracker
+
 tracker = get_cost_tracker()
 report = tracker.get_report()
-if report.total_cost_usd > 10.0:   # $10 daily budget
+if report.total_cost_usd > 10.0:  # $10 daily budget
     logger.warning("Daily cost budget exceeded: $%.4f", report.total_cost_usd)
 ```
 
@@ -300,12 +323,13 @@ if report.total_cost_usd > 10.0:   # $10 daily budget
 
    ```python
    from vetinari.security import get_secret_scanner
+
    scanner = get_secret_scanner()
    safe_payload = scanner.sanitize_dict(metrics_dict)
    ```
 
-2. **CORS**: restrict `Access-Control-Allow-Origin` in production via
-   Litestar's CORS middleware configuration in `vetinari/web/litestar_app.py`.
+2. **CORS**: restrict `Access-Control-Allow-Origin` in production at the native
+   Rust kernel API host or the fronting reverse proxy.
 
 3. **HTTPS**: always terminate TLS at Nginx/load balancer before the app.
 
@@ -320,7 +344,7 @@ if report.total_cost_usd > 10.0:   # $10 daily budget
 
 ```
 GET http://localhost:5000/health
--> { "status": "ok", "server": "litestar" }
+-> { "status": "ok", "server": "amw-kernel" }
 
 GET http://localhost:5000/api/v1/health
 -> { "status": "healthy" | "degraded", "checks": { ... }, "timestamp": "..." }
@@ -336,6 +360,7 @@ Export telemetry to Prometheus format:
 
 ```python
 from vetinari.telemetry import get_telemetry_collector
+
 telemetry = get_telemetry_collector()
 telemetry.export_prometheus("logs/metrics.prom")
 ```
@@ -368,7 +393,7 @@ Point your Prometheus scraper at the file or expose it via a custom endpoint.
 # Back up the unified SQLite database while the process can be running.
 sqlite3 .vetinari/vetinari.db ".backup 'backups/vetinari_$(date +%Y%m%d).db'"
 
-# If sqlite3 is unavailable, stop Vetinari first, then copy the DB plus WAL/SHM files together.
+# If sqlite3 is unavailable, stop AM Workbench first, then copy the DB plus WAL/SHM files together.
 cp .vetinari/vetinari.db backups/
 cp .vetinari/vetinari.db-wal backups/ 2>/dev/null || true
 cp .vetinari/vetinari.db-shm backups/ 2>/dev/null || true
@@ -379,9 +404,25 @@ cp logs/vetinari_audit.jsonl backups/
 # Back up user configuration
 cp ~/.vetinari/config.yaml backups/config_$(date +%Y%m%d).yaml
 
-# Restore only while Vetinari is stopped.
+# Restore only while AM Workbench is stopped.
 cp backups/vetinari_20260303.db .vetinari/vetinari.db
 ```
+
+Before accepting a backup as restorable, run the manifest drill:
+
+```bash
+python scripts/check_backup_restore_drill.py --self-test
+python scripts/check_backup_restore_drill.py --strict
+python scripts/check_backup_restore_drill.py --backup-dir /path/to/vetinari-backup
+python scripts/backup_restore_state.py restore /path/to/vetinari-backup --dry-run
+```
+
+The drill must reject corrupt manifests, missing backup payloads, unsafe restore
+targets, stale recovery markers, checksum mismatches, and partial writes before
+its strict result is trusted. The specific backup must also pass `--backup-dir`
+and dry-run restore before any overwrite. Metadata-spine JSONL remains the
+source of truth for Workbench state; a SQLite index without its JSONL append log
+is damaged state, not a clean restore source.
 
 ---
 
@@ -412,5 +453,5 @@ sudo systemctl restart vetinari-dashboard
 | Alert never fires | `evaluate_all()` not being called | Add a background scheduler thread |
 | High memory usage | Log aggregator buffer full | Reduce `MAX_BUFFER` or call `clear_buffer()` periodically |
 | Elasticsearch rejecting batches | Index template mismatch | Delete and recreate the index; check field type conflicts |
-| `uvicorn` process restarting | Timeout on slow model calls or startup failure | Check `journalctl -u vetinari-dashboard`, reduce concurrent workload, and inspect model endpoint health |
-| SQLite locked | Concurrent process or long-running transaction against the SQLite state store | Stop extra Vetinari processes, let the lock clear, and back up the SQLite file before repair; PostgreSQL is not a supported remediation in the current runtime |
+| Native kernel process restarting | Timeout on slow model calls or startup failure | Check `journalctl -u vetinari-dashboard`, reduce concurrent workload, and inspect model endpoint health |
+| SQLite locked | Concurrent process or long-running transaction against the SQLite state store | Stop extra AM Workbench processes, let the lock clear, and back up the SQLite file before repair; PostgreSQL is not a supported remediation in the current runtime |

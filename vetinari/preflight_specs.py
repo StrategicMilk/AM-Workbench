@@ -12,17 +12,17 @@ _DEPENDENCY_GROUPS: dict[str, tuple[str, tuple[str, ...], str]] = {
     ),
     "Cloud LLM Providers": (
         "cloud",
-        ("litellm", "anthropic", "openai", "google.generativeai", "cohere"),
-        "Route inference to OpenAI, Anthropic, Google, Cohere via LiteLLM",
+        ("anthropic", "openai", "google.genai"),
+        "Route inference to OpenAI, Anthropic, and Google via native provider SDKs",
     ),
     "ML Utilities": (
         "ml",
-        ("numpy", "sentence_transformers", "lancedb", "onnxruntime", "joblib", "gguf"),
-        "Embeddings, vector search, ONNX runtime, GGUF metadata",
+        ("numpy", "onnxruntime", "joblib", "gguf"),
+        "Vector search, ONNX runtime, GGUF metadata (embeddings are AM Engine-owned)",
     ),
     "Training & Fine-tuning": (
         "training",
-        ("datasets", "peft", "trl", "transformers", "bitsandbytes", "tiktoken", "faiss"),
+        ("datasets", "peft", "trl", "transformers", "bitsandbytes", "tiktoken"),
         "QLoRA fine-tuning, dataset loading, tokenization, quantized training backends",
     ),
     "Image Generation": (
@@ -74,7 +74,7 @@ _DEPENDENCY_READINESS_SPECS: tuple[DependencyReadinessSpec, ...] = (
         channel="core",
         expected="required",
         description="Core settings and validation runtime",
-        install_command="pip install vetinari",  # noqa: VET301 — user guidance string
+        install_command="pip install vetinari",
         distribution="pydantic",
     ),
     DependencyReadinessSpec(
@@ -83,7 +83,7 @@ _DEPENDENCY_READINESS_SPECS: tuple[DependencyReadinessSpec, ...] = (
         channel="core",
         expected="required",
         description="Primary ASGI application framework",
-        install_command="pip install vetinari",  # noqa: VET301 — user guidance string
+        install_command="pip install vetinari",
         distribution="litestar",
     ),
     DependencyReadinessSpec(
@@ -92,7 +92,7 @@ _DEPENDENCY_READINESS_SPECS: tuple[DependencyReadinessSpec, ...] = (
         channel="core",
         expected="required",
         description="HTTP client used by backend setup and health probes",
-        install_command="pip install vetinari",  # noqa: VET301 — user guidance string
+        install_command="pip install vetinari",
         distribution="httpx",
     ),
     DependencyReadinessSpec(
@@ -101,7 +101,7 @@ _DEPENDENCY_READINESS_SPECS: tuple[DependencyReadinessSpec, ...] = (
         channel="core",
         expected="required",
         description="Safer XML parsing for runtime integrations",
-        install_command="pip install vetinari",  # noqa: VET301 — user guidance string
+        install_command="pip install vetinari",
         distribution="defusedxml",
     ),
     DependencyReadinessSpec(
@@ -110,7 +110,7 @@ _DEPENDENCY_READINESS_SPECS: tuple[DependencyReadinessSpec, ...] = (
         channel="extra",
         expected="recommended",
         description="Local GGUF inference fallback",
-        install_command='pip install "vetinari[local]"',  # noqa: VET301 — user guidance string
+        install_command='pip install "vetinari[local]"',
         distribution="llama-cpp-python",
         gpu_expected="recommended",
     ),
@@ -120,7 +120,7 @@ _DEPENDENCY_READINESS_SPECS: tuple[DependencyReadinessSpec, ...] = (
         channel="extra",
         expected="optional",
         description="Training, image, and CUDA-backed ML runtime",
-        install_command='pip install "vetinari[image,training]"',  # noqa: VET301 — user guidance string
+        install_command='pip install "vetinari[image,training]"',
         distribution="torch",
         gpu_expected="recommended",
     ),
@@ -130,7 +130,7 @@ _DEPENDENCY_READINESS_SPECS: tuple[DependencyReadinessSpec, ...] = (
         channel="extra",
         expected="optional",
         description="Quantized training backend for QLoRA flows",
-        install_command='pip install "vetinari[training]"',  # noqa: VET301 — user guidance string
+        install_command='pip install "vetinari[training]"',
         distribution="bitsandbytes",
         gpu_expected="recommended",
     ),
@@ -140,7 +140,7 @@ _DEPENDENCY_READINESS_SPECS: tuple[DependencyReadinessSpec, ...] = (
         channel="extra",
         expected="optional",
         description="NVIDIA telemetry used for GPU diagnostics",
-        install_command='pip install "vetinari[ml]"',  # noqa: VET301 — user guidance string
+        install_command='pip install "vetinari[ml]"',
         distribution="nvidia-ml-py",
         gpu_expected="recommended",
     ),
@@ -150,7 +150,7 @@ _DEPENDENCY_READINESS_SPECS: tuple[DependencyReadinessSpec, ...] = (
         channel="extra",
         expected="optional",
         description="Native vLLM server package when running in-process on Linux/WSL",
-        install_command='pip install "vetinari[vllm]"',  # noqa: VET301 — user guidance string
+        install_command='pip install "vetinari[vllm]"',
         distribution="vllm",
     ),
     DependencyReadinessSpec(
@@ -159,7 +159,7 @@ _DEPENDENCY_READINESS_SPECS: tuple[DependencyReadinessSpec, ...] = (
         channel="extra",
         expected="optional",
         description="DuckDuckGo search backend (current package: ddgs)",
-        install_command='pip install "vetinari[search]"',  # noqa: VET301 — user guidance string
+        install_command='pip install "vetinari[search]"',
         distribution="ddgs",
     ),
     DependencyReadinessSpec(
@@ -168,7 +168,7 @@ _DEPENDENCY_READINESS_SPECS: tuple[DependencyReadinessSpec, ...] = (
         channel="dev",
         expected="dev",
         description="Coverage reporting for test runs",
-        install_command='pip install "vetinari[dev]"',  # noqa: VET301 — user guidance string
+        install_command='pip install "vetinari[dev]"',
         distribution="pytest-cov",
     ),
     DependencyReadinessSpec(
@@ -177,7 +177,7 @@ _DEPENDENCY_READINESS_SPECS: tuple[DependencyReadinessSpec, ...] = (
         channel="dev",
         expected="dev",
         description="Async test support",
-        install_command='pip install "vetinari[dev]"',  # noqa: VET301 — user guidance string
+        install_command='pip install "vetinari[dev]"',
         distribution="pytest-asyncio",
     ),
     DependencyReadinessSpec(
@@ -186,7 +186,7 @@ _DEPENDENCY_READINESS_SPECS: tuple[DependencyReadinessSpec, ...] = (
         channel="dev",
         expected="dev",
         description="Parallel test execution",
-        install_command='pip install "vetinari[dev]"',  # noqa: VET301 — user guidance string
+        install_command='pip install "vetinari[dev]"',
         distribution="pytest-xdist",
     ),
     DependencyReadinessSpec(
@@ -195,7 +195,7 @@ _DEPENDENCY_READINESS_SPECS: tuple[DependencyReadinessSpec, ...] = (
         channel="dev",
         expected="dev",
         description="API contract and property-based testing",
-        install_command='pip install "vetinari[dev]"',  # noqa: VET301 — user guidance string
+        install_command='pip install "vetinari[dev]"',
         distribution="schemathesis",
     ),
 )

@@ -1,0 +1,28 @@
+schema_version: 1
+default_latency_budget_ms: 1200
+required_modalities:
+  - audio
+  - video
+  - transcript
+adapter_slots:
+  - id: local-media-review
+    kind: local_file
+    optional: false
+    required_capabilities:
+      - transcript_alignment
+      - frame_sampling
+      - provenance_capture
+  - id: realtime-stream
+    kind: streaming
+    optional: true
+    required_capabilities:
+      - partial_transcripts
+      - latency_metrics
+      - interruption_events
+  - id: telephony-agent
+    kind: telephony
+    optional: true
+    required_capabilities:
+      - turn_taking_metrics
+      - barge_in_detection
+      - redaction_markers

@@ -10,15 +10,22 @@ Subsystem Wiring → Health Check → Ready**.
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import logging
-import os
+import multiprocessing
+import queue
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from importlib import metadata as importlib_metadata
 from pathlib import Path
+from typing import Any, cast
 
+from vetinari import preflight_install
+from vetinari.models.vram_manager import VRAMManager, VRAMPreflightResult, check_model_vram_capacity, get_vram_manager
+from vetinari.preflight_install import prompt_and_install as _prompt_and_install
 from vetinari.preflight_models import (
     DependencyGroupStatus,
     DependencyReadiness,
@@ -34,14 +41,51 @@ from vetinari.preflight_specs import (
 )
 
 logger = logging.getLogger(__name__)
+_NATIVE_PROBE_TIMEOUT_SECONDS = 20.0
+
+
+def _build_pip_environment() -> dict[str, str]:
+    """Build the environment passed to pip subprocesses.
+
+    Returns:
+        Environment mapping for pip commands.
+    """
+    return preflight_install._build_pip_environment()
+
+
+def check_model_vram_preflight(
+    model_id: str,
+    *,
+    manager: VRAMManager | None = None,
+) -> VRAMPreflightResult:
+    """Check whether ``model_id`` can be admitted under current VRAM state.
+
+    Returns:
+        VRAM preflight decision for the requested model.
+    """
+    active_manager = manager or get_vram_manager()
+    try:
+        required = active_manager.get_model_vram_requirement(model_id)
+    except Exception:
+        logger.warning("Could not resolve VRAM requirement for %s", model_id, exc_info=True)
+        required = None
+    try:
+        available = active_manager.get_max_available_vram_gb()
+    except Exception:
+        logger.warning("Could not resolve available VRAM for %s", model_id, exc_info=True)
+        available = None
+    return check_model_vram_capacity(
+        model_id,
+        required_vram_gb=required,
+        available_vram_gb=available,
+    )
 
 
 def detect_hardware() -> HardwareInfo:
     """Probe the system for GPU, CUDA toolkit, torch CUDA, and Docker.
 
     Uses pynvml/nvidia-smi for GPU detection, shutil.which for system tools,
-    and conditional imports for torch/llama-cpp CUDA status.  Every probe is
-    wrapped in try/except so detection never crashes the startup flow.
+    and crash-isolated child processes for torch/llama-cpp CUDA status.
 
     Returns:
         Populated HardwareInfo with all detected capabilities.
@@ -52,7 +96,7 @@ def detect_hardware() -> HardwareInfo:
 
     # NVIDIA GPU via pynvml
     try:
-        import pynvml  # type: ignore[import-untyped]
+        pynvml = importlib.import_module("pynvml")
 
         pynvml.nvmlInit()
         handle = pynvml.nvmlDeviceGetHandleByIndex(0)
@@ -85,27 +129,20 @@ def detect_hardware() -> HardwareInfo:
     # torch CUDA support
     torch_has_cuda = False
     if importlib.util.find_spec("torch") is not None:
-        try:
-            import torch  # type: ignore[import-not-found]
-
-            torch_has_cuda = torch.cuda.is_available()
-        except Exception as exc:
-            logger.warning("torch CUDA probe failed: %s — CUDA support detection may be incomplete", exc)
+        torch_cuda_probe = _run_native_bool_probe(_torch_cuda_worker)
+        if torch_cuda_probe is None:
+            logger.warning("torch CUDA probe failed — CUDA support detection may be incomplete")
+        else:
+            torch_has_cuda = torch_cuda_probe
 
     # llama-cpp-python CUDA support
     llama_cpp_has_cuda = False
     if importlib.util.find_spec("llama_cpp") is not None:
-        try:
-            import llama_cpp  # type: ignore[import-not-found]
-
-            # Check if built with CUDA by looking for CUDA-related attributes
-            supports = getattr(llama_cpp, "llama_supports_gpu_offload", None)
-            if callable(supports):
-                llama_cpp_has_cuda = bool(supports())
-            elif hasattr(llama_cpp, "LLAMA_SUPPORTS_GPU_OFFLOAD"):
-                llama_cpp_has_cuda = bool(llama_cpp.LLAMA_SUPPORTS_GPU_OFFLOAD)
-        except Exception as exc:
-            logger.warning("llama-cpp CUDA probe failed: %s — GPU offload support detection unavailable", exc)
+        llama_cuda_probe = _run_native_bool_probe(_llama_cpp_cuda_worker)
+        if llama_cuda_probe is None:
+            logger.warning("llama-cpp CUDA probe failed — GPU offload support detection unavailable")
+        else:
+            llama_cpp_has_cuda = llama_cuda_probe
 
     # Docker
     has_docker = shutil.which("docker") is not None
@@ -122,6 +159,51 @@ def detect_hardware() -> HardwareInfo:
 
 
 # ── Dependency group checking ────────────────────────────────────────────────
+
+
+def _run_native_bool_probe(worker: Callable[[Any], None]) -> bool | None:
+    """Run a native-library probe in a spawned process."""
+    ctx = multiprocessing.get_context("spawn")
+    result_queue = ctx.Queue(maxsize=1)
+    proc = ctx.Process(target=worker, args=(result_queue,))
+    try:
+        proc.start()
+        proc.join(_NATIVE_PROBE_TIMEOUT_SECONDS)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(2.0)
+            return None
+    except Exception:
+        logger.warning("native preflight probe failed to start", exc_info=True)
+        result_queue.close()
+        result_queue.join_thread()
+        return None
+    if proc.exitcode != 0:
+        result_queue.close()
+        result_queue.join_thread()
+        return None
+    try:
+        return bool(result_queue.get_nowait())
+    except queue.Empty:
+        logger.warning("native preflight probe returned no result")
+        return None
+    finally:
+        result_queue.close()
+        result_queue.join_thread()
+
+
+def _torch_cuda_worker(result_queue: Any) -> None:
+    torch = importlib.import_module("torch")
+    result_queue.put(bool(torch.cuda.is_available()))
+
+
+def _llama_cpp_cuda_worker(result_queue: Any) -> None:
+    llama_cpp = importlib.import_module("llama_cpp")
+    supports = getattr(llama_cpp, "llama_supports_gpu_offload", None)
+    if callable(supports):
+        result_queue.put(bool(supports()))
+        return
+    result_queue.put(bool(getattr(llama_cpp, "LLAMA_SUPPORTS_GPU_OFFLOAD", False)))
 
 
 def check_dependency_groups(hardware: HardwareInfo) -> list[DependencyGroupStatus]:
@@ -171,8 +253,8 @@ def check_dependency_groups(hardware: HardwareInfo) -> list[DependencyGroupStatu
 def _resolve_dependency_expectation(spec: DependencyReadinessSpec, hardware: HardwareInfo) -> str:
     """Resolve dynamic expectation levels for the current hardware."""
     if hardware.has_nvidia_gpu and spec.gpu_expected:
-        return spec.gpu_expected
-    return spec.expected
+        return cast(str, spec.gpu_expected)
+    return cast(str, spec.expected)
 
 
 def _resolve_available_import(import_names: tuple[str, ...]) -> str | None:
@@ -336,13 +418,13 @@ def check_cuda_readiness(hardware: HardwareInfo) -> list[str]:
     if importlib.util.find_spec("torch") is not None and not hardware.torch_has_cuda:
         actions.append(
             "Reinstall PyTorch with CUDA: "
-            "pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128"  # noqa: VET301 — user guidance string
+            "pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128"
         )
 
     if importlib.util.find_spec("llama_cpp") is not None and not hardware.llama_cpp_has_cuda:
         actions.append(
             "Rebuild llama-cpp-python with CUDA: "
-            'set CMAKE_ARGS="-DGGML_CUDA=on" && pip install llama-cpp-python --force-reinstall --no-cache-dir'  # noqa: VET301 — user guidance string
+            'set CMAKE_ARGS="-DGGML_CUDA=on" && pip install llama-cpp-python --force-reinstall --no-cache-dir'
         )
 
     if not hardware.has_docker:
@@ -371,7 +453,7 @@ def print_preflight_report(report: PreflightReport) -> None:
     """
     hw = report.hardware
 
-    # Hardware summary
+    # Hardware summary — intentional stdout display for user-facing preflight report
     print("\n  Hardware:")
     if hw.has_nvidia_gpu:
         print(f"    GPU       : {hw.gpu_name}")
@@ -409,7 +491,7 @@ def print_preflight_report(report: PreflightReport) -> None:
             print(f"             {group.description}")
             if group.missing:
                 print(f"             missing: {', '.join(group.missing)}")
-            print(f'             install: pip install "vetinari[{group.extra}]"')  # noqa: VET301 — user guidance string
+            print(f'             install: pip install "vetinari[{group.extra}]"')
 
     # Summary line
     complete = sum(1 for g in report.groups if g.is_complete)
@@ -423,38 +505,9 @@ def print_preflight_report(report: PreflightReport) -> None:
         print("  All recommended groups installed.")
 
 
-# ── Interactive installer ────────────────────────────────────────────────────
-
-
-def _build_pip_environment() -> dict[str, str]:
-    """Return a pip environment that avoids fragile default temp/cache paths."""
-    work_root: Path | None = None
-    for candidate in (Path.cwd() / ".pip-work", Path.home() / ".vetinari" / "pip-work"):
-        try:
-            (candidate / "temp").mkdir(parents=True, exist_ok=True)
-            (candidate / "cache").mkdir(parents=True, exist_ok=True)
-            work_root = candidate
-            break
-        except OSError:
-            logger.warning("pip work root not writable: %s", candidate)
-
-    if work_root is None:
-        raise OSError("No writable pip temp/cache root available")
-
-    temp_dir = work_root / "temp"
-    cache_dir = work_root / "cache"
-
-    env = os.environ.copy()
-    env["TEMP"] = str(temp_dir)
-    env["TMP"] = str(temp_dir)
-    env["TMPDIR"] = str(temp_dir)
-    env["PIP_CACHE_DIR"] = str(cache_dir)
-    env.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
-    return env
-
-
 def _run_pip_command(args: list[str], pip_env: dict[str, str]) -> None:
     """Run pip via a Python wrapper that forces tempfile.tempdir early."""
+    _validate_pip_command_args(args)
     temp_dir = pip_env["TEMP"]
     launcher = (
         "import runpy, sys, tempfile; "
@@ -470,104 +523,38 @@ def _run_pip_command(args: list[str], pip_env: dict[str, str]) -> None:
     )
 
 
+def _validate_pip_command_args(args: list[str]) -> None:
+    """Fail closed unless args match a preflight-generated install command."""
+    if not args or args[0] != "install":
+        raise ValueError("preflight pip command must be an install command")
+    if len(args) == 2 and args[1].startswith("vetinari[") and args[1].endswith("]"):
+        extras = args[1][len("vetinari[") : -1]
+        if extras and all(extra.replace("-", "_").isidentifier() for extra in extras.split(",")):
+            return
+    if args == [
+        "install",
+        "torch",
+        "torchvision",
+        "torchaudio",
+        "--index-url",
+        "https://download.pytorch.org/whl/cu128",
+    ]:
+        return
+    raise ValueError("preflight pip command is not an allowed preflight install")
+
+
 def prompt_and_install(report: PreflightReport) -> bool:
     """Ask the user for permission, then install missing recommended groups.
 
-    Shows what will be installed and waits for explicit ``y`` confirmation
-    before running any pip commands.  Never installs without user approval.
-
-    Args:
-        report: The preflight report with missing groups.
-
     Returns:
-        True if installation was attempted, False if user declined or nothing to install.
+        True when installation was attempted.
     """
-    missing_recommended = [g for g in report.groups if g.recommended and not g.is_complete]
-    hw = report.hardware
-
-    if not missing_recommended and not (hw.has_nvidia_gpu and not hw.torch_has_cuda):
-        return False
-
-    extras_to_install: list[str] = [g.extra for g in missing_recommended]
-
-    # Collect what we'll do
-    install_actions: list[str] = []
-    if extras_to_install:
-        extras_str = ",".join(extras_to_install)
-        install_actions.append(f'pip install "vetinari[{extras_str}]"')  # noqa: VET301 — user guidance string
-
-    # Special case: torch CUDA reinstall
-    torch_cuda_needed = hw.has_nvidia_gpu and not hw.torch_has_cuda and importlib.util.find_spec("torch") is not None
-    if torch_cuda_needed:
-        install_actions.append(
-            "Reinstall torch with CUDA support "
-            "(pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128)"  # noqa: VET301 — user guidance string
-        )
-
-    if not install_actions:
-        return False
-
-    print("\n  The following installations are available:")
-    for idx, action in enumerate(install_actions, 1):
-        print(f"    {idx}. {action}")
-
+    original_builder = preflight_install.build_pip_environment
+    preflight_install.build_pip_environment = _build_pip_environment
     try:
-        answer = input("\n  Install missing Python packages? [y/N]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        logger.warning("Package installation prompt interrupted — skipping installation")
-        print("\n  Skipping installation.")
-        return False
-
-    if answer != "y":
-        print("  Skipping installation.")
-        return False
-
-    pip_env = _build_pip_environment()
-    print(f"  Using pip temp/cache root: {Path(pip_env['TEMP']).parent}")
-
-    # Install pip extras
-    if extras_to_install:
-        extras_str = ",".join(extras_to_install)
-        pip_args = ["install", f"vetinari[{extras_str}]"]
-        cmd = [sys.executable, "-m", "pip", *pip_args]
-        print(f"\n  Running: {' '.join(cmd)}")
-        try:
-            _run_pip_command(pip_args, pip_env)
-            print("  Installation complete.")
-        except subprocess.CalledProcessError as exc:
-            logger.warning("pip install failed with exit code %d", exc.returncode)  # noqa: VET301 — user guidance string
-            print(f"  Installation failed (exit code {exc.returncode}).")
-            print("  You can retry manually with:")
-            print(f'    pip install "vetinari[{extras_str}]"')  # noqa: VET301 — user guidance string
-            print(f"  Reuse temp/cache root: {Path(pip_env['TEMP']).parent}")
-
-    # Reinstall torch with CUDA
-    if torch_cuda_needed:
-        print("\n  Reinstalling PyTorch with CUDA support...")
-        torch_args = [
-            "install",
-            "torch",
-            "torchvision",
-            "torchaudio",
-            "--index-url",
-            "https://download.pytorch.org/whl/cu128",
-        ]
-        torch_cmd = [sys.executable, "-m", "pip", *torch_args]
-        print(f"  Running: {' '.join(torch_cmd)}")
-        try:
-            _run_pip_command(torch_args, pip_env)
-            print("  PyTorch CUDA installation complete.")
-        except subprocess.CalledProcessError as exc:
-            logger.warning("torch CUDA install failed with exit code %d", exc.returncode)
-            print(f"  PyTorch CUDA installation failed (exit code {exc.returncode}).")
-            print("  Retry manually:")
-            print("    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128")  # noqa: VET301 — user guidance string
-            print(f"  Reuse temp/cache root: {Path(pip_env['TEMP']).parent}")
-
-    return True
-
-
-# ── Orchestrator ─────────────────────────────────────────────────────────────
+        return _prompt_and_install(report, pip_runner=_run_pip_command)
+    finally:
+        preflight_install.build_pip_environment = original_builder
 
 
 def run_preflight(interactive: bool = True) -> PreflightReport:

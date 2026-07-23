@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
-import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -21,66 +19,18 @@ from pathlib import Path
 from typing import Any
 
 from vetinari.constants import _PROJECT_ROOT
+from vetinari.orchestration.checkpoint_store_db import (
+    _SCHEMA_SQL as _SCHEMA_SQL,
+)
+from vetinari.orchestration.checkpoint_store_db import (
+    CheckpointDatabaseManager,
+    _normalize_task_checkpoint_row,
+)
 
 logger = logging.getLogger(__name__)
 
 
-# SQL schema for durable execution state persistence
-_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS execution_state (
-    execution_id TEXT PRIMARY KEY,
-    goal TEXT NOT NULL,
-    tier TEXT NOT NULL DEFAULT 'standard',
-    request_spec_json TEXT,
-    pipeline_state TEXT NOT NULL DEFAULT 'executing',
-    current_agent TEXT,
-    task_dag_json TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    completed_at TEXT,
-    terminal_status TEXT,
-    error TEXT
-);
-
-CREATE TABLE IF NOT EXISTS task_checkpoints (
-    task_id TEXT PRIMARY KEY,
-    execution_id TEXT NOT NULL,
-    agent_type TEXT NOT NULL DEFAULT '',
-    mode TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL,
-    input_json TEXT,
-    output_json TEXT,
-    manifest_hash TEXT,
-    started_at TEXT,
-    completed_at TEXT,
-    retry_count INTEGER DEFAULT 0,
-    FOREIGN KEY (execution_id) REFERENCES execution_state(execution_id)
-);
-
-CREATE TABLE IF NOT EXISTS paused_questions (
-    question_id TEXT PRIMARY KEY,
-    execution_id TEXT NOT NULL,
-    task_id TEXT,
-    questions_json TEXT NOT NULL,
-    answers_json TEXT,
-    asked_at TEXT NOT NULL,
-    answered_at TEXT,
-    FOREIGN KEY (execution_id) REFERENCES execution_state(execution_id)
-);
-
-CREATE TABLE IF NOT EXISTS execution_events (
-    event_id TEXT PRIMARY KEY,
-    execution_id TEXT NOT NULL,
-    event_type TEXT NOT NULL,
-    task_id TEXT,
-    timestamp TEXT NOT NULL,
-    data_json TEXT,
-    FOREIGN KEY (execution_id) REFERENCES execution_state(execution_id)
-);
-"""
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ExecutionEvent:
     """An immutable record of a single state transition in execution history."""
 
@@ -117,185 +67,10 @@ class Checkpoint:
         )
 
 
-class _DatabaseManager:
-    """Thread-safe SQLite wrapper for durable execution checkpoints.
-
-    When an explicit ``db_path`` is provided (e.g. in tests), uses a
-    direct per-thread connection to that path.  When ``db_path`` is
-    ``None``, delegates to the unified ``vetinari.database`` module so
-    production data lands in the consolidated database (ADR-0072).
-    """
-
-    def __init__(self, db_path: Path | None = None) -> None:
-        self._db_path = db_path
-        self._shared_conn: sqlite3.Connection | None = None  # For standalone path mode
-        # Write lock serializes INSERT/UPDATE across threads for this engine
-        self._write_lock = threading.Lock()
-        self._init_db()
-
-    def _get_conn(self) -> sqlite3.Connection:
-        """Return a single shared SQLite connection for this engine.
-
-        Uses one connection with ``check_same_thread=False``, protected
-        by the engine's ``_write_lock``. This avoids ``database is locked``
-        errors from multiple thread-local connections competing for
-        SQLite's single-writer lock.
-
-        When ``_db_path is None`` (production), connects to the unified
-        database at ``VETINARI_DB_PATH``. When ``_db_path`` is set (tests),
-        connects to that specific file.
-
-        Returns:
-            A ``sqlite3.Connection`` with WAL mode enabled.
-        """
-        if self._shared_conn is not None:
-            return self._shared_conn
-
-        if self._db_path is None:
-            from vetinari.database import _get_db_path
-
-            db_path = _get_db_path()
-        else:
-            db_path = self._db_path
-
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        # isolation_level=None enables autocommit mode so Python's sqlite3 module
-        # does NOT issue implicit BEGIN before DML statements.  Without this,
-        # execute_in_transaction's explicit BEGIN raises "cannot start a transaction
-        # within a transaction" because Python's deferred transaction is already open.
-        self._shared_conn = sqlite3.connect(
-            str(db_path),
-            check_same_thread=False,
-            timeout=30.0,
-            isolation_level=None,
-        )
-        self._shared_conn.execute("PRAGMA journal_mode=WAL")
-        self._shared_conn.execute("PRAGMA synchronous=NORMAL")
-        self._shared_conn.execute("PRAGMA foreign_keys=ON")
-        self._shared_conn.execute("PRAGMA busy_timeout=5000")
-        return self._shared_conn
-
-    def _init_db(self) -> None:
-        """Initialise the schema in the target database.
-
-        For the unified database path, ensures the shared connection is
-        created and the full unified schema (including ``execution_events``)
-        is applied. For standalone paths, applies only the durable execution
-        schema from ``_SCHEMA_SQL``.
-        """
-        conn = self._get_conn()
-        if self._db_path is None:
-            # Production: apply the full unified schema which includes
-            # execution_events, quality_scores, etc.
-            from vetinari.database import _UNIFIED_SCHEMA
-
-            conn.executescript(_UNIFIED_SCHEMA)
-            conn.commit()
-        else:
-            # Tests: apply only the durable execution schema
-            conn.executescript(_SCHEMA_SQL)
-            conn.commit()
-
-        # Migrate pre-existing databases that lack terminal_status.
-        # ALTER TABLE ADD COLUMN is a no-op if the column already exists in
-        # SQLite >=3.37. For older SQLite, we catch OperationalError and ignore
-        # it — the column not existing means we're on a fresh db that already
-        # has it from the CREATE TABLE above.
-        try:
-            conn.execute("ALTER TABLE execution_state ADD COLUMN terminal_status TEXT")
-            conn.commit()
-        except sqlite3.OperationalError:
-            # Column already exists — migration already applied, nothing to do.
-            logger.info("terminal_status column already present in execution_state; skipping migration")
-
-    def execute(self, sql: str, params: tuple = ()) -> list[tuple]:
-        """Execute a SQL statement with thread-safe write serialization.
-
-        All operations go through the write lock to prevent concurrent
-        thread-local connections from hitting ``database is locked``
-        errors. This serializes writes across all threads that share
-        this ``_DatabaseManager`` instance.
-
-        Args:
-            sql: SQL statement to execute.
-            params: Parameters for the SQL statement.
-
-        Returns:
-            List of result rows.
-        """
-        with self._write_lock:
-            conn = self._get_conn()
-            cursor = conn.execute(sql, params)
-            rows = cursor.fetchall()
-            if sql.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE", "CREATE", "DROP")):
-                conn.commit()
-            return rows
-
-    def executemany(self, sql: str, params_list: list[tuple]) -> None:
-        """Execute a SQL statement for many parameter sets.
-
-        Args:
-            sql: SQL statement to execute.
-            params_list: List of parameter tuples.
-        """
-        with self._write_lock:
-            conn = self._get_conn()
-            conn.executemany(sql, params_list)
-            conn.commit()
-
-    def execute_in_transaction(
-        self,
-        statements: list[tuple[str, tuple]],
-        many_statements: list[tuple[str, list[tuple]]] | None = None,
-    ) -> None:
-        """Execute multiple SQL statements atomically in a single transaction.
-
-        All statements are committed together or rolled back together if any
-        fails.  This is the correct primitive for multi-table writes that must
-        be crash-safe: either all rows land or none do.
-
-        Args:
-            statements: List of ``(sql, params)`` pairs executed with
-                ``conn.execute()``.
-            many_statements: Optional list of ``(sql, params_list)`` pairs
-                executed with ``conn.executemany()``.
-
-        Raises:
-            sqlite3.Error: Re-raised after rolling back if any statement fails.
-        """
-        with self._write_lock:
-            conn = self._get_conn()
-            try:
-                conn.execute("BEGIN")
-                for sql, params in statements:
-                    conn.execute(sql, params)
-                for sql, params_list in many_statements or []:  # noqa: VET112 — param is list | None
-                    conn.executemany(sql, params_list)
-                conn.execute("COMMIT")
-            except sqlite3.Error:
-                conn.execute("ROLLBACK")
-                raise
-
-    def close(self) -> None:
-        """Close the database connection.
-
-        When using the unified database (``_db_path is None``), delegates
-        to ``vetinari.database.close_connection()``. When using a standalone
-        path (tests), closes the shared connection directly.
-        """
-        if self._shared_conn is not None:
-            self._shared_conn.close()
-            self._shared_conn = None
-        if self._db_path is None:
-            from vetinari.database import close_connection
-
-            close_connection()
-
-
 class CheckpointStore:
     """Persistence facade for durable execution state.
 
-    Wraps ``_DatabaseManager`` and exposes higher-level methods for saving,
+    Wraps ``CheckpointDatabaseManager`` and exposes higher-level methods for saving,
     loading, and querying execution checkpoints, events, and paused questions.
     ``DurableExecutionEngine`` owns one of these and calls it on every state
     transition to ensure crash-safe durability.
@@ -311,7 +86,7 @@ class CheckpointStore:
             db_path = None
         else:
             db_path = checkpoint_dir / "execution_state.db"
-        self._db = _DatabaseManager(db_path)
+        self._db = CheckpointDatabaseManager(db_path)
 
     # ------------------------------------------------------------------
     # Event persistence
@@ -398,19 +173,31 @@ class CheckpointStore:
                 terminal_status,
             ),
         )
+        normalized_task_rows = [_normalize_task_checkpoint_row(row) for row in task_rows]
         checkpoint_many = (
             (
                 """INSERT INTO task_checkpoints
-                   (task_id, execution_id, agent_type, mode, status, input_json, output_json, manifest_hash, started_at, completed_at, retry_count)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(task_id) DO UPDATE SET
+                   (task_id, execution_id, node_id, superstep_index, substep_index, agent_type, mode, status,
+                    input_json, output_json, failure_json, manifest_hash, started_at, completed_at,
+                    retry_count)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(execution_id, task_id) DO UPDATE SET
+                       node_id = excluded.node_id,
+                       superstep_index = excluded.superstep_index,
+                       substep_index = excluded.substep_index,
+                       agent_type = excluded.agent_type,
+                       mode = excluded.mode,
                        status = excluded.status,
+                       input_json = excluded.input_json,
                        output_json = excluded.output_json,
+                       failure_json = excluded.failure_json,
+                       manifest_hash = excluded.manifest_hash,
+                       started_at = excluded.started_at,
                        completed_at = excluded.completed_at,
                        retry_count = excluded.retry_count""",
-                task_rows,
+                normalized_task_rows,
             )
-            if task_rows
+            if normalized_task_rows
             else None
         )
         self._db.execute_in_transaction(
@@ -459,6 +246,36 @@ class CheckpointStore:
             (completed_state, failed_state),
         )
         return [r[0] for r in rows]
+
+    def list_failed_task_recovery_points(self, execution_id: str) -> list[dict[str, Any]]:
+        """Return failed or cancelled task checkpoints for targeted recovery.
+
+        Args:
+            execution_id: The durable execution ID to inspect.
+
+        Returns:
+            Task recovery records ordered by superstep and node ID.
+        """
+        rows = self._db.execute(
+            """SELECT task_id, node_id, superstep_index, substep_index, status, failure_json, retry_count
+               FROM task_checkpoints
+               WHERE execution_id = ? AND status IN ('failed', 'cancelled', 'blocked')
+               ORDER BY superstep_index, node_id, task_id""",
+            (execution_id,),
+        )
+        recovery_points: list[dict[str, Any]] = []
+        for task_id, node_id, superstep_index, substep_index, status, failure_json, retry_count in rows:
+            failure = json.loads(failure_json) if failure_json else None
+            recovery_points.append({
+                "task_id": task_id,
+                "node_id": node_id,
+                "superstep_index": superstep_index,
+                "substep_index": substep_index,
+                "status": status,
+                "failure": failure,
+                "retry_count": retry_count,
+            })
+        return recovery_points
 
     def find_completed_before(self, cutoff_iso: str) -> list[str]:
         """Find execution IDs that completed at or before a cutoff timestamp.

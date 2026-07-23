@@ -16,16 +16,20 @@ The bridge is instantiated lazily via the ``get_worker_mcp_bridge()`` singleton.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from typing import Any
 
 from vetinari.mcp.config import MCPServerConfig, load_mcp_server_configs
 from vetinari.mcp.tools import MCPToolRegistry
+from vetinari.security.fail_closed import UntrustedInputError, sanitize_untrusted_text
 
 logger = logging.getLogger(__name__)
 
+
 # Namespace prefix format for external MCP tools.
 _NAMESPACE_PREFIX = "mcp__"
+_NAMESPACED_TOOL_RE = re.compile(r"^[A-Za-z0-9_.:-]+(?:__[A-Za-z0-9_.:-]+){2,}$")
 
 
 class WorkerMCPBridge:
@@ -191,9 +195,16 @@ class WorkerMCPBridge:
         Returns:
             On success: ``{"result": <handler return value>}``.
             On failure: ``{"error": <message>}``.
+
+        Raises:
+            UntrustedInputError: If the namespaced tool name contains
+                unsupported characters.
         """
+        namespaced_name = sanitize_untrusted_text(namespaced_name, max_length=384)
         if not namespaced_name.startswith(_NAMESPACE_PREFIX):
             return {"error": f"Not a namespaced external tool: {namespaced_name!r}"}
+        if not _NAMESPACED_TOOL_RE.fullmatch(namespaced_name):
+            raise UntrustedInputError("namespaced MCP tool name contains unsupported characters")
         result = self._registry.invoke(namespaced_name, arguments)
         logger.debug(
             "MCP tool %r invoked; success=%s",

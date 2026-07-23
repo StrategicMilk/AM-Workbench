@@ -9,113 +9,49 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any
 
+from vetinari.planning.decomposition_models import (
+    _DOD_CRITERIA,
+    _DOR_CRITERIA,
+    DEFAULT_MAX_DEPTH,
+    MAX_MAX_DEPTH,
+    MIN_MAX_DEPTH,
+    SEED_MIX,
+    SEED_RATE,
+    DecompositionEvent,
+    SubtaskSpec,
+)
+from vetinari.planning.decomposition_recursive import (
+    _FOREMAN_UNINITIALIZED,
+    MAX_RECURSIVE_DEPTH,
+    _RecursiveDecompositionMixin,
+)
+from vetinari.planning.decomposition_templates import build_default_templates
+from vetinari.planning.delegation_budget import DelegationBudget
+from vetinari.planning.plan_graph import PlanGraph
+from vetinari.security.redaction import redact_text
 from vetinari.types import AgentType
+
+__all__ = [
+    "DEFAULT_MAX_DEPTH",
+    "MAX_MAX_DEPTH",
+    "MAX_RECURSIVE_DEPTH",
+    "MIN_MAX_DEPTH",
+    "SEED_MIX",
+    "SEED_RATE",
+    "_DOD_CRITERIA",
+    "_DOR_CRITERIA",
+    "DecompositionEngine",
+    "DecompositionEvent",
+    "SubtaskSpec",
+    "decomposition_engine",
+]
 
 logger = logging.getLogger(__name__)
 
-# Decomposition configuration knobs
-DEFAULT_MAX_DEPTH = 14
-MIN_MAX_DEPTH = 12
-MAX_MAX_DEPTH = 16
-SEED_RATE = 0.3  # 30% of tasks seeded with refined subtasks
-SEED_MIX = 0.5  # Balance between breadth and depth seeding
 
-# Recursive decomposition limit (ADR-0081) — prevents unbounded Foreman chains
-MAX_RECURSIVE_DEPTH = 3
-
-# Definition of Done criteria per level
-_DOD_CRITERIA = {
-    "Light": [
-        "Code compiles without errors",
-        "Basic functionality works",
-        "No blocking security issues",
-    ],
-    "Standard": [
-        "Code compiles and lints cleanly",
-        "Unit tests pass (>70% coverage)",
-        "Security scan passes",
-        "Documentation updated",
-        "Code reviewed",
-    ],
-    "Hard": [
-        "Code compiles, lints, and type-checks",
-        "Unit + integration tests pass (>85% coverage)",
-        "Security scan passes with no high/critical findings",
-        "Full API documentation generated",
-        "Performance benchmarks met",
-        "Accessibility audit passed",
-        "Peer reviewed and approved",
-    ],
-}
-
-# Definition of Ready criteria
-_DOR_CRITERIA = {
-    "Light": [
-        "Task description is clear",
-        "Inputs are defined",
-    ],
-    "Standard": [
-        "Task description is unambiguous",
-        "Inputs and expected outputs defined",
-        "Dependencies identified",
-        "Estimated effort provided",
-    ],
-    "Hard": [
-        "Task description is unambiguous and reviewed",
-        "All inputs, outputs, and side-effects documented",
-        "Dependencies fully resolved",
-        "Effort estimate reviewed by at least one peer",
-        "Acceptance criteria agreed upon",
-        "Risk assessment completed",
-    ],
-}
-
-
-@dataclass(frozen=True)
-class SubtaskSpec:
-    """A single decomposed subtask."""
-
-    subtask_id: str
-    parent_task_id: str
-    description: str
-    agent_type: str
-    depth: int
-    inputs: list[str] = field(default_factory=list)
-    outputs: list[str] = field(default_factory=list)
-    dependencies: list[str] = field(default_factory=list)
-    dod_criteria: list[str] = field(default_factory=list)
-    dor_criteria: list[str] = field(default_factory=list)
-    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
-    def __repr__(self) -> str:
-        return f"SubtaskSpec(subtask_id={self.subtask_id!r}, agent_type={self.agent_type!r}, depth={self.depth!r})"
-
-
-@dataclass(frozen=True)
-class DecompositionEvent:
-    """A historical decomposition event."""
-
-    event_id: str
-    plan_id: str
-    task_id: str
-    depth: int
-    seeds_used: list[str]
-    subtasks_created: int
-    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
-    def __repr__(self) -> str:
-        return (
-            f"DecompositionEvent(event_id={self.event_id!r}, plan_id={self.plan_id!r}, "
-            f"task_id={self.task_id!r}, depth={self.depth!r}, "
-            f"subtasks_created={self.subtasks_created!r})"
-        )
-
-
-class DecompositionEngine:
+class DecompositionEngine(_RecursiveDecompositionMixin):
     """Orchestrates task decomposition using the ForemanAgent.
 
     Used by the Decomposition Lab in the web UI.
@@ -130,244 +66,14 @@ class DecompositionEngine:
     def __init__(self):
         self._history: list[DecompositionEvent] = []
         self._templates: list[dict[str, Any]] = self._build_default_templates()
+        self._foreman: Any = _FOREMAN_UNINITIALIZED
+        self._plan_graph = PlanGraph()
+        self._delegation_budget = DelegationBudget("decomposition")
 
-    def _build_default_templates(self) -> list[dict[str, Any]]:
+    @staticmethod
+    def _build_default_templates() -> list[dict[str, Any]]:
         """Build built-in decomposition templates."""
-        return [
-            {
-                "template_id": "web_app",
-                "name": "Web Application",
-                "keywords": ["web", "app", "frontend", "react", "vue", "html"],
-                "agent_type": AgentType.WORKER.value,
-                "dod_level": "Standard",
-                "subtasks": [
-                    "Define requirements and wireframes",
-                    "Set up project structure and dependencies",
-                    "Implement backend API",
-                    "Implement frontend components",
-                    "Write tests",
-                    "Deploy and configure CI/CD",
-                ],
-            },
-            {
-                "template_id": "data_pipeline",
-                "name": "Data Pipeline",
-                "keywords": ["data", "pipeline", "etl", "database", "sql"],
-                "agent_type": AgentType.WORKER.value,
-                "dod_level": "Standard",
-                "subtasks": [
-                    "Define data schema and models",
-                    "Implement data ingestion",
-                    "Implement transformation logic",
-                    "Add validation and error handling",
-                    "Write pipeline tests",
-                    "Document data flow",
-                ],
-            },
-            {
-                "template_id": "research",
-                "name": "Research Task",
-                "keywords": ["research", "analyze", "investigate", "study"],
-                "agent_type": AgentType.WORKER.value,
-                "dod_level": "Light",
-                "subtasks": [
-                    "Define research scope and questions",
-                    "Gather sources and references",
-                    "Analyze and synthesize findings",
-                    "Write research report",
-                ],
-            },
-            {
-                "template_id": "cli_tool",
-                "name": "CLI Tool",
-                "keywords": ["cli", "command", "terminal", "argparse", "click", "typer", "shell", "script"],
-                "agent_type": AgentType.WORKER.value,
-                "dod_level": "Standard",
-                "subtasks": [
-                    "Define commands, flags, and argument schema",
-                    "Implement argument parsing and validation",
-                    "Implement core command logic",
-                    "Add help text, usage examples, and error messages",
-                    "Write unit and integration tests",
-                    "Package and document installation instructions",
-                ],
-            },
-            {
-                "template_id": "api_service",
-                "name": "REST API Service",
-                "keywords": ["api", "rest", "endpoint", "service", "fastapi", "flask", "django", "http"],
-                "agent_type": AgentType.WORKER.value,
-                "dod_level": "Hard",
-                "subtasks": [
-                    "Define API contract, endpoints, and data models",
-                    "Implement authentication and authorization",
-                    "Implement endpoint handlers and business logic",
-                    "Add request validation and error handling",
-                    "Write unit and integration tests",
-                    "Generate OpenAPI documentation",
-                    "Configure deployment and environment settings",
-                ],
-            },
-            {
-                "template_id": "library",
-                "name": "Reusable Library",
-                "keywords": ["library", "package", "module", "sdk", "framework", "reusable", "pypi", "npm"],
-                "agent_type": AgentType.WORKER.value,
-                "dod_level": "Hard",
-                "subtasks": [
-                    "Design public API and interface contracts",
-                    "Implement core functionality",
-                    "Write comprehensive unit and integration tests",
-                    "Write API reference documentation and usage examples",
-                    "Configure packaging, versioning, and build tooling",
-                    "Publish to package registry",
-                ],
-            },
-            {
-                "template_id": "document_generation",
-                "name": "Document Generation",
-                "keywords": ["document", "report", "generate", "pdf", "markdown", "template", "export"],
-                "agent_type": AgentType.WORKER.value,
-                "dod_level": "Standard",
-                "subtasks": [
-                    "Define document structure and outline",
-                    "Gather and validate source data or content",
-                    "Draft document sections",
-                    "Review and revise for accuracy and clarity",
-                    "Apply formatting, styling, and branding",
-                    "Export and validate final output",
-                ],
-            },
-            {
-                "template_id": "creative_writing",
-                "name": "Creative Writing",
-                "keywords": ["creative", "writing", "story", "content", "blog", "article", "fiction", "copy"],
-                "agent_type": AgentType.WORKER.value,
-                "dod_level": "Light",
-                "subtasks": [
-                    "Brainstorm concepts, themes, and angle",
-                    "Create detailed outline and structure",
-                    "Write first draft",
-                    "Revise for voice, pacing, and coherence",
-                    "Polish grammar, style, and final presentation",
-                ],
-            },
-            {
-                "template_id": "testing",
-                "name": "Test Suite Development",
-                "keywords": ["test", "testing", "qa", "coverage", "pytest", "jest", "unittest", "tdd"],
-                "agent_type": AgentType.INSPECTOR.value,
-                "dod_level": "Standard",
-                "subtasks": [
-                    "Define test plan and coverage goals",
-                    "Write unit tests for core components",
-                    "Write integration tests for system boundaries",
-                    "Add edge case and negative path tests",
-                    "Measure coverage and close gaps",
-                    "Integrate tests into CI pipeline",
-                ],
-            },
-            {
-                "template_id": "refactoring",
-                "name": "Code Refactoring",
-                "keywords": ["refactor", "refactoring", "cleanup", "technical debt", "restructure", "reorganize"],
-                "agent_type": AgentType.WORKER.value,
-                "dod_level": "Standard",
-                "subtasks": [
-                    "Analyze codebase and identify problem areas",
-                    "Define refactoring plan and risk assessment",
-                    "Apply incremental structural changes",
-                    "Verify existing tests still pass after each change",
-                    "Update documentation and comments",
-                    "Perform final review and cleanup",
-                ],
-            },
-            {
-                "template_id": "debugging",
-                "name": "Bug Investigation and Fix",
-                "keywords": ["bug", "debug", "fix", "error", "crash", "issue", "defect", "regression"],
-                "agent_type": AgentType.INSPECTOR.value,
-                "dod_level": "Standard",
-                "subtasks": [
-                    "Reproduce the bug reliably with a minimal test case",
-                    "Diagnose root cause through logs and code inspection",
-                    "Implement targeted fix",
-                    "Write regression test to prevent recurrence",
-                    "Verify fix across affected scenarios",
-                    "Document root cause and resolution",
-                ],
-            },
-            {
-                "template_id": "migration",
-                "name": "System or Data Migration",
-                "keywords": ["migration", "migrate", "upgrade", "port", "convert", "transfer", "move"],
-                "agent_type": AgentType.WORKER.value,
-                "dod_level": "Hard",
-                "subtasks": [
-                    "Inventory current state and map to target state",
-                    "Create migration plan with rollback strategy",
-                    "Implement migration scripts or procedures",
-                    "Run migration in staging and validate data integrity",
-                    "Execute production migration with monitoring",
-                    "Decommission legacy resources and update documentation",
-                ],
-            },
-            {
-                "template_id": "security_audit",
-                "name": "Security Audit",
-                "keywords": ["security", "audit", "vulnerability", "penetration", "pentest", "cve", "owasp"],
-                "agent_type": AgentType.INSPECTOR.value,
-                "dod_level": "Hard",
-                "subtasks": [
-                    "Define scope and threat model",
-                    "Run automated vulnerability scans",
-                    "Manually analyze authentication, authorization, and data handling",
-                    "Prioritize findings by severity and exploitability",
-                    "Remediate critical and high-severity issues",
-                    "Verify remediations and produce final report",
-                ],
-            },
-            {
-                "template_id": "data_analysis",
-                "name": "Data Analysis Project",
-                "keywords": ["analysis", "analytics", "dataset", "statistics", "visualization", "insight", "notebook"],
-                "agent_type": AgentType.WORKER.value,
-                "dod_level": "Standard",
-                "subtasks": [
-                    "Define analysis objectives and success metrics",
-                    "Collect and load raw data",
-                    "Clean, normalize, and validate data quality",
-                    "Perform exploratory analysis and statistical tests",
-                    "Create visualizations and charts",
-                    "Write findings report with recommendations",
-                ],
-            },
-            {
-                "template_id": "infrastructure",
-                "name": "Infrastructure and DevOps",
-                "keywords": [
-                    "infrastructure",
-                    "devops",
-                    "deployment",
-                    "kubernetes",
-                    "terraform",
-                    "ansible",
-                    "ci",
-                    "cd",
-                    "cloud",
-                ],
-                "agent_type": AgentType.WORKER.value,
-                "dod_level": "Hard",
-                "subtasks": [
-                    "Define infrastructure requirements and architecture",
-                    "Write provisioning scripts or IaC configuration",
-                    "Configure networking, security groups, and IAM",
-                    "Deploy to staging and run smoke tests",
-                    "Set up monitoring, alerting, and logging",
-                    "Document runbooks and maintenance procedures",
-                ],
-            },
-        ]
+        return build_default_templates()
 
     def get_templates(
         self,
@@ -450,7 +156,7 @@ class DecompositionEngine:
         max_depth = max(MIN_MAX_DEPTH, min(max_depth, MAX_MAX_DEPTH))
 
         if depth >= max_depth:
-            logger.warning("Max decomposition depth %s reached for task: %s", max_depth, task_prompt[:50])
+            logger.warning("Max decomposition depth %s reached for task: %s", max_depth, _safe_task_log(task_prompt))
             return []
 
         try:
@@ -496,12 +202,13 @@ class DecompositionEngine:
                 )
                 return subtasks
         except Exception as e:
-            logger.warning("LLM decomposition failed, using keyword fallback: %s", e)
+            logger.warning("LLM decomposition failed, using keyword fallback: %s", redact_text(str(e)))
 
         # Keyword fallback
         return self._keyword_decompose(task_prompt, parent_task_id, depth)
 
-    def _keyword_decompose(self, task_prompt: str, parent_task_id: str, depth: int) -> list[dict[str, Any]]:
+    @staticmethod
+    def _keyword_decompose(task_prompt: str, parent_task_id: str, depth: int) -> list[dict[str, Any]]:
         """Simple keyword-based decomposition fallback."""
         task_lower = task_prompt.lower()
         subtasks = []
@@ -528,7 +235,7 @@ class DecompositionEngine:
                 "depth": depth + 1,
                 "inputs": [],
                 "outputs": [],
-                "dependencies": deps or [],  # noqa: VET112 - empty fallback preserves optional request metadata contract
+                "dependencies": deps or [],
                 "acceptance_criteria": f"{desc} is complete",
             }
 
@@ -549,77 +256,6 @@ class DecompositionEngine:
         subtasks.append(make_subtask("Review and document", AgentType.INSPECTOR.value, [last]))
 
         return subtasks
-
-    def decompose_recursive(
-        self,
-        task_prompt: str,
-        parent_task_id: str = "root",
-        plan_id: str = "default",
-        recursive_depth: int = 0,
-        complexity_threshold: int = 4,
-    ) -> list[dict[str, Any]]:
-        """Recursively decompose a task up to MAX_RECURSIVE_DEPTH levels.
-
-        Performs an initial decomposition then recurses into any subtask
-        whose description word count exceeds *complexity_threshold*, treating
-        it as a candidate for further breakdown.  Each recursion decrements
-        the available depth, and a hard stop at MAX_RECURSIVE_DEPTH prevents
-        unbounded Foreman chains (ADR-0081).
-
-        Args:
-            task_prompt: The task or goal description to decompose.
-            parent_task_id: The ID of the parent task.
-            plan_id: Plan identifier for history tracking.
-            recursive_depth: Current recursion depth (0 = top-level call).
-            complexity_threshold: Minimum word count for a subtask to be
-                recursively decomposed.  Lower values produce deeper trees.
-
-        Returns:
-            Flat list of subtask dicts, including all recursively generated
-            subtasks with updated ``parent_task_id`` linkages.
-        """
-        if recursive_depth >= MAX_RECURSIVE_DEPTH:
-            logger.debug(
-                "[DecompositionEngine] MAX_RECURSIVE_DEPTH=%d reached for task: %s",
-                MAX_RECURSIVE_DEPTH,
-                task_prompt[:60],
-            )
-            return self.decompose_task(
-                task_prompt=task_prompt,
-                parent_task_id=parent_task_id,
-                depth=0,
-                plan_id=plan_id,
-            )
-
-        first_level = self.decompose_task(
-            task_prompt=task_prompt,
-            parent_task_id=parent_task_id,
-            depth=0,
-            plan_id=plan_id,
-        )
-
-        all_subtasks: list[dict[str, Any]] = []
-        for subtask in first_level:
-            all_subtasks.append(subtask)
-            desc = subtask.get("description", "")
-            # Recurse into subtasks that look complex (many words suggest compound task)
-            if len(desc.split()) >= complexity_threshold:
-                child_tasks = self.decompose_recursive(
-                    task_prompt=desc,
-                    parent_task_id=subtask.get("subtask_id", parent_task_id),
-                    plan_id=plan_id,
-                    recursive_depth=recursive_depth + 1,
-                    complexity_threshold=complexity_threshold,
-                )
-                all_subtasks.extend(child_tasks)
-
-        logger.info(
-            "[DecompositionEngine] Recursive decomp depth=%d produced %d total subtasks for: %s",
-            recursive_depth,
-            len(all_subtasks),
-            task_prompt[:60],
-        )
-        return all_subtasks
 
     def get_decomposition_history(self, plan_id: str | None = None) -> list[DecompositionEvent]:
         """Return decomposition history, optionally filtered by plan_id.
@@ -645,3 +281,7 @@ def _get_engine() -> DecompositionEngine:
 
 # Exported instance used by web_ui.py
 decomposition_engine = _get_engine()
+
+
+def _safe_task_log(task_prompt: str) -> str:
+    return redact_text(task_prompt[:80])

@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_shell.schema.json",
+  "title": "WorkbenchShellSnapshot",
+  "type": "object",
+  "required": [
+    "project_id",
+    "generated_at_utc",
+    "status",
+    "degraded",
+    "navigation",
+    "commands",
+    "objects",
+    "queue",
+    "timeline",
+    "split_comparison",
+    "risk_control",
+    "next_actions"
+  ],
+  "properties": {
+    "project_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" },
+    "generated_at_utc": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["ok", "empty", "degraded"] },
+    "degraded": { "type": "boolean" },
+    "degraded_reason": { "type": ["string", "null"] },
+    "navigation": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/navigation_item" }
+    },
+    "commands": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/command" }
+    },
+    "objects": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/object_summary" }
+    },
+    "queue": { "$ref": "#/$defs/queue_summary" },
+    "timeline": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/timeline_event" }
+    },
+    "split_comparison": { "$ref": "#/$defs/split_comparison" },
+    "risk_control": { "$ref": "#/$defs/risk_control" },
+    "next_actions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/command" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "navigation_item": {
+      "type": "object",
+      "required": ["view", "label", "object_kind", "count", "active", "why"],
+      "properties": {
+        "view": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "object_kind": { "type": "string", "minLength": 1 },
+        "count": { "type": "integer", "minimum": 0 },
+        "active": { "type": "boolean" },
+        "why": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "command": {
+      "type": "object",
+      "required": [
+        "command_id",
+        "label",
+        "view",
+        "object_kind",
+        "object_id",
+        "shortcut",
+        "enabled",
+        "requires_approval",
+        "why",
+        "blocked_reason"
+      ],
+      "properties": {
+        "command_id": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "view": { "type": "string", "minLength": 1 },
+        "object_kind": { "type": "string", "minLength": 1 },
+        "object_id": { "type": ["string", "null"] },
+        "shortcut": { "type": "string" },
+        "enabled": { "type": "boolean" },
+        "requires_approval": { "type": "boolean" },
+        "why": { "type": "string", "minLength": 1 },
+        "blocked_reason": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "object_summary": {
+      "type": "object",
+      "required": [
+        "object_id",
+        "object_kind",
+        "title",
+        "status",
+        "view",
+        "provenance_state",
+        "risk_level",
+        "updated_at_utc",
+        "why"
+      ],
+      "properties": {
+        "object_id": { "type": "string", "minLength": 1 },
+        "object_kind": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "view": { "type": "string", "minLength": 1 },
+        "provenance_state": { "type": "string", "enum": ["linked", "missing"] },
+        "risk_level": { "$ref": "#/$defs/risk_level" },
+        "updated_at_utc": { "type": "string", "minLength": 1 },
+        "why": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "queue_summary": {
+      "type": "object",
+      "required": ["active_count", "queued_count", "blocked_count", "lane_pressure", "why"],
+      "properties": {
+        "active_count": { "type": "integer", "minimum": 0 },
+        "queued_count": { "type": "integer", "minimum": 0 },
+        "blocked_count": { "type": "integer", "minimum": 0 },
+        "lane_pressure": { "type": "string", "enum": ["green", "amber", "red"] },
+        "why": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "timeline_event": {
+      "type": "object",
+      "required": ["event_id", "object_kind", "object_id", "label", "occurred_at_utc", "severity", "why"],
+      "properties": {
+        "event_id": { "type": "string", "minLength": 1 },
+        "object_kind": { "type": "string", "minLength": 1 },
+        "object_id": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "occurred_at_utc": { "type": "string", "minLength": 1 },
+        "severity": { "type": "string", "enum": ["info", "warning", "error"] },
+        "why": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "split_comparison": {
+      "type": "object",
+      "required": ["left_object_id", "right_object_id", "basis", "degraded", "degraded_reason"],
+      "properties": {
+        "left_object_id": { "type": ["string", "null"] },
+        "right_object_id": { "type": ["string", "null"] },
+        "basis": { "type": "string", "minLength": 1 },
+        "degraded": { "type": "boolean" },
+        "degraded_reason": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "risk_control": {
+      "type": "object",
+      "required": [
+        "risk_level",
+        "cost_context",
+        "provenance_context",
+        "policy_context",
+        "can_execute",
+        "approval_required",
+        "why",
+        "missing"
+      ],
+      "properties": {
+        "risk_level": { "$ref": "#/$defs/risk_level" },
+        "cost_context": { "type": "string", "minLength": 1 },
+        "provenance_context": { "type": "string", "minLength": 1 },
+        "policy_context": { "type": "string", "minLength": 1 },
+        "can_execute": { "type": "boolean" },
+        "approval_required": { "type": "boolean" },
+        "why": { "type": "string", "minLength": 1 },
+        "missing": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["cost", "provenance", "policy"] }
+        }
+      },
+      "additionalProperties": false
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "blocked"]
+    }
+  }
+}

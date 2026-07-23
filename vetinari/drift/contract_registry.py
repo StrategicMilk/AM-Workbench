@@ -26,11 +26,13 @@ import json
 import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
 from vetinari.constants import get_user_dir
+from vetinari.learning.atomic_writers import write_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -121,16 +123,17 @@ class ContractRegistry:
     # Snapshot (persistence)
     # ------------------------------------------------------------------
 
-    def snapshot(self, path: str | None = None) -> None:
+    def snapshot(self, path: str | None = None, *, clock: Callable[[], float] | None = None) -> None:
         """Persist current fingerprints to disk."""
         p = Path(path) if path else self._snapshot_path
         p.parent.mkdir(parents=True, exist_ok=True)
+        active_clock = clock or time.time
         with self._lock:
             payload = {
-                "timestamp": time.time(),
+                "timestamp": active_clock(),
                 "hashes": dict(self._current),
             }
-        p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        write_json_atomic(p, payload)
         logger.info("Contract snapshot written to %s (%d entries)", p, len(payload["hashes"]))
 
     def load_snapshot(self, path: str | None = None) -> bool:
@@ -138,12 +141,16 @@ class ContractRegistry:
 
         Returns:
             True if successful, False otherwise.
+
         """
         p = Path(path) if path else self._snapshot_path
         if not p.exists():
             with self._lock:
+                self._previous.clear()
                 self._snapshot_loaded = False
-            logger.debug("No snapshot at %s; starting fresh.", p)
+                if not self._ever_registered:
+                    self._current.clear()
+            logger.error("Contract snapshot missing: %s", p)
             return False
         try:
             payload = json.loads(p.read_text(encoding="utf-8"))
@@ -160,7 +167,7 @@ class ContractRegistry:
                     self._current = dict(hashes)
             logger.info("Loaded snapshot from %s (%d entries)", p, len(self._previous))
             return True
-        except Exception as exc:
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
             with self._lock:
                 self._previous.clear()
                 self._snapshot_loaded = False

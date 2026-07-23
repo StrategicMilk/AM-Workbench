@@ -10,8 +10,11 @@ being present (supplied by BaseAgent at runtime).
 from __future__ import annotations
 
 import logging
-from typing import Any
+import re
+from typing import TYPE_CHECKING, Any
 
+from vetinari.adapters.base import InferenceRequest
+from vetinari.config.inference_config import get_inference_config
 from vetinari.constants import (
     CROSS_VALIDATION_AGREE_SCORE,
     CROSS_VALIDATION_DISAGREE_SCORE,
@@ -22,8 +25,15 @@ from vetinari.types import AgentType, StatusEnum
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from vetinari.adapters.manager import AdapterManager
+
+
 # ── Cross-validation modes (US-059) ───────────────────────────────────
 _CROSS_VALIDATE_MODES = frozenset({"architecture", "security_audit"})
+_CROSS_VALIDATION_PROFILE = "cross_validation"
+_VALIDATION_AGREE_RE = re.compile(r"^\s*AGREE\b", re.IGNORECASE)
+_VALIDATION_DISAGREE_RE = re.compile(r"^\s*DISAGREE\b", re.IGNORECASE)
 
 # ── Mid-task info request metadata constants (US-074) ─────────────────
 NEEDS_INFO = "needs_info"
@@ -33,7 +43,7 @@ QUESTION = "question"
 CONTEXT_NEEDED = "context_needed"
 
 
-class CollaborationMixin:
+class CollaborationBehavior:
     """Inter-agent collaboration capabilities mixed into BaseAgent.
 
     All methods rely on ``self.agent_type``, ``self.name``,
@@ -41,6 +51,12 @@ class CollaborationMixin:
     ``self.default_model`` being present on the host class (supplied by
     BaseAgent).
     """
+
+    agent_type: AgentType
+    name: str
+    _adapter_manager: AdapterManager | None
+    _context: dict[str, Any]
+    default_model: str
 
     # ------------------------------------------------------------------
     # Inter-agent communication via Blackboard
@@ -74,7 +90,7 @@ class CollaborationMixin:
         entry_id = board.post(
             content=content,
             request_type=request_type,
-            requested_by=self.agent_type,
+            requested_by=self.agent_type.value,
             priority=priority,
             ttl_seconds=ttl_seconds,
         )
@@ -113,7 +129,7 @@ class CollaborationMixin:
         board.post(
             content=value,
             request_type=f"finding:{finding_type}",
-            requested_by=self.agent_type,
+            requested_by=self.agent_type.value,
             priority=3,
             metadata={"finding_key": key, "agent": self.agent_type.value},
         )
@@ -132,7 +148,7 @@ class CollaborationMixin:
 
         board = get_blackboard()
         prefix = f"finding:{finding_type}" if finding_type else "finding:"
-        entries = board.get_pending(request_type_prefix=prefix)
+        entries = [entry for entry in board.get_pending(limit=1000) if entry.request_type.startswith(prefix)]
         return [
             {
                 "content": e.content,
@@ -253,63 +269,93 @@ class CollaborationMixin:
                 "model_used": None,
             }
 
-        # Attempt secondary model validation — fail closed (ADR: security checks
-        # must never return validated=True when validation was not performed)
         adapter = self._adapter_manager
         if adapter is None:
             logger.debug("Cross-validation skipped: no adapter_manager available")
             return {
                 "validated": False,
                 "agreement": 0.0,
-                "notes": "Validation skipped — secondary model unavailable",
+                "notes": "Validation skipped - secondary model unavailable",
                 "model_used": None,
             }
 
-        # Try Thompson-based model selection for the validation model
+        validation_model = self._select_validation_model(adapter)
+        validation_profile = get_inference_config().get_profile(_CROSS_VALIDATION_PROFILE)
+        try:
+            validation_prompt = self._validation_prompt(output, prompt)
+            response = adapter.infer(
+                InferenceRequest(
+                    model_id=validation_model,
+                    prompt=validation_prompt,
+                    max_tokens=validation_profile.max_tokens,
+                    task_type="cross_validation",
+                )
+            )
+            response_text = response.output
+            verdict = self._parse_validation_verdict(response_text)
+            agrees = verdict == "agree"
+            validated = verdict in {"agree", "disagree"}
+            return {
+                "validated": validated,
+                "agreement": CROSS_VALIDATION_AGREE_SCORE if agrees else CROSS_VALIDATION_DISAGREE_SCORE,
+                "notes": response_text[:200],
+                "model_used": validation_model,
+                "calibration": {
+                    "verdict": verdict,
+                    "parser": "anchored_agree_disagree",
+                    "fallback_model_used": validation_model == self.default_model,
+                },
+                "issues": [] if agrees else [response_text[:200]],
+            }
+        except Exception:
+            logger.warning("Cross-validation inference failed - failing closed")
+            return {
+                "validated": False,
+                "agreement": 0.0,
+                "notes": "Validation failed - secondary model inference error",
+                "model_used": None,
+            }
+
+    @staticmethod
+    def _validation_prompt(output: str, prompt: str) -> str:
+        return (
+            "Review this output for correctness and completeness:\n\n"
+            f"Original prompt: {prompt[:TRUNCATE_TASK_DESC]}\n\n"
+            f"Output to validate: {output[:TRUNCATE_OUTPUT_PREVIEW]}\n\n"
+            "Respond with: AGREE if correct, DISAGREE with reasons if not."
+        )
+
+    @staticmethod
+    def _parse_validation_verdict(response_text: str) -> str:
+        if _VALIDATION_AGREE_RE.search(response_text):
+            return "agree"
+        if _VALIDATION_DISAGREE_RE.search(response_text):
+            return "disagree"
+        return "uncertain"
+
+    def _select_validation_model(self, adapter: Any) -> str:
         try:
             from vetinari.learning.model_selector import get_thompson_selector
 
             selector = get_thompson_selector()
-            _candidates = [m for m in (adapter.list_models() or []) if m != self.default_model]  # noqa: VET112 - empty fallback preserves optional request metadata contract
-            # Wire cost data for cost-aware Thompson Sampling selection
-            _cost_map = None
-            try:
-                from vetinari.analytics.cost import get_cost_tracker
-
-                _report = get_cost_tracker().get_summary()
-                if _report:
-                    _cost_map = {m: v.get("cost_usd", 0.0) for m, v in _report.get("by_model", {}).items()}
-            except Exception:
-                logger.warning("Cost data unavailable for model selection")
-            validation_model = selector.select_model(
+            candidates = [m for m in (adapter.list_models() or []) if m != self.default_model]
+            return selector.select_model(
                 "cross_validation",
-                _candidates,
-                cost_per_model=_cost_map,
+                candidates,
+                cost_per_model=self._validation_cost_map(),
             )
         except Exception:
-            validation_model = self.default_model
+            logger.warning("Exception handled by  select validation model fallback", exc_info=True)
+            return self.default_model
 
+    @staticmethod
+    def _validation_cost_map() -> dict[str, float] | None:
         try:
-            validation_prompt = (
-                f"Review this output for correctness and completeness:\n\n"
-                f"Original prompt: {prompt[:TRUNCATE_TASK_DESC]}\n\n"
-                f"Output to validate: {output[:TRUNCATE_OUTPUT_PREVIEW]}\n\n"
-                f"Respond with: AGREE if correct, DISAGREE with reasons if not."
-            )
-            response = adapter.infer(validation_model, validation_prompt)
-            agrees = "AGREE" in (response or "").upper()  # noqa: VET112 - empty fallback preserves optional request metadata contract
-            return {
-                "validated": True,
-                "agreement": CROSS_VALIDATION_AGREE_SCORE if agrees else CROSS_VALIDATION_DISAGREE_SCORE,
-                "notes": response[:200] if response else "",
-                "model_used": validation_model,
-                "issues": [] if agrees else [response[:200]],
-            }
+            from vetinari.analytics.cost import get_cost_tracker
+
+            report = get_cost_tracker().get_summary()
+            if report:
+                return {m: v.get("cost_usd", 0.0) for m, v in report.get("by_model", {}).items()}
         except Exception:
-            logger.warning("Cross-validation inference failed — failing closed")
-            return {
-                "validated": False,
-                "agreement": 0.0,
-                "notes": "Validation failed — secondary model inference error",
-                "model_used": None,
-            }
+            logger.warning("Cost data unavailable for model selection")
+        return None

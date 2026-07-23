@@ -24,6 +24,11 @@ quantization_methods:
     name: "Q4_0 (4-bit, basic)"
     bits_per_weight: 4.0
     quality_retention: 0.85
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.8
     vram_factor: 0.25
     recommended_for:
@@ -47,6 +52,11 @@ quantization_methods:
     name: "Q4_1 (4-bit with delta)"
     bits_per_weight: 4.125
     quality_retention: 0.87
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.7
     vram_factor: 0.27
     recommended_for:
@@ -68,6 +78,11 @@ quantization_methods:
     name: "Q5_0 (5-bit, basic)"
     bits_per_weight: 5.0
     quality_retention: 0.92
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.5
     vram_factor: 0.31
     recommended_for:
@@ -87,6 +102,11 @@ quantization_methods:
     name: "Q5_1 (5-bit with delta)"
     bits_per_weight: 5.125
     quality_retention: 0.93
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.4
     vram_factor: 0.33
     recommended_for:
@@ -105,6 +125,11 @@ quantization_methods:
     name: "Q8_0 (8-bit, near-lossless)"
     bits_per_weight: 8.0
     quality_retention: 0.99
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.1
     vram_factor: 0.50
     recommended_for:
@@ -133,6 +158,11 @@ quantization_methods:
     name: "Q2_K (2-bit K-quant, extreme compression)"
     bits_per_weight: 2.63
     quality_retention: 0.70
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 2.2
     vram_factor: 0.16
     recommended_for:
@@ -159,6 +189,11 @@ quantization_methods:
     name: "Q3_K_S (3-bit K-quant, small variant)"
     bits_per_weight: 3.0
     quality_retention: 0.78
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 2.0
     vram_factor: 0.19
     recommended_for:
@@ -181,6 +216,11 @@ quantization_methods:
     name: "Q3_K_M (3-bit K-quant, medium variant)"
     bits_per_weight: 3.35
     quality_retention: 0.80
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.9
     vram_factor: 0.21
     recommended_for:
@@ -203,6 +243,11 @@ quantization_methods:
     name: "Q3_K_L (3-bit K-quant, large variant)"
     bits_per_weight: 3.6
     quality_retention: 0.82
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.8
     vram_factor: 0.23
     recommended_for:
@@ -223,6 +268,11 @@ quantization_methods:
     name: "Q4_K_S (4-bit K-quant, small variant)"
     bits_per_weight: 4.37
     quality_retention: 0.90
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.6
     vram_factor: 0.26
     recommended_for:
@@ -244,6 +294,11 @@ quantization_methods:
     name: "Q4_K_M (4-bit K-quant, medium variant — sweet spot)"
     bits_per_weight: 4.5
     quality_retention: 0.92
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.5
     vram_factor: 0.27
     recommended_for:
@@ -269,6 +324,11 @@ quantization_methods:
     name: "Q5_K_S (5-bit K-quant, small variant)"
     bits_per_weight: 5.52
     quality_retention: 0.95
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.3
     vram_factor: 0.33
     recommended_for:
@@ -289,6 +349,11 @@ quantization_methods:
     name: "Q5_K_M (5-bit K-quant, medium variant)"
     bits_per_weight: 5.68
     quality_retention: 0.96
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.25
     vram_factor: 0.35
     recommended_for:
@@ -312,6 +377,11 @@ quantization_methods:
     name: "Q6_K (6-bit K-quant)"
     bits_per_weight: 6.57
     quality_retention: 0.97
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.15
     vram_factor: 0.40
     recommended_for:
@@ -337,6 +407,11 @@ quantization_methods:
     name: "FP16 (16-bit float, full precision)"
     bits_per_weight: 16.0
     quality_retention: 1.0
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.0
     vram_factor: 1.0
     recommended_for:
@@ -359,6 +434,11 @@ quantization_methods:
     name: "BF16 (16-bit bfloat, full precision)"
     bits_per_weight: 16.0
     quality_retention: 1.0
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.0
     vram_factor: 1.0
     recommended_for:
@@ -380,6 +460,11 @@ quantization_methods:
     name: "FP32 (32-bit float, double size)"
     bits_per_weight: 32.0
     quality_retention: 1.0
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 0.5
     vram_factor: 2.0
     recommended_for: []
@@ -412,6 +497,11 @@ quantization_methods:
     name: "IQ1_S (1.56-bit importance quant, ultra-extreme)"
     bits_per_weight: 1.56
     quality_retention: 0.50
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 2.5
     vram_factor: 0.10
     recommended_for:
@@ -437,6 +527,11 @@ quantization_methods:
     name: "IQ1_M (1.75-bit importance quant)"
     bits_per_weight: 1.75
     quality_retention: 0.55
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 2.4
     vram_factor: 0.11
     recommended_for:
@@ -460,6 +555,11 @@ quantization_methods:
     name: "IQ2_XXS (2.06-bit importance quant, extra-extra-small)"
     bits_per_weight: 2.06
     quality_retention: 0.60
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 2.2
     vram_factor: 0.13
     recommended_for:
@@ -480,6 +580,11 @@ quantization_methods:
     name: "IQ2_XS (2.31-bit importance quant)"
     bits_per_weight: 2.31
     quality_retention: 0.63
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 2.1
     vram_factor: 0.14
     recommended_for:
@@ -499,6 +604,11 @@ quantization_methods:
     name: "IQ2_S (2.5-bit importance quant)"
     bits_per_weight: 2.50
     quality_retention: 0.67
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 2.0
     vram_factor: 0.16
     recommended_for:
@@ -517,6 +627,11 @@ quantization_methods:
     name: "IQ2_M (2.7-bit importance quant)"
     bits_per_weight: 2.70
     quality_retention: 0.72
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.95
     vram_factor: 0.17
     recommended_for:
@@ -535,6 +650,11 @@ quantization_methods:
     name: "IQ3_XXS (3.06-bit importance quant)"
     bits_per_weight: 3.06
     quality_retention: 0.75
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.85
     vram_factor: 0.19
     recommended_for:
@@ -552,6 +672,11 @@ quantization_methods:
     name: "IQ3_XS (3.3-bit importance quant)"
     bits_per_weight: 3.30
     quality_retention: 0.78
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.80
     vram_factor: 0.21
     recommended_for:
@@ -569,6 +694,11 @@ quantization_methods:
     name: "IQ3_S (3.5-bit importance quant)"
     bits_per_weight: 3.50
     quality_retention: 0.80
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.75
     vram_factor: 0.22
     recommended_for:
@@ -586,6 +716,11 @@ quantization_methods:
     name: "IQ3_M (3.7-bit importance quant)"
     bits_per_weight: 3.70
     quality_retention: 0.82
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.70
     vram_factor: 0.23
     recommended_for:
@@ -605,6 +740,11 @@ quantization_methods:
     name: "IQ4_XS (4.25-bit importance quant)"
     bits_per_weight: 4.25
     quality_retention: 0.88
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.55
     vram_factor: 0.27
     recommended_for:
@@ -624,6 +764,11 @@ quantization_methods:
     name: "IQ4_NL (4.5-bit importance quant, nonlinear)"
     bits_per_weight: 4.50
     quality_retention: 0.92
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.5
     vram_factor: 0.28
     recommended_for:
@@ -648,6 +793,11 @@ quantization_methods:
     name: "TQ1_0 (1.69-bit TurboQuant)"
     bits_per_weight: 1.69
     quality_retention: 0.45
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 2.6
     vram_factor: 0.11
     recommended_for:
@@ -671,6 +821,11 @@ quantization_methods:
     name: "TQ2_0 (2.06-bit TurboQuant)"
     bits_per_weight: 2.06
     quality_retention: 0.65
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 2.3
     vram_factor: 0.13
     recommended_for:
@@ -691,6 +846,11 @@ quantization_methods:
     name: "TQ3_0 (3-bit TurboQuant, estimated)"
     bits_per_weight: 3.0
     quality_retention: 0.78
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.95
     vram_factor: 0.19
     recommended_for:
@@ -709,6 +869,11 @@ quantization_methods:
     name: "TQ4_0 (4-bit TurboQuant, estimated)"
     bits_per_weight: 4.0
     quality_retention: 0.88
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     speed_factor: 1.65
     vram_factor: 0.25
     recommended_for:
@@ -733,6 +898,11 @@ kv_cache_quantization:
   f16:
     name: "FP16 KV cache (default)"
     quality_retention: 1.0
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     memory_saving_vs_f16: 0.0
     notes: >
       Default KV cache format. Full quality. No memory saving vs baseline.
@@ -741,6 +911,11 @@ kv_cache_quantization:
   q8_0:
     name: "Q8_0 KV cache (recommended)"
     quality_retention: 0.99
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     memory_saving_vs_f16: 0.50
     notes: >
       50% memory saving vs FP16 KV cache with negligible quality loss.
@@ -751,6 +926,11 @@ kv_cache_quantization:
   q4_0:
     name: "Q4_0 KV cache (aggressive)"
     quality_retention: 0.91
+    quality_retention_provenance:
+      source: config-local-routing-heuristic
+      measurement_status: heuristic_not_benchmark_proof
+      use_limit: routing_estimate_not_release_evidence
+      stale_after: 2026-08-31
     memory_saving_vs_f16: 0.75
     notes: >
       75% memory saving vs FP16 KV cache. Noticeable quality degradation
@@ -847,3 +1027,11 @@ task_recommendations:
     rationale: >
       Data analysis and structured reasoning require consistent token
       selection across long analytical chains. Same guidance as research.
+
+compute_capabilities:
+  sm_120:
+    preferred_quant_order: [awq_int4, gptq_int4, nvfp4, fp8, fp16, bf16]
+    preferred_order: [awq_int4, gptq_int4, nvfp4, fp8, fp16, bf16]
+    rationale: "AWQ-Marlin and GPTQ-Marlin are preferred over FP8 on RTX 5090 Blackwell until non-emulated block-FP8 is verified. See ADR-0104."
+    adr: "ADR-0104"
+    verified_on: 2026-04-25

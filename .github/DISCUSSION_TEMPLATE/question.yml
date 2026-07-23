@@ -1,0 +1,19 @@
+title: "[Question] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: Ask a question about AM Workbench setup, agents, or workflows.
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+    validations:
+      required: true
+  - type: input
+    id: vetinari_version
+    attributes:
+      label: AM Workbench version (output of `python -m vetinari --version`)
+      description: Run this from the active AM Workbench environment.
+    validations:
+      required: true

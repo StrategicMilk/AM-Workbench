@@ -22,6 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from vetinari.boundary_guards import account_evidence_drop
 from vetinari.exceptions import SandboxError
 from vetinari.sandbox_policy import (
     _DANGEROUS_ATTRS,
@@ -34,6 +35,7 @@ from vetinari.sandbox_policy import (
     _SandboxRateLimiter,
 )
 from vetinari.sandbox_types import SandboxResult
+from vetinari.security.fail_closed import sanitize_untrusted_text
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +190,7 @@ def init_code_executor(**kwargs: Any) -> CodeExecutor:
     from vetinari.code_sandbox import CodeSandbox
 
     sandbox = CodeSandbox(**kwargs)
-    _code_executor = CodeExecutor(sandbox)  # noqa: VET111 - stateful fallback preserves legacy compatibility
+    _code_executor = CodeExecutor(sandbox)
     return _code_executor
 
 
@@ -254,7 +256,8 @@ class SandboxManager:
         self.current_load = 0.0
         self.max_concurrent = 5
 
-    def _scan_for_injection_markers(self, code: str) -> str | None:
+    @staticmethod
+    def _scan_for_injection_markers(code: str) -> str | None:
         """Check code for LLM prompt injection markers.
 
         Scans the code string for known patterns used in prompt injection
@@ -297,64 +300,38 @@ class SandboxManager:
             ``SandboxResult`` with execution output, errors, and timing metadata.
 
         Raises:
-            SandboxError: If code exceeds ``MAX_CODE_LENGTH`` characters.
+            SandboxError: If ``sandbox_type`` is unknown or code exceeds
+                ``MAX_CODE_LENGTH`` characters.
         """
+        client_id = sanitize_untrusted_text(client_id, max_length=160)
+        sandbox_type = sanitize_untrusted_text(sandbox_type, max_length=80)
+        if sandbox_type not in {"in_process", "subprocess"}:
+            rejected = self._rejected_result(f"Unsupported sandbox_type: {sandbox_type}")
+            self._record_audit(
+                sandbox_type=sandbox_type,
+                execution_id=rejected.execution_id,
+                status="denied",
+                duration_ms=0,
+                code_length=len(code),
+            )
+            raise SandboxError(f"Unsupported sandbox_type: {sandbox_type}")
+        code = sanitize_untrusted_text(code, max_length=MAX_CODE_LENGTH)
         if len(code) > MAX_CODE_LENGTH:
             raise SandboxError(f"Code length {len(code)} exceeds maximum {MAX_CODE_LENGTH} characters")
 
-        marker = self._scan_for_injection_markers(code)
-        if marker:
-            logger.warning("Injection marker detected in sandbox code: %s", marker)
-            return SandboxResult(
-                execution_id=f"exec_{uuid.uuid4().hex[:8]}",
-                success=False,
-                error=f"Rejected: code contains injection marker '{marker}'",
-                execution_time_ms=0,
+        rejected = self._reject_unsafe_code(code)
+        if rejected is not None:
+            self._record_audit(
+                sandbox_type=sandbox_type,
+                execution_id=rejected.execution_id,
+                status="denied",
+                duration_ms=0,
+                code_length=len(code),
             )
-
-        # Single AST walk to detect dangerous call names and attribute accesses
-        # used in class-hierarchy escape chains. Skipped when no suspicious
-        # tokens are present so clean code pays no parse overhead.
-        _needs_scan = any(p in code for p in _DANGEROUS_NAMES) or any(a in code for a in _DANGEROUS_ATTRS)
-        if _needs_scan:
-            try:
-                _scan_tree = ast.parse(code)
-                for _node in ast.walk(_scan_tree):
-                    if isinstance(_node, ast.Call):
-                        if isinstance(_node.func, ast.Name) and _node.func.id in _DANGEROUS_NAMES:
-                            return SandboxResult(
-                                execution_id=f"exec_{uuid.uuid4().hex[:8]}",
-                                success=False,
-                                error=f"Dangerous pattern '{_node.func.id}' detected in code",
-                                execution_time_ms=0,
-                            )
-                        if isinstance(_node.func, ast.Attribute) and _node.func.attr in _DANGEROUS_NAMES:
-                            return SandboxResult(
-                                execution_id=f"exec_{uuid.uuid4().hex[:8]}",
-                                success=False,
-                                error=f"Dangerous pattern '{_node.func.attr}' detected in code",
-                                execution_time_ms=0,
-                            )
-                    if isinstance(_node, ast.Attribute) and _node.attr in _DANGEROUS_ATTRS:
-                        return SandboxResult(
-                            execution_id=f"exec_{uuid.uuid4().hex[:8]}",
-                            success=False,
-                            error=f"Dangerous pattern '{_node.attr}' detected in code",
-                            execution_time_ms=0,
-                        )
-            except SyntaxError:
-                # Fall back to string matching when code cannot be parsed
-                for _pat in (*_DANGEROUS_NAMES, *_DANGEROUS_ATTRS):
-                    if _pat in code:
-                        return SandboxResult(
-                            execution_id=f"exec_{uuid.uuid4().hex[:8]}",
-                            success=False,
-                            error=f"Dangerous pattern '{_pat}' detected in code",
-                            execution_time_ms=0,
-                        )
+            return rejected
 
         if not self._rate_limiter.check(client_id):
-            return SandboxResult(
+            rejected = SandboxResult(
                 execution_id=f"exec_{uuid.uuid4().hex[:8]}",
                 success=False,
                 error=(
@@ -363,25 +340,19 @@ class SandboxManager:
                 ),
                 execution_time_ms=0,
             )
+            self._record_audit(
+                sandbox_type=sandbox_type,
+                execution_id=rejected.execution_id,
+                status="denied",
+                duration_ms=0,
+                code_length=len(code),
+            )
+            return rejected
 
         execution_id = f"exec_{uuid.uuid4().hex[:8]}"
         _exec_start = time.time()
 
-        # Lazy import to avoid circular: code_sandbox imports sandbox_manager
-        from vetinari.code_sandbox import CodeSandbox
-
-        csb = CodeSandbox(max_execution_time=timeout, allow_network=False)
-        _exec_result = csb.execute_python(code, input_data=context or {})  # noqa: VET112 - empty fallback preserves optional request metadata contract
-        combined_output = _exec_result.output or ""
-        if _exec_result.stdout:
-            combined_output = _exec_result.stdout + ("\n" + combined_output if combined_output else "")
-        _result = SandboxResult(
-            execution_id=execution_id,
-            success=_exec_result.success,
-            result=combined_output,
-            error=_exec_result.error or (_exec_result.stderr or ""),
-            execution_time_ms=_exec_result.execution_time_ms,
-        )
+        _result = self._execute_python_subprocess(execution_id, code, timeout, context)
 
         _duration_ms = int((time.time() - _exec_start) * 1000)
         _status = "success" if _result.success else "failure"
@@ -394,7 +365,7 @@ class SandboxManager:
             len(code),
         )
 
-        self._audit_logger.record(
+        self._record_audit(
             sandbox_type=sandbox_type,
             execution_id=_result.execution_id,
             status=_status,
@@ -403,6 +374,99 @@ class SandboxManager:
         )
 
         return _result
+
+    def _record_audit(
+        self,
+        *,
+        sandbox_type: str,
+        execution_id: str,
+        status: str,
+        duration_ms: int,
+        code_length: int,
+    ) -> None:
+        """Write a sandbox audit record and account for failed audit writes."""
+        try:
+            audit_logger = getattr(self, "_audit_logger", None)
+            if audit_logger is None:
+                audit_logger = _SandboxAuditLogger()
+                self._audit_logger = audit_logger
+            audit_logger.record(
+                sandbox_type=sandbox_type,
+                execution_id=execution_id,
+                status=status,
+                duration_ms=duration_ms,
+                code_length=code_length,
+            )
+        except Exception:
+            account_evidence_drop(execution_id, "sandbox_audit_record", logger=logger)
+            raise
+
+    def _reject_unsafe_code(self, code: str) -> SandboxResult | None:
+        """Return a rejection result when code trips injection or dangerous patterns."""
+        marker = self._scan_for_injection_markers(code)
+        if marker:
+            logger.warning("Injection marker detected in sandbox code: %s", marker)
+            return self._rejected_result(f"Rejected: code contains injection marker '{marker}'")
+
+        needs_scan = any(p in code for p in _DANGEROUS_NAMES) or any(a in code for a in _DANGEROUS_ATTRS)
+        if not needs_scan:
+            return None
+        try:
+            return self._reject_dangerous_ast(code)
+        except SyntaxError:
+            logger.warning("Exception handled by  reject unsafe code fallback", exc_info=True)
+            return self._reject_dangerous_text(code)
+
+    def _reject_dangerous_ast(self, code: str) -> SandboxResult | None:
+        """Parse code and reject dangerous call names or attribute access."""
+        for node in ast.walk(ast.parse(code)):
+            if isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name) and node.func.id in _DANGEROUS_NAMES:
+                    return self._rejected_result(f"Dangerous pattern '{node.func.id}' detected in code")
+                if isinstance(node.func, ast.Attribute) and node.func.attr in _DANGEROUS_NAMES:
+                    return self._rejected_result(f"Dangerous pattern '{node.func.attr}' detected in code")
+            if isinstance(node, ast.Attribute) and node.attr in _DANGEROUS_ATTRS:
+                return self._rejected_result(f"Dangerous pattern '{node.attr}' detected in code")
+        return None
+
+    def _reject_dangerous_text(self, code: str) -> SandboxResult | None:
+        """Fallback string scan when code cannot be parsed."""
+        for pattern in (*_DANGEROUS_NAMES, *_DANGEROUS_ATTRS):
+            if pattern in code:
+                return self._rejected_result(f"Dangerous pattern '{pattern}' detected in code")
+        return None
+
+    @staticmethod
+    def _rejected_result(error: str) -> SandboxResult:
+        """Build a standard sandbox rejection result."""
+        return SandboxResult(
+            execution_id=f"exec_{uuid.uuid4().hex[:8]}", success=False, error=error, execution_time_ms=0
+        )
+
+    @staticmethod
+    def _execute_python_subprocess(
+        execution_id: str,
+        code: str,
+        timeout: int,
+        context: dict | None,
+    ) -> SandboxResult:
+        """Execute Python through CodeSandbox and convert to SandboxResult."""
+        from vetinari.code_sandbox import CodeSandbox
+
+        code = sanitize_untrusted_text(code, max_length=MAX_CODE_LENGTH)
+        exec_result = CodeSandbox(max_execution_time=timeout, allow_network=False).execute_python(
+            code, input_data=context or {}
+        )
+        combined_output = exec_result.output or ""
+        if exec_result.stdout:
+            combined_output = exec_result.stdout + ("\n" + combined_output if combined_output else "")
+        return SandboxResult(
+            execution_id=execution_id,
+            success=exec_result.success,
+            result=combined_output,
+            error=exec_result.error or (exec_result.stderr or ""),
+            execution_time_ms=exec_result.execution_time_ms,
+        )
 
     def get_status(self) -> dict[str, Any]:
         """Return the current status of all sandbox backends.
@@ -463,7 +527,7 @@ class SandboxManager:
 
 # ── Module-level singleton ────────────────────────────────────────────────────
 
-sandbox_manager = SandboxManager.get_instance()
+sandbox_manager: SandboxManager | None = None
 
 
 def get_sandbox_manager() -> SandboxManager:
@@ -472,4 +536,7 @@ def get_sandbox_manager() -> SandboxManager:
     Returns:
         The shared ``SandboxManager`` instance.
     """
+    global sandbox_manager
+    if sandbox_manager is None:
+        sandbox_manager = SandboxManager.get_instance()
     return sandbox_manager

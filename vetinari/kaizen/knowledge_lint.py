@@ -17,6 +17,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 _STALE_THRESHOLD_DAYS = 90  # Entries not accessed in 90 days are stale

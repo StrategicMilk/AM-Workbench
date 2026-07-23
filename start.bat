@@ -1,10 +1,10 @@
 @echo off
 :: Vetinari Startup Script (Windows)
 :: Usage: start.bat [options]
-::   start.bat                          -- Start the default orchestrator
+::   start.bat                          -- Start with dashboard
 ::   start.bat --goal "My goal here"    -- Run a specific goal
 ::   start.bat --no-dashboard           -- CLI only
-::   start.bat serve                    -- API server
+::   start.bat serve                    -- Dashboard only
 
 setlocal EnableExtensions
 

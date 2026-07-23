@@ -23,10 +23,16 @@ from pathlib import Path
 from typing import Any
 
 from vetinari.constants import VETINARI_STATE_DIR
+from vetinari.learning.atomic_writers import write_json_atomic
 
 logger = logging.getLogger(__name__)
 
+
 # Decision: ACON failure-driven compression preserves critical context types (ADR-pending)
+
+
+class ACONRulesError(RuntimeError):
+    """Raised when governed ACON compression rules cannot be trusted."""
 
 
 class InfoCategory(Enum):
@@ -143,12 +149,8 @@ class ACONCompressor:
                 len(self._rules),
                 self._rules_path,
             )
-        except Exception:
-            logger.exception(
-                "Failed to load ACON rules from %s — falling back to defaults already seeded",
-                self._rules_path,
-            )
-            self._init_default_rules()
+        except Exception as exc:
+            raise ACONRulesError(f"failed to load ACON rules from {self._rules_path}") from exc
 
     def _init_default_rules(self) -> None:
         """Initialize default compression rules — preserve critical categories."""
@@ -188,10 +190,9 @@ class ACONCompressor:
                     for rule in sorted(self._rules.values(), key=lambda r: -r.priority)
                 ],
             }
-            with open(self._rules_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-        except Exception:
-            logger.exception("Failed to save ACON rules to %s", self._rules_path)
+            write_json_atomic(self._rules_path, data)
+        except Exception as exc:
+            raise ACONRulesError(f"failed to save ACON rules to {self._rules_path}") from exc
 
     def compress(self, context: dict[str, Any]) -> dict[str, Any]:
         """Compress context by removing non-essential information categories.

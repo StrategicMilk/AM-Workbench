@@ -14,7 +14,10 @@ import logging
 import re
 from dataclasses import dataclass, field
 
+from vetinari.security.redaction import redact_text
+
 logger = logging.getLogger(__name__)
+
 
 TAIL_LINES = 50  # Maximum lines retained from sandbox output per stream
 
@@ -51,7 +54,12 @@ _PYTEST_SUMMARY_RE = re.compile(
 )
 
 
-@dataclass(frozen=True)
+def _redact_feedback_text(value: object) -> str:
+    """Redact sandbox feedback before it is stored or returned to retry prompts."""
+    return redact_text(str(value))
+
+
+@dataclass(frozen=True, slots=True)
 class TestResult:
     """A single failing test or error extracted from sandbox output.
 
@@ -120,34 +128,34 @@ class ExecutionFeedback:
         parts: list[str] = ["## Execution Feedback\n"]
 
         if self.summary:
-            parts.append(f"**Summary**: {self.summary}\n")
+            parts.append(f"**Summary**: {_redact_feedback_text(self.summary)}\n")
 
         if self.failed_tests:
             parts.append(f"**Failed tests ({len(self.failed_tests)})**:")
             for tr in self.failed_tests[:10]:
-                msg = f" — {tr.message}" if tr.message else ""
+                msg = f" — {_redact_feedback_text(tr.message)}" if tr.message else ""
                 parts.append(f"  - [{tr.kind}] {tr.test_id}{msg}")
             if len(self.failed_tests) > 10:
                 parts.append(f"  ... and {len(self.failed_tests) - 10} more")
 
         if self.tracebacks:
             parts.append(f"\n**Tracebacks ({len(self.tracebacks)})**:")
-            parts.extend(f"```\n{tb.strip()}\n```" for tb in self.tracebacks[:3])
+            parts.extend(f"```\n{_redact_feedback_text(tb.strip())}\n```" for tb in self.tracebacks[:3])
 
         if self.type_errors:
             parts.append(f"\n**Type errors ({len(self.type_errors)})**:")
-            parts.extend(f"  - {err}" for err in self.type_errors[:10])
+            parts.extend(f"  - {_redact_feedback_text(err)}" for err in self.type_errors[:10])
 
         if self.lint_errors:
             parts.append(f"\n**Lint errors ({len(self.lint_errors)})**:")
-            parts.extend(f"  - {err}" for err in self.lint_errors[:10])
+            parts.extend(f"  - {_redact_feedback_text(err)}" for err in self.lint_errors[:10])
 
         if not self.success and not any([self.failed_tests, self.tracebacks, self.type_errors, self.lint_errors]):
             # Generic failure with no parsed detail
             if self.raw_stderr:
-                parts.append(f"\n**Stderr**:\n```\n{self.raw_stderr[:500]}\n```")
+                parts.append(f"\n**Stderr**:\n```\n{_redact_feedback_text(self.raw_stderr[:500])}\n```")
             elif self.raw_stdout:
-                parts.append(f"\n**Stdout**:\n```\n{self.raw_stdout[:500]}\n```")
+                parts.append(f"\n**Stdout**:\n```\n{_redact_feedback_text(self.raw_stdout[:500])}\n```")
 
         return "\n".join(parts)
 
@@ -191,8 +199,8 @@ def parse_sandbox_output(
         ExecutionFeedback populated from the parsed output.
     """
     success = return_code == 0
-    stdout_tail = _tail(stdout)
-    stderr_tail = _tail(stderr)
+    stdout_tail = _redact_feedback_text(_tail(stdout))
+    stderr_tail = _redact_feedback_text(_tail(stderr))
 
     # Combine streams for pattern matching (many tools write to stderr)
     combined = stdout + "\n" + stderr
@@ -202,28 +210,33 @@ def parse_sandbox_output(
     for m in _PYTEST_FAILED_RE.finditer(combined):
         kind = m.group(1)
         test_id = m.group(2).strip()
-        message = (m.group(3) or "").strip()
+        message = _redact_feedback_text((m.group(3) or "").strip())
         failed_tests.append(TestResult(test_id=test_id, kind=kind, message=message))
 
     # -- Parse tracebacks -----------------------------------------------------
     tracebacks: list[str] = []
     for m in _TRACEBACK_RE.finditer(combined):
         tb = f"Traceback (most recent call last):\n{m.group(1)}{m.group(2)}"
-        tracebacks.append(tb)
+        tracebacks.append(_redact_feedback_text(tb))
 
     # -- Parse type errors (mypy / pyright) -----------------------------------
     type_errors = [
-        f"{m.group(1)}:{m.group(2)}: {m.group(4)}" for m in _TYPE_ERROR_RE.finditer(combined) if m.group(3) == "error"
+        _redact_feedback_text(f"{m.group(1)}:{m.group(2)}: {m.group(4)}")
+        for m in _TYPE_ERROR_RE.finditer(combined)
+        if m.group(3) == "error"
     ]
 
     # -- Parse lint errors (ruff / flake8) ------------------------------------
-    lint_errors = [f"{m.group(1)}:{m.group(2)}: {m.group(3)} {m.group(4)}" for m in _LINT_ERROR_RE.finditer(combined)]
+    lint_errors = [
+        _redact_feedback_text(f"{m.group(1)}:{m.group(2)}: {m.group(3)} {m.group(4)}")
+        for m in _LINT_ERROR_RE.finditer(combined)
+    ]
 
     # -- Extract pytest summary line ------------------------------------------
     summary = ""
     m_sum = _PYTEST_SUMMARY_RE.search(combined)
     if m_sum:
-        summary = f"{m_sum.group(1)} failed, {m_sum.group(2)} passed in {m_sum.group(3)}s"
+        summary = _redact_feedback_text(f"{m_sum.group(1)} failed, {m_sum.group(2)} passed in {m_sum.group(3)}s")
 
     logger.debug(
         "[ExecutionFeedback] parsed: rc=%d tests=%d tracebacks=%d type=%d lint=%d",

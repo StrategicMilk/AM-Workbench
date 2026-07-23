@@ -28,6 +28,7 @@ from vetinari.verification.claim_verifier import verify_claim_fail_closed
 
 logger = logging.getLogger(__name__)
 
+
 _REPORT_SOURCE = "vetinari.verification.cascade_report"
 
 

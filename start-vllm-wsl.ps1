@@ -4,11 +4,12 @@ param(
     # $VllmHost avoids collision with PowerShell's built-in read-only $Host variable.
     [string]$VllmHost = "127.0.0.1",
     [int]$Port = 8000,
-    [string]$VenvPath = "~/.venvs/vllm",
+    [string]$VenvPath = "~/.vetinari/amw-wsl",
     [string]$NativeModelsDir = (Join-Path $PSScriptRoot "models\native"),
     [ValidateSet("sha256", "sha256_cbor", "xxhash", "xxhash_cbor")]
     [string]$PrefixCachingHashAlgo = "sha256",
     [switch]$DisablePrefixCaching,
+    [switch]$EnableFlashInferSampler,
     [string]$CacheSalt = $env:VETINARI_VLLM_CACHE_SALT,
     [int]$StartupTimeoutSeconds = 180,
     [switch]$ForceRestart
@@ -87,6 +88,7 @@ $bashVenv = if ($resolvedVenvPath.StartsWith("`$HOME")) { '"' + $resolvedVenvPat
 $bashPrefixCachingHashAlgo = Quote-ForBash -Value $PrefixCachingHashAlgo
 $forceRestartFlag = if ($ForceRestart) { "1" } else { "0" }
 $prefixCachingEnabledFlag = if ($DisablePrefixCaching) { "0" } else { "1" }
+$flashInferSamplerFlag = if ($EnableFlashInferSampler) { "1" } else { "0" }
 
 $bashScript = @"
 set -e
@@ -100,6 +102,7 @@ HOST=$bashHost
 VENV=$bashVenv
 PREFIX_CACHING_ENABLED="$prefixCachingEnabledFlag"
 PREFIX_CACHING_HASH_ALGO=$bashPrefixCachingHashAlgo
+FLASHINFER_SAMPLER="$flashInferSamplerFlag"
 
 mkdir -p "`$CACHE_DIR"
 
@@ -159,6 +162,16 @@ if [ ! -f "`$VENV/bin/activate" ]; then
 fi
 
 . "`$VENV/bin/activate"
+CUDA_ROOT=`$(find "`$VENV/lib" -type d -path "*/site-packages/nvidia/*/bin" -print -quit 2>/dev/null | xargs -r dirname)
+if [ -n "`$CUDA_ROOT" ] && [ -d "`$CUDA_ROOT/bin" ]; then
+  export CUDA_HOME="`$CUDA_ROOT"
+  export CUDA_PATH="`$CUDA_ROOT"
+  export PATH="`$VENV/bin:`$CUDA_ROOT/bin:`$PATH"
+else
+  export PATH="`$VENV/bin:`$PATH"
+fi
+export VLLM_USE_FLASHINFER_SAMPLER="`$FLASHINFER_SAMPLER"
+
 if [ "`$PREFIX_CACHING_ENABLED" = "1" ]; then
   PREFIX_CACHE_ARGS="--enable-prefix-caching --prefix-caching-hash-algo `$PREFIX_CACHING_HASH_ALGO"
 else
@@ -220,6 +233,7 @@ fi
 $env:VETINARI_VLLM_ENDPOINT = $endpoint
 $env:VETINARI_VLLM_PREFIX_CACHING_ENABLED = if ($DisablePrefixCaching) { "false" } else { "true" }
 $env:VETINARI_VLLM_PREFIX_CACHING_HASH_ALGO = $PrefixCachingHashAlgo
+$env:VETINARI_VLLM_FLASHINFER_SAMPLER = if ($EnableFlashInferSampler) { "true" } else { "false" }
 if ($CacheSalt) {
     $env:VETINARI_VLLM_CACHE_SALT = $CacheSalt
 }
@@ -229,6 +243,7 @@ if ($nativeModelsDirForEnv) {
 
 Write-Host "vLLM endpoint: $env:VETINARI_VLLM_ENDPOINT"
 Write-Host "vLLM prefix caching: $env:VETINARI_VLLM_PREFIX_CACHING_ENABLED ($env:VETINARI_VLLM_PREFIX_CACHING_HASH_ALGO)"
+Write-Host "vLLM FlashInfer sampler: $env:VETINARI_VLLM_FLASHINFER_SAMPLER"
 if ($env:VETINARI_NATIVE_MODELS_DIR) {
     Write-Host "Native models: $env:VETINARI_NATIVE_MODELS_DIR"
 }

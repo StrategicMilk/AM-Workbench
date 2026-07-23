@@ -1,0 +1,38 @@
+schema_version: model-constants.v1
+
+memory:
+  embedding:
+    default_model: text-embedding-nomic-embed-text-v1.5
+    max_cached_models: 8
+    max_gguf_candidates: 500
+    max_search_limit: 100
+
+hooks:
+  correction_surface:
+    min_words: 8
+    max_output_chars: 2000
+    subprocess_timeout_seconds: 5
+    query_limit: 3
+    min_score: 1.5
+  agent_gate:
+    sonnet_required:
+      - Explore
+      - full-spectrum-coordinator
+      - general-purpose
+      - superpowers:code-reviewer
+
+inspection:
+  ai_lane:
+    required_evidence_markers:
+      - model
+      - memory
+      - eval
+      - prompt
+      - embedding
+      - inference
+    shallow_no_finding_markers:
+      - no ai lane finding
+      - no finding
+      - no findings
+      - not applicable
+      - n/a

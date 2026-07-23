@@ -16,12 +16,14 @@ import logging
 from collections.abc import Callable
 from typing import Any, TypeVar
 
+from vetinari.errors import FailClosedError
 from vetinari.resilience.circuit_breaker import (
     CircuitBreaker,
     get_circuit_breaker_registry,
 )
 
 logger = logging.getLogger(__name__)
+
 
 T = TypeVar("T")
 
@@ -37,7 +39,16 @@ def get_inference_breaker(agent_type: str) -> CircuitBreaker:
 
     Returns:
         The CircuitBreaker instance for that agent type from the global registry.
+
+    Raises:
+        FailClosedError: Raised when ``agent_type`` is blank or only whitespace.
     """
+    if not agent_type or not agent_type.strip():
+        raise FailClosedError(
+            "circuit_breaker.agent_type",
+            "agent type is required before breaker lookup",
+            recovery="pass the concrete runtime agent type",
+        )
     # Normalise to uppercase so callers passing either the enum .value string
     # (e.g. "foreman") or the raw uppercase form both hit the same registry entry.
     return get_circuit_breaker_registry().get(agent_type.upper())
@@ -71,6 +82,12 @@ def call_with_breaker(
         Exception: Any exception raised by ``fn`` is re-raised after the
             failure is recorded on the breaker.
     """
+    if not agent_type or not agent_type.strip():
+        raise FailClosedError(
+            "circuit_breaker.agent_type",
+            "agent type is required before protected inference call",
+            recovery="pass the concrete runtime agent type",
+        )
     # Normalise to uppercase so callers passing either the enum .value string
     # (e.g. "foreman") or the raw uppercase form both hit the same registry entry.
     breaker = get_circuit_breaker_registry().get(agent_type.upper())
@@ -104,9 +121,19 @@ def check_breaker_health(agent_type: str) -> dict[str, Any]:
         time remaining until the next HALF_OPEN probe window (via
         ``CircuitBreaker.to_dict()``), and ``backoff_delay_s`` — the
         recommended wait before the next retry attempt.
+
+    Raises:
+        FailClosedError: Raised when ``agent_type`` is blank or only whitespace.
     """
-    breaker = get_circuit_breaker_registry().get(agent_type)
+    if not agent_type or not agent_type.strip():
+        raise FailClosedError(
+            "circuit_breaker.agent_type",
+            "agent type is required before health lookup",
+            recovery="pass the concrete runtime agent type",
+        )
+    breaker = get_circuit_breaker_registry().get(agent_type.upper())
     health = breaker.to_dict()
+    health["name"] = agent_type.strip().lower()
     # Expose the computed back-off delay so callers can apply it without
     # duplicating the exponential-backoff formula.
     health["backoff_delay_s"] = breaker.get_backoff_delay()

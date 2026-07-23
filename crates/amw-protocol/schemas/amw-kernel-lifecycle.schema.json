@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/amw-kernel-lifecycle.schema.json",
+  "title": "AMW Kernel Lifecycle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kernel_id", "schema_version", "state"],
+  "properties": {
+    "kernel_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schema_version": {
+      "const": "amw-kernel-lifecycle.v1"
+    },
+    "state": {
+      "type": "string",
+      "enum": ["initializing", "ready", "recovering", "shutting_down", "stopped", "failed_closed"]
+    },
+    "reason": {
+      "type": "string"
+    }
+  }
+}

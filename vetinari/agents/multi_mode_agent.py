@@ -40,10 +40,36 @@ from vetinari.agents.self_reflection import (
 )
 from vetinari.types import AgentType
 
+logger = logging.getLogger(__name__)
+
+
 if TYPE_CHECKING:
     from vetinari.skills.skill_spec import SkillSpec
 
-logger = logging.getLogger(__name__)
+
+def _score_verification_substance(values: list[Any]) -> float:
+    """Return a bounded score for the amount of real output content present."""
+    score = 0.0
+    for value in values:
+        if isinstance(value, str):
+            text = value.strip()
+            if len(text) >= 120:
+                score += 0.45
+            elif len(text) >= 40:
+                score += 0.30
+            elif len(text) >= 12:
+                score += 0.15
+        elif isinstance(value, dict):
+            populated = [item for item in value.values() if item not in (None, "", [], {})]
+            if populated:
+                score += min(0.45, 0.15 + 0.08 * len(populated))
+        elif isinstance(value, list):
+            populated = [item for item in value if item not in (None, "", [], {})]
+            if populated:
+                score += min(0.45, 0.12 + 0.06 * len(populated))
+        else:
+            score += 0.05
+    return min(0.75, round(score, 3))
 
 
 class MultiModeAgent(BaseAgent):
@@ -94,7 +120,9 @@ class MultiModeAgent(BaseAgent):
         # task.mode is the structured field; task.context["mode"] is the legacy dict key.
         # Return as-is so execute() can handle unknown modes via delegation rather
         # than silently remapping to the default.
-        mode = getattr(task, "mode", None) or task.context.get("mode", "")
+        task_mode = getattr(task, "mode", None)
+        mode = task_mode if isinstance(task_mode, str) else ""
+        mode = mode or task.context.get("mode", "")
         if mode:
             return mode
 
@@ -212,49 +240,8 @@ class MultiModeAgent(BaseAgent):
         if strategy == ReflectionStrategy.SIMPLE:
             return result  # No-op — skip reflection overhead
 
-        def evaluator(output: Any) -> tuple[bool, list[str]]:
-            """Verify output quality and return (passed, issue_messages).
-
-            Calls self.verify() and normalises the issues list into plain
-            strings so the reflection loop can include them in the re-prompt.
-
-            Args:
-                output: The agent output to evaluate.
-
-            Returns:
-                Tuple of (passed, list_of_issue_messages).
-            """
-            vr = self.verify(output)
-            issues_as_str: list[str] = []
-            for issue in vr.issues or []:
-                if isinstance(issue, dict):
-                    issues_as_str.append(issue.get("message", str(issue)))
-                else:
-                    issues_as_str.append(str(issue))
-            return vr.passed, issues_as_str
-
-        def refiner(t: AgentTask, prior: AgentResult, feedback: list[str]) -> AgentResult:
-            """Re-run the handler with reflection feedback injected into task context.
-
-            Builds a new task by merging the original context with a
-            ``reflection_feedback`` key so the agent can read the issues and
-            correct them in the next attempt.
-
-            Args:
-                t: The original task to retry.
-                prior: The prior failed result (unused but required by signature).
-                feedback: List of issue messages from the evaluator.
-
-            Returns:
-                AgentResult from re-running the handler with feedback context.
-            """
-            refined_task = dataclasses.replace(
-                t,
-                context={**t.context, "reflection_feedback": feedback},
-            )
-            return handler(refined_task)
-
-        reflection = reflect(task, result, strategy, evaluator, refiner)
+        refiner = self._reflection_refiner(handler)
+        reflection = reflect(task, result, strategy, self._reflection_evaluator, refiner)
 
         if reflection.is_improved:
             logger.info(
@@ -278,6 +265,28 @@ class MultiModeAgent(BaseAgent):
             )
 
         return result
+
+    def _reflection_evaluator(self, output: Any) -> tuple[bool, list[str]]:
+        vr = self.verify(output)
+        issues_as_str: list[str] = []
+        for issue in vr.issues or []:
+            if isinstance(issue, dict):
+                issues_as_str.append(issue.get("message", str(issue)))
+            else:
+                issues_as_str.append(str(issue))
+        return vr.passed, issues_as_str
+
+    @staticmethod
+    def _reflection_refiner(handler: Any) -> Any:
+        def refiner(t: AgentTask, prior: AgentResult, feedback: list[str]) -> AgentResult:
+            del prior
+            refined_task = dataclasses.replace(
+                t,
+                context={**t.context, "reflection_feedback": feedback},
+            )
+            return handler(refined_task)
+
+        return refiner
 
     def verify(self, output: Any) -> VerificationResult:
         """Default verification — requires structured dict output with content.
@@ -305,19 +314,37 @@ class MultiModeAgent(BaseAgent):
                 issues=[{"message": "Empty output dict"}],
                 score=0.0,
             )
-        # Require at least one content-bearing field to avoid passing on a dict
-        # that contains only metadata with no actual agent output (governance rule 2).
+        # Require enough content-bearing substance to avoid passing on a dict
+        # that contains only metadata or a single token-shaped answer.
         CONTENT_FIELDS = {"content", "result", "output", "findings", "issues", "tests", "sections"}
-        has_content = any(k in output for k in CONTENT_FIELDS) and any(
-            bool(output.get(k)) for k in CONTENT_FIELDS if k in output
-        )
-        if not has_content:
+        content_values = [output.get(k) for k in CONTENT_FIELDS if k in output and output.get(k)]
+        if not content_values:
             return VerificationResult(
                 passed=False,
-                issues=[{"message": "Output dict has no recognized content fields (content, result, output, findings, issues, tests, sections)"}],
+                issues=[
+                    {
+                        "message": "Output dict has no recognized content fields (content, result, output, findings, issues, tests, sections)"
+                    }
+                ],
                 score=0.0,
             )
-        return VerificationResult(passed=True, score=0.7)
+        substance_score = _score_verification_substance(content_values)
+        evidence_bonus = 0.0
+        if output.get("metadata"):
+            evidence_bonus += 0.08
+        if output.get("provenance") or output.get("evidence"):
+            evidence_bonus += 0.12
+        if output.get("tests") or output.get("findings") or output.get("sections"):
+            evidence_bonus += 0.10
+
+        score = min(1.0, round(substance_score + evidence_bonus, 3))
+        if score < 0.65:
+            return VerificationResult(
+                passed=False,
+                issues=[{"message": "Output content is too thin for default multimode verification"}],
+                score=score,
+            )
+        return VerificationResult(passed=True, score=score)
 
     def get_system_prompt(self) -> str:
         """Return mode-aware system prompt loaded from agent markdown files.

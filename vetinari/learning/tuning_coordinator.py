@@ -18,7 +18,12 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from vetinari.boundary_guards import account_evidence_drop
+from vetinari.security.redaction import redact_value
+from vetinari.utils import privacy_receipt
+
 logger = logging.getLogger(__name__)
+
 
 # -- Module-level state --
 # _coordinator: singleton instance, created on first call to get_tuning_coordinator().
@@ -37,7 +42,7 @@ _SOURCE_PRIORITY: dict[str, int] = {
 }
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ParameterChange:
     """A proposed parameter change from a tuning subsystem.
 
@@ -133,56 +138,91 @@ class TuningCoordinator:
 
         with self._lock:
             existing = self._active_params.get(parameter)
-            if existing is not None:
-                try:
-                    existing_time = datetime.fromisoformat(existing.timestamp)
-                    now = datetime.now(timezone.utc)
-                    elapsed = (now - existing_time).total_seconds()
-                    if elapsed < self.COORDINATION_WINDOW_SECONDS:
-                        if priority < existing.priority:
-                            # Incoming change has strictly higher priority — override.
-                            logger.info(
-                                "[TuningCoordinator] Overriding active %s change to %r with higher-priority %s change",
-                                existing.source,
-                                parameter,
-                                source,
-                            )
-                        else:
-                            logger.info(
-                                "[TuningCoordinator] Rejected %s change to %r — "
-                                "conflicting %s change (priority %d) applied %.0fs ago",
-                                source,
-                                parameter,
-                                existing.source,
-                                existing.priority,
-                                elapsed,
-                            )
-                            return False
-                except (ValueError, TypeError) as exc:
-                    # Malformed timestamp on the existing entry — allow the new change.
-                    logger.warning(
-                        "[TuningCoordinator] Could not parse timestamp on existing "
-                        "change for %r — allowing new %s change: %s",
-                        parameter,
-                        source,
-                        exc,
-                    )
+            if existing is not None and not self._can_accept_conflict(change, existing):
+                return False
+            self._accept_change(change)
+            return True
 
-            self._active_params[parameter] = change
-            self._history.append(change)
-            # Keep the history bounded to avoid unbounded memory growth.
-            if len(self._history) > 500:
-                self._history = self._history[-500:]
-
+    def _can_accept_conflict(self, change: ParameterChange, existing: ParameterChange) -> bool:
+        try:
+            existing_time = datetime.fromisoformat(existing.timestamp)
+            elapsed = (datetime.now(timezone.utc) - existing_time).total_seconds()
+        except (ValueError, TypeError) as exc:
+            logger.warning(
+                "[TuningCoordinator] Could not parse timestamp on existing change for %r - rejecting new %s change: %s",
+                change.parameter,
+                change.source,
+                exc,
+            )
+            return False
+        if elapsed >= self.COORDINATION_WINDOW_SECONDS:
+            return True
+        if change.priority < existing.priority:
             logger.info(
-                "[TuningCoordinator] Accepted %s change: %r %s -> %s | %s",
-                source,
-                parameter,
-                old_value,
-                new_value,
-                reasoning,
+                "[TuningCoordinator] Overriding active %s change to %r with higher-priority %s change",
+                existing.source,
+                change.parameter,
+                change.source,
             )
             return True
+        logger.info(
+            "[TuningCoordinator] Rejected %s change to %r - conflicting %s change (priority %d) applied %.0fs ago",
+            change.source,
+            change.parameter,
+            existing.source,
+            existing.priority,
+            elapsed,
+        )
+        return False
+
+    def _accept_change(self, change: ParameterChange) -> None:
+        self._active_params[change.parameter] = change
+        self._history.append(change)
+        if len(self._history) > 500:
+            dropped = self._history[:-500]
+            for item in dropped:
+                account_evidence_drop(item, "tuning_coordinator", logger=logger)
+            self._history = self._history[-500:]
+        logger.info(
+            "[TuningCoordinator] Accepted %s change: %r %s -> %s | %s",
+            change.source,
+            change.parameter,
+            change.old_value,
+            change.new_value,
+            change.reasoning,
+        )
+
+    def propose_after_governance(
+        self,
+        governance_decision: object,
+        *,
+        source: str,
+        parameter: str,
+        old_value: Any,
+        new_value: Any,
+        reasoning: str,
+    ) -> bool:
+        """Propose a runtime default change only after self-improvement approval.
+
+        Returns:
+            bool value produced by propose_after_governance().
+        """
+        from vetinari.workbench.self_improvement import is_default_change_approved
+
+        if not is_default_change_approved(governance_decision):
+            logger.info(
+                "[TuningCoordinator] Rejected %s change to %r - self-improvement governance did not approve it",
+                source,
+                parameter,
+            )
+            return False
+        return self.propose(
+            source=source,
+            parameter=parameter,
+            old_value=old_value,
+            new_value=new_value,
+            reasoning=reasoning,
+        )
 
     def get_history(self, limit: int = 50) -> list[dict[str, Any]]:
         """Return recent coordination history, most recent first.
@@ -195,7 +235,7 @@ class TuningCoordinator:
         """
         limit = max(1, min(limit, 500))
         with self._lock:
-            return [asdict(c) for c in reversed(self._history[-limit:])]
+            return [_privacy_safe_change_dict(c) for c in reversed(self._history[-limit:])]
 
     def get_active_params(self) -> dict[str, dict[str, Any]]:
         """Return currently active parameter overrides.
@@ -208,7 +248,7 @@ class TuningCoordinator:
             Dict mapping parameter name to the most recent ParameterChange dict.
         """
         with self._lock:
-            return {k: asdict(v) for k, v in self._active_params.items()}
+            return {k: _privacy_safe_change_dict(v) for k, v in self._active_params.items()}
 
 
 def get_tuning_coordinator() -> TuningCoordinator:
@@ -226,3 +266,17 @@ def get_tuning_coordinator() -> TuningCoordinator:
             if _coordinator is None:
                 _coordinator = TuningCoordinator()
     return _coordinator
+
+
+def _privacy_safe_change_dict(change: ParameterChange) -> dict[str, Any]:
+    row = asdict(change)
+    row["old_value"] = redact_value(row.get("old_value"))
+    row["new_value"] = redact_value(row.get("new_value"))
+    row["reasoning"] = redact_value(row.get("reasoning"))
+    row["privacy_receipt"] = privacy_receipt(
+        privacy_class="operational",
+        retention_days=30,
+        source="tuning_coordinator.history",
+        redaction_applied=True,
+    )
+    return row

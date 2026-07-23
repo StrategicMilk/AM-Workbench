@@ -1,0 +1,165 @@
+recipes:
+  - recipe_id: sft-support-playbooks
+    kind: sft
+    base_model_id: registry:model:workbench-base-8b
+    output_artifact_kind: adapter
+    dataset_steps: [clean, dedupe, consent_check, provenance_validate, split, redact]
+    packaging_format: peft-lora
+    registry_alias: workbench-support-sft
+    resource_plan:
+      min_vram_gb: 24
+      cpu_threads: 8
+      estimated_hours: 5
+      max_cost_usd: 12
+      cloud_handoff_allowed: true
+    eval_gates:
+      - eval_id: eval:sft:helpfulness
+        metric_name: helpfulness
+        value: 0.0
+        threshold: 0.88
+        passed: false
+        evidence_ref: evals/support-sft/helpfulness.json
+        status_reason: evidence_artifact_missing
+    hyperparameters:
+      epochs: 2
+      learning_rate: 0.00002
+      lora_rank: 16
+  - recipe_id: dpo-preference-safety
+    kind: dpo
+    base_model_id: registry:model:workbench-base-8b
+    output_artifact_kind: adapter
+    dataset_steps: [clean, dedupe, consent_check, provenance_validate, split, redact]
+    packaging_format: peft-lora
+    registry_alias: workbench-safety-dpo
+    resource_plan:
+      min_vram_gb: 32
+      cpu_threads: 12
+      estimated_hours: 8
+      max_cost_usd: 24
+      cloud_handoff_allowed: true
+    eval_gates:
+      - eval_id: eval:dpo:refusal-quality
+        metric_name: refusal_quality
+        value: 0.0
+        threshold: 0.85
+        passed: false
+        evidence_ref: evals/dpo/refusal-quality.json
+        status_reason: evidence_artifact_missing
+    hyperparameters:
+      beta: 0.1
+      epochs: 1
+  - recipe_id: preference-ranker
+    kind: preference
+    base_model_id: registry:model:ranker-base
+    output_artifact_kind: model_checkpoint
+    dataset_steps: [clean, dedupe, consent_check, provenance_validate, split, redact]
+    packaging_format: safetensors
+    registry_alias: workbench-preference-ranker
+    resource_plan:
+      min_vram_gb: 16
+      cpu_threads: 8
+      estimated_hours: 3
+      max_cost_usd: 8
+      cloud_handoff_allowed: false
+    eval_gates:
+      - eval_id: eval:preference:pairwise
+        metric_name: pairwise_accuracy
+        value: 0.0
+        threshold: 0.8
+        passed: false
+        evidence_ref: evals/preference/pairwise.json
+        status_reason: evidence_artifact_missing
+    hyperparameters:
+      max_pairs: 10000
+  - recipe_id: classification-router
+    kind: classification
+    base_model_id: registry:model:encoder-base
+    output_artifact_kind: model_checkpoint
+    dataset_steps: [clean, dedupe, consent_check, provenance_validate, split, redact]
+    packaging_format: onnx
+    registry_alias: workbench-route-classifier
+    resource_plan:
+      min_vram_gb: 8
+      cpu_threads: 4
+      estimated_hours: 1.5
+      max_cost_usd: 3
+      cloud_handoff_allowed: false
+    eval_gates:
+      - eval_id: eval:classification:macro-f1
+        metric_name: macro_f1
+        value: 0.0
+        threshold: 0.82
+        passed: false
+        evidence_ref: evals/classification/macro-f1.json
+        status_reason: evidence_artifact_missing
+    hyperparameters:
+      max_sequence_length: 512
+  - recipe_id: embedder-domain-index
+    kind: embedder
+    base_model_id: registry:model:embedder-base
+    output_artifact_kind: embedding_index
+    dataset_steps: [clean, dedupe, consent_check, provenance_validate, split, redact]
+    packaging_format: faiss
+    registry_alias: workbench-domain-embedder
+    resource_plan:
+      min_vram_gb: 12
+      cpu_threads: 8
+      estimated_hours: 2
+      max_cost_usd: 6
+      cloud_handoff_allowed: true
+    eval_gates:
+      - eval_id: eval:embedder:retrieval-hit-rate
+        metric_name: retrieval_hit_rate
+        value: 0.0
+        threshold: 0.74
+        passed: false
+        evidence_ref: evals/embedder/hit-rate.json
+        status_reason: evidence_artifact_missing
+    hyperparameters:
+      chunk_size: 768
+  - recipe_id: lora-merge-release-candidate
+    kind: lora_merge
+    base_model_id: registry:model:workbench-base-8b
+    output_artifact_kind: merged_model
+    dataset_steps: [clean, dedupe, consent_check, provenance_validate, split, redact]
+    packaging_format: safetensors
+    registry_alias: workbench-merged-candidate
+    resource_plan:
+      min_vram_gb: 20
+      cpu_threads: 8
+      estimated_hours: 1
+      max_cost_usd: 4
+      cloud_handoff_allowed: true
+    eval_gates:
+      - eval_id: eval:lora-merge:parity
+        metric_name: adapter_parity
+        value: 0.0
+        threshold: 0.98
+        passed: false
+        evidence_ref: evals/lora-merge/parity.json
+        status_reason: evidence_artifact_missing
+    hyperparameters:
+      merge_precision: bf16
+  - recipe_id: quantize-edge
+    kind: quantization
+    base_model_id: registry:model:workbench-merged-candidate
+    output_artifact_kind: quantized_model
+    dataset_steps: [clean, dedupe, consent_check, provenance_validate, split, redact]
+    packaging_format: gguf
+    registry_alias: workbench-edge-quantized
+    resource_plan:
+      min_vram_gb: 10
+      cpu_threads: 8
+      estimated_hours: 1
+      max_cost_usd: 2
+      cloud_handoff_allowed: false
+    eval_gates:
+      - eval_id: eval:quantization:quality-retention
+        metric_name: quality_retention
+        value: 0.0
+        threshold: 0.95
+        passed: false
+        evidence_ref: evals/quantization/retention.json
+        status_reason: evidence_artifact_missing
+    hyperparameters:
+      bits: 4

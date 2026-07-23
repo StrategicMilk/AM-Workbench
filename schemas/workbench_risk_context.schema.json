@@ -1,0 +1,271 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetinari.local/schemas/workbench_risk_context.schema.json",
+  "title": "Workbench Risk Context Approval Frame",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "context_id",
+    "action_id",
+    "entry_point",
+    "generated_at_utc",
+    "risk_frame"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "context_id": { "$ref": "#/$defs/nonEmptyString" },
+    "action_id": { "$ref": "#/$defs/nonEmptyString" },
+    "entry_point": { "$ref": "#/$defs/entryPoint" },
+    "generated_at_utc": { "$ref": "#/$defs/nonEmptyString" },
+    "risk_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "material_fingerprint",
+        "verdict",
+        "affected_assets",
+        "tool_authority",
+        "rollback",
+        "prior_decisions",
+        "explanation",
+        "evidence_links",
+        "replay_metadata",
+        "audit_payload"
+      ],
+      "properties": {
+        "decision": { "$ref": "#/$defs/decision" },
+        "material_fingerprint": { "$ref": "#/$defs/nonEmptyString" },
+        "verdict": { "$ref": "#/$defs/verdictSnapshot" },
+        "affected_assets": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/affectedAsset" }
+        },
+        "tool_authority": { "$ref": "#/$defs/toolAuthority" },
+        "rollback": { "$ref": "#/$defs/rollback" },
+        "prior_decisions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/priorDecision" }
+        },
+        "explanation": { "$ref": "#/$defs/explanation" },
+        "evidence_links": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/evidenceLink" }
+        },
+        "replay_metadata": { "$ref": "#/$defs/replayMetadata" },
+        "audit_payload": {
+          "type": "object",
+          "required": ["replay_ref", "evidence_refs"],
+          "properties": {
+            "replay_ref": { "$ref": "#/$defs/nonEmptyString" },
+            "evidence_refs": { "$ref": "#/$defs/nonEmptyStringArray" }
+          },
+          "additionalProperties": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "nonEmptyStringArray": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "entryPoint": {
+      "enum": [
+        "desktop_ui",
+        "mobile",
+        "automation",
+        "agent_watcher",
+        "cli",
+        "imported_workflow"
+      ]
+    },
+    "decision": {
+      "enum": ["allow", "warn", "require_approval", "deny", "degraded"]
+    },
+    "verdictSnapshot": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schema_version",
+        "verdict_id",
+        "value",
+        "mode",
+        "risk_domain",
+        "reason_code",
+        "action_id",
+        "actor_id",
+        "run_id",
+        "evidence_links",
+        "replay_metadata",
+        "policy_version",
+        "evaluated_at_utc",
+        "summary",
+        "details"
+      ],
+      "properties": {
+        "schema_version": { "const": "1.0" },
+        "verdict_id": { "$ref": "#/$defs/nonEmptyString" },
+        "value": { "enum": ["allow", "warn", "block", "escalate"] },
+        "mode": { "enum": ["observe", "warn", "strict"] },
+        "risk_domain": {
+          "enum": [
+            "shell",
+            "file_system",
+            "network",
+            "tool_invocation",
+            "memory_scope",
+            "token_budget",
+            "cost_budget",
+            "loop_amplification",
+            "side_effect",
+            "permission",
+            "remote_control",
+            "approval"
+          ]
+        },
+        "reason_code": { "$ref": "#/$defs/nonEmptyString" },
+        "action_id": { "$ref": "#/$defs/nonEmptyString" },
+        "actor_id": { "$ref": "#/$defs/nonEmptyString" },
+        "run_id": { "$ref": "#/$defs/nonEmptyString" },
+        "evidence_links": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/evidenceLink" }
+        },
+        "replay_metadata": { "$ref": "#/$defs/replayMetadata" },
+        "policy_version": { "$ref": "#/$defs/nonEmptyString" },
+        "evaluated_at_utc": { "$ref": "#/$defs/nonEmptyString" },
+        "summary": { "$ref": "#/$defs/nonEmptyString" },
+        "details": { "type": "object" }
+      }
+    },
+    "affectedAsset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_id", "kind", "project_scope", "operation", "display_label"],
+      "properties": {
+        "asset_id": { "$ref": "#/$defs/nonEmptyString" },
+        "kind": { "$ref": "#/$defs/nonEmptyString" },
+        "project_scope": { "$ref": "#/$defs/nonEmptyString" },
+        "operation": { "$ref": "#/$defs/nonEmptyString" },
+        "display_label": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "toolAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool_surface_id",
+        "authority_refs",
+        "capability_pack_refs",
+        "capability_diff_state"
+      ],
+      "properties": {
+        "tool_surface_id": { "$ref": "#/$defs/nonEmptyString" },
+        "authority_refs": { "$ref": "#/$defs/nonEmptyStringArray" },
+        "capability_pack_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "capability_diff_state": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "recovery_note"],
+      "properties": {
+        "status": {
+          "enum": ["available", "unavailable", "partial", "not_applicable", "unknown"]
+        },
+        "recovery_note": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "priorDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_id",
+        "material_fingerprint",
+        "outcome",
+        "decided_by",
+        "decided_at_utc"
+      ],
+      "properties": {
+        "decision_id": { "$ref": "#/$defs/nonEmptyString" },
+        "material_fingerprint": { "$ref": "#/$defs/nonEmptyString" },
+        "outcome": { "$ref": "#/$defs/nonEmptyString" },
+        "decided_by": { "$ref": "#/$defs/nonEmptyString" },
+        "decided_at_utc": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "explanation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "allowed",
+        "policy_id",
+        "policy_source",
+        "decision_kind",
+        "reasons",
+        "denial_reasons",
+        "exposures",
+        "budget",
+        "trace",
+        "failure_behavior",
+        "degraded"
+      ],
+      "properties": {
+        "allowed": { "type": "boolean" },
+        "policy_id": { "$ref": "#/$defs/nonEmptyString" },
+        "policy_source": { "$ref": "#/$defs/nonEmptyString" },
+        "decision_kind": { "enum": ["allow", "deny"] },
+        "reasons": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "denial_reasons": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "exposures": { "type": "object" },
+        "budget": { "type": "object" },
+        "trace": { "type": "object" },
+        "failure_behavior": { "$ref": "#/$defs/nonEmptyString" },
+        "degraded": { "type": "boolean" }
+      }
+    },
+    "evidenceLink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_id", "kind", "ref", "summary"],
+      "properties": {
+        "evidence_id": { "$ref": "#/$defs/nonEmptyString" },
+        "kind": {
+          "enum": ["run", "trace", "lease", "receipt", "proposal", "asset", "external"]
+        },
+        "ref": { "$ref": "#/$defs/nonEmptyString" },
+        "summary": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "replayMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "policy_version", "mode", "captured_at_utc"],
+      "properties": {
+        "schema_version": { "const": "1.0" },
+        "policy_version": { "$ref": "#/$defs/nonEmptyString" },
+        "mode": { "enum": ["observe", "warn", "strict"] },
+        "captured_at_utc": { "$ref": "#/$defs/nonEmptyString" },
+        "policy_path_canonical": { "type": "string" },
+        "correlation_id": { "type": "string" }
+      }
+    }
+  }
+}

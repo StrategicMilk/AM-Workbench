@@ -1,9 +1,9 @@
-"""Pipeline confidence routing — applies confidence-based post-generation actions.
+"""Pipeline confidence routing - applies confidence-based post-generation actions.
 
 Takes a ConfidenceResult and the generated output, then executes the
 appropriate action: proceed, refine, best-of-n selection, or defer to human.
 
-Pipeline position: Execution → **Confidence Routing** → Quality Gate.
+Pipeline position: Execution -> **Confidence Routing** -> Quality Gate.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ def apply_confidence_routing(
     output: str,
     confidence: ConfidenceResult,
     refine_fn: Callable[[str], str] | None = None,
+    confidence_fn: Callable[[str], ConfidenceResult] | None = None,
     sample_fn: Callable[[], list[tuple[str, list[float]]]] | None = None,
     defer_fn: Callable[[str, ConfidenceResult], str | None] | None = None,
 ) -> tuple[str, ConfidenceResult]:
@@ -33,11 +34,12 @@ def apply_confidence_routing(
     Args:
         output: The generated output text.
         confidence: Confidence assessment of the output.
-        refine_fn: Called for REFINE action — takes output, returns refined output.
+        refine_fn: Called for REFINE action; takes output, returns refined output.
             If None, output passes through with a warning logged.
-        sample_fn: Called for BEST_OF_N action — returns list of (output, logprobs) tuples.
+        confidence_fn: Optional callback to reassess confidence after refinement.
+        sample_fn: Called for BEST_OF_N action; returns list of (output, logprobs) tuples.
             If None, output passes through with a warning logged.
-        defer_fn: Called for DEFER_TO_HUMAN — takes output and confidence, returns
+        defer_fn: Called for DEFER_TO_HUMAN; takes output and confidence, returns
             approved output (or None if deferred to queue).
             If None, output passes through with a warning logged.
 
@@ -52,56 +54,77 @@ def apply_confidence_routing(
         return output, confidence
 
     if action == ConfidenceAction.REFINE:
-        return _handle_refine(output, confidence, refine_fn)
+        _require_callback("refine_fn", refine_fn, action)
+        return _handle_refine(output, confidence, refine_fn, confidence_fn)
 
     if action == ConfidenceAction.BEST_OF_N:
+        _require_callback("sample_fn", sample_fn, action)
         return _handle_best_of_n(output, confidence, sample_fn)
 
     if action == ConfidenceAction.DEFER_TO_HUMAN:
+        _require_callback("defer_fn", defer_fn, action)
         return _handle_defer(output, confidence, defer_fn)
 
-    # Exhaustive match — should never reach here
-    logger.warning("Unknown confidence action %s — proceeding with original output", action)
+    # Exhaustive match; should never reach here
+    logger.warning("Unknown confidence action %s; proceeding with original output", action)
     return output, confidence
+
+
+def _require_callback(callback_name: str, callback: object | None, action: ConfidenceAction) -> None:
+    if callback is None:
+        raise ValueError(f"{callback_name} is required for {action.value} confidence routing")
 
 
 def _handle_refine(
     output: str,
     confidence: ConfidenceResult,
     refine_fn: Callable[[str], str] | None,
+    confidence_fn: Callable[[str], ConfidenceResult] | None,
 ) -> tuple[str, ConfidenceResult]:
-    """Handle the REFINE action — trigger self-refinement loop.
+    """Handle the REFINE action by triggering the self-refinement loop.
 
     Args:
         output: The original generated output.
         confidence: The confidence assessment that triggered REFINE.
         refine_fn: Callback that takes output and returns a refined version.
+        confidence_fn: Optional callback to reassess refined output.
 
     Returns:
         Tuple of (refined_output, updated_confidence). If refine_fn is None,
         the original output and confidence are returned unchanged.
     """
-    if refine_fn is None:
-        logger.warning(
-            "REFINE action requested but no refine_fn provided — proceeding with original output (score=%.3f)",
-            confidence.score,
-        )
-        return output, confidence
-
-    logger.info("Confidence routing: REFINE — triggering self-refinement (score=%.3f)", confidence.score)
+    logger.info("Confidence routing: REFINE; triggering self-refinement (score=%.3f)", confidence.score)
     refined = refine_fn(output)
-    # Re-assess confidence after refinement (we don't have logprobs for the refined output,
-    # so we upgrade one level as a heuristic — the quality gate will catch real problems)
-    refined_confidence = ConfidenceResult(
-        score=confidence.score,
-        level=ConfidenceLevel.MEDIUM if confidence.level == ConfidenceLevel.LOW else ConfidenceLevel.HIGH,
-        action=ConfidenceAction.PROCEED,
-        explanation=f"Self-refined from {confidence.level.value} — proceeding after refinement",
-        factors={**confidence.factors, "refined": 1.0},
-        source="refinement",
-        metadata={**confidence.metadata, "pre_refinement_level": confidence.level.value},
+    if confidence_fn is None:
+        return refined, ConfidenceResult(
+            score=confidence.score,
+            level=confidence.level,
+            action=ConfidenceAction.PROCEED,
+            explanation=confidence.explanation,
+            factors={**confidence.factors, "refined": 1.0},
+            source=confidence.source,
+            unknown_situation=confidence.unknown_situation,
+            metadata={
+                **confidence.metadata,
+                "pre_refinement_level": confidence.level.value,
+                "refinement_confidence_status": "unmeasured",
+            },
+        )
+    measured = confidence_fn(refined)
+    return refined, ConfidenceResult(
+        score=measured.score,
+        level=measured.level,
+        action=measured.action,
+        explanation=measured.explanation,
+        factors={**measured.factors, "refined": 1.0},
+        source=measured.source,
+        unknown_situation=measured.unknown_situation,
+        metadata={
+            **measured.metadata,
+            "pre_refinement_level": confidence.level.value,
+            "refinement_confidence_status": "measured",
+        },
     )
-    return refined, refined_confidence
 
 
 def _handle_best_of_n(
@@ -109,7 +132,7 @@ def _handle_best_of_n(
     confidence: ConfidenceResult,
     sample_fn: Callable[[], list[tuple[str, list[float]]]] | None,
 ) -> tuple[str, ConfidenceResult]:
-    """Handle BEST_OF_N — sample multiple outputs and pick the best by confidence score.
+    """Handle BEST_OF_N - sample multiple outputs and pick the best by confidence score.
 
     Args:
         output: The original generated output (used as fallback if sampling fails).
@@ -120,18 +143,11 @@ def _handle_best_of_n(
         Tuple of (best_output, best_confidence) selected by highest logprob score.
         Falls back to original output if sample_fn is None or returns no candidates.
     """
-    if sample_fn is None:
-        logger.warning(
-            "BEST_OF_N action requested but no sample_fn provided — proceeding with original output (score=%.3f)",
-            confidence.score,
-        )
-        return output, confidence
-
-    logger.info("Confidence routing: BEST_OF_N — sampling alternatives (score=%.3f)", confidence.score)
+    logger.info("Confidence routing: BEST_OF_N - sampling alternatives (score=%.3f)", confidence.score)
     candidates = sample_fn()
 
     if not candidates:
-        logger.warning("BEST_OF_N sampling returned no candidates — using original output")
+        logger.warning("BEST_OF_N sampling returned no candidates - using original output")
         return output, confidence
 
     # Select by highest mean logprob (confidence score), NOT longest output
@@ -158,7 +174,7 @@ def _handle_defer(
     confidence: ConfidenceResult,
     defer_fn: Callable[[str, ConfidenceResult], str | None] | None,
 ) -> tuple[str, ConfidenceResult]:
-    """Handle DEFER_TO_HUMAN — escalate to human via approval queue.
+    """Handle DEFER_TO_HUMAN - escalate to human via approval queue.
 
     Args:
         output: The original generated output.
@@ -171,23 +187,16 @@ def _handle_defer(
         with HIGH confidence. If deferred to queue, returns original output with
         a deferred marker in metadata.
     """
-    if defer_fn is None:
-        logger.warning(
-            "DEFER_TO_HUMAN action requested but no defer_fn provided — proceeding with original output (score=%.3f)",
-            confidence.score,
-        )
-        return output, confidence
-
-    logger.info("Confidence routing: DEFER_TO_HUMAN — escalating (score=%.3f)", confidence.score)
+    logger.info("Confidence routing: DEFER_TO_HUMAN - escalating (score=%.3f)", confidence.score)
     approved_output = defer_fn(output, confidence)
 
     if approved_output is None:
-        # Deferred to queue — return original with a note
+        # Deferred to queue - return original with a note
         deferred_confidence = ConfidenceResult(
             score=confidence.score,
             level=confidence.level,
             action=ConfidenceAction.DEFER_TO_HUMAN,
-            explanation="Deferred to human approval queue — awaiting decision",
+            explanation="Deferred to human approval queue - awaiting decision",
             factors=confidence.factors,
             source=confidence.source,
             unknown_situation=confidence.unknown_situation,
@@ -195,12 +204,12 @@ def _handle_defer(
         )
         return output, deferred_confidence
 
-    # Human approved — proceed with confidence
+    # Human approved - proceed with confidence
     approved_confidence = ConfidenceResult(
         score=1.0,  # Human approval = max confidence
         level=ConfidenceLevel.HIGH,
         action=ConfidenceAction.PROCEED,
-        explanation="Human-approved output — proceeding with full confidence",
+        explanation="Human-approved output - proceeding with full confidence",
         factors={"human_approved": 1.0},
         source="human_approval",
     )

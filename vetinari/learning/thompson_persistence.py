@@ -20,15 +20,13 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from vetinari.learning.thompson_arms import ThompsonBetaArm
+from vetinari.constants import VETINARI_STATE_DIR
 
 logger = logging.getLogger(__name__)
 
-# State directory resolution order:
-#   1. VETINARI_STATE_DIR environment variable
-#   2. <project_root>/.vetinari  (two levels above this file)
-_DEFAULT_STATE_DIR = str(Path(__file__).resolve().parent.parent.parent / ".vetinari")
+
+if TYPE_CHECKING:
+    from vetinari.learning.thompson_arms import ThompsonBetaArm
 
 
 def _get_state_dir() -> str:
@@ -37,7 +35,7 @@ def _get_state_dir() -> str:
     Returns:
         Absolute path string, from VETINARI_STATE_DIR env var or project root.
     """
-    return os.environ.get("VETINARI_STATE_DIR", "") or _DEFAULT_STATE_DIR
+    return os.environ.get("VETINARI_STATE_DIR", "") or str(VETINARI_STATE_DIR)
 
 
 def load_state_from_db(arms: dict[str, ThompsonBetaArm]) -> int:
@@ -84,7 +82,9 @@ def migrate_from_json(arms: dict[str, ThompsonBetaArm]) -> None:
     """One-time migration: import arms from legacy JSON file and save to SQLite.
 
     The JSON file is left in place after migration.  Subsequent runs read
-    exclusively from SQLite.
+    exclusively from SQLite.  Migration is opt-in so a bundled project-local
+    ``.vetinari/thompson_state.json`` cannot silently seed default model
+    selection in a fresh checkout.
 
     Args:
         arms: The arms dict to populate from the legacy JSON file.
@@ -92,6 +92,13 @@ def migrate_from_json(arms: dict[str, ThompsonBetaArm]) -> None:
     from vetinari.learning.thompson_arms import ThompsonBetaArm
 
     try:
+        allow_migration = os.environ.get("VETINARI_MIGRATE_LEGACY_THOMPSON_STATE", "").strip().lower()
+        if allow_migration not in {"1", "true", "yes"}:
+            logger.info(
+                "[Thompson] Legacy JSON migration skipped; set VETINARI_MIGRATE_LEGACY_THOMPSON_STATE=1 "
+                "to import thompson_state.json into SQLite"
+            )
+            return
         state_file = Path(_get_state_dir()) / "thompson_state.json"
         if not state_file.exists():
             return
@@ -128,6 +135,8 @@ def save_state(arms: dict[str, ThompsonBetaArm]) -> None:
     if _shutting_down:
         _logging.disable(_logging.CRITICAL)
 
+    arm_items = list(arms.items())
+
     try:
         from vetinari.database import get_connection
 
@@ -138,7 +147,7 @@ def save_state(arms: dict[str, ThompsonBetaArm]) -> None:
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             [
                 (key, arm.model_id, arm.task_type, arm.alpha, arm.beta, arm.total_pulls, arm.last_updated)
-                for key, arm in arms.items()
+                for key, arm in arm_items
             ],
         )
         conn.commit()
@@ -151,7 +160,7 @@ def save_state(arms: dict[str, ThompsonBetaArm]) -> None:
             Path(state_dir).mkdir(parents=True, exist_ok=True)
             state_file = Path(state_dir) / "thompson_state.json"
             with Path(state_file).open("w", encoding="utf-8") as f:
-                json.dump({k: asdict(v) for k, v in arms.items()}, f, indent=2)
+                json.dump({k: asdict(v) for k, v in arm_items}, f, indent=2)
         except Exception as json_exc:
             if not _shutting_down:
                 logger.warning("[Thompson] JSON fallback also failed — %s", json_exc)

@@ -7,21 +7,29 @@ import logging
 import threading
 from typing import Any
 
+from vetinari.mcp.protocol import DEFAULT_PROTOCOL_VERSION, negotiate_protocol_version
 from vetinari.mcp.tools import MCPToolRegistry
 
 logger = logging.getLogger(__name__)
+
 
 _JSONRPC_ID_TYPES = (str, int)
 _SENSITIVE_BUILTIN_PERMISSIONS = {
     "vetinari_execute": "execute",
     "vetinari_memory": "memory",
 }
+MCP_PERMISSION_MODEL = {
+    "permission_source": "server_granted_permissions",
+    "client_advertised_capabilities_are_authorization": False,
+    "fail_closed_error_code": -32003,
+}
+"""Machine-readable MCP authorization contract for security evidence."""
 
 
 class MCPServer:
     """Model Context Protocol server for Vetinari.
 
-    Handles JSON-RPC 2.0 messages for the MCP protocol (version 2024-11-05).
+    Handles JSON-RPC 2.0 messages for negotiated MCP protocol revisions.
     Delegates tool invocations to an internal ``MCPToolRegistry`` that maps
     tool names to Vetinari subsystem handlers.
 
@@ -31,7 +39,7 @@ class MCPServer:
         SERVER_VERSION: The server version string.
     """
 
-    PROTOCOL_VERSION = "2024-11-05"
+    PROTOCOL_VERSION = DEFAULT_PROTOCOL_VERSION
     SERVER_NAME = "vetinari"
     SERVER_VERSION = "1.0.0"
 
@@ -40,6 +48,8 @@ class MCPServer:
         self.registry.register_defaults()
         self._initialized = False
         self._client_capabilities: dict[str, Any] = {}
+        self._server_granted_permissions: set[str] = set()
+        self._protocol_version = self.PROTOCOL_VERSION
 
     def handle_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
         """Handle an incoming JSON-RPC 2.0 message and dispatch to the handler.
@@ -122,13 +132,16 @@ class MCPServer:
 
     def _handle_initialize(self, params: dict[str, Any]) -> dict[str, Any]:
         client_version = params.get("protocolVersion", "")
-        if client_version != self.PROTOCOL_VERSION:
+        if not isinstance(client_version, str) or not client_version:
+            return self._error_response(None, -32602, "Invalid params: protocolVersion must be a non-empty string")
+        negotiated_version = negotiate_protocol_version(client_version)
+        if negotiated_version != client_version:
             # Reject clients that speak a different protocol version — proceeding
             # would produce undefined behavior because message shapes differ.
             return self._error_response(
                 None,
                 -32002,
-                f"Protocol version mismatch: server={self.PROTOCOL_VERSION}, client={client_version}",
+                f"Unsupported MCP protocol version: client={client_version}, server={negotiated_version}",
             )
         capabilities = params.get("capabilities", {})
         if capabilities is None:
@@ -136,9 +149,10 @@ class MCPServer:
         if not isinstance(capabilities, dict):
             return self._error_response(None, -32602, "Invalid params: capabilities must be an object")
         self._client_capabilities = capabilities
+        self._protocol_version = negotiated_version
         self._initialized = True
         return {
-            "protocolVersion": self.PROTOCOL_VERSION,
+            "protocolVersion": negotiated_version,
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": self.SERVER_NAME, "version": self.SERVER_VERSION},
         }
@@ -177,12 +191,14 @@ class MCPServer:
             return {"content": [{"type": "text", "text": json.dumps(result)}], "isError": True}
         return {"content": [{"type": "text", "text": json.dumps(result)}]}
 
-    def _handle_notifications_initialized(self, params: dict[str, Any]) -> None:
+    @staticmethod
+    def _handle_notifications_initialized(params: dict[str, Any]) -> None:
         # MCP clients send this after processing the initialize response; no reply is sent.
         logger.debug("MCP client sent notifications/initialized — session ready")
         return None
 
-    def _handle_ping(self, params: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _handle_ping(params: dict[str, Any]) -> dict[str, Any]:
         return {}
 
     @staticmethod
@@ -190,13 +206,22 @@ class MCPServer:
         return value is None or (isinstance(value, _JSONRPC_ID_TYPES) and not isinstance(value, bool))
 
     def _has_client_permission(self, permission: str) -> bool:
-        """Return True when initialize() supplied an explicit Vetinari permission."""
-        candidates: list[Any] = [self._client_capabilities.get("permissions", {})]
-        vetinari_caps = self._client_capabilities.get("vetinari", {})
-        if isinstance(vetinari_caps, dict):
-            candidates.append(vetinari_caps.get("permissions", {}))
+        """Return True only for server-owned sensitive-tool permissions."""
+        return permission in self._server_granted_permissions
 
-        return any(isinstance(value, dict) and value.get(permission) is True for value in candidates)
+    def grant_server_permission(self, permission: str) -> None:
+        """Grant one sensitive-tool permission from trusted server code.
+
+        Args:
+            permission: Sensitive-tool permission name to add to the
+                server-owned permission set.
+
+        Raises:
+            ValueError: If *permission* is not a non-empty string.
+        """
+        if not isinstance(permission, str) or not permission:
+            raise ValueError("permission must be a non-empty string")
+        self._server_granted_permissions.add(permission)
 
     def _maybe_notification_error(
         self,

@@ -1,31 +1,36 @@
 """Template loader for versioned agent prompt templates.
 
-Loads JSON template files from the templates/ directory, organized by version
-and agent type. Supports the 6 consolidated agents plus legacy agent names
-for backward compatibility.
+Loads JSON template files from the templates/ directory, organized by version and
+agent type. The default runtime surface is the Foreman, Worker, Inspector
+pipeline; retired consolidated names remain explicit compatibility aliases only.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+
 BASE = Path(__file__).resolve().parent.parent / "templates"
 
-# Maps current consolidated agent names to their template files.
-# Legacy names are mapped to their consolidated replacements.
+# Maps canonical agent names and compatibility aliases to their template files.
 _AGENT_FILE_MAP: dict[str, str] = {
-    # 6 consolidated agents (current architecture)
+    # Canonical runtime roles.
+    "foreman": "planner.json",
+    "worker": "builder.json",
+    "inspector": "quality.json",
+    # Legacy consolidated names.
     "planner": "planner.json",
     "researcher": "researcher.json",
     "oracle": "oracle.json",
     "builder": "builder.json",
     "quality": "quality.json",
     "operations": "operations.json",
-    # Legacy agent names → consolidated equivalents
+    # Legacy agent names to consolidated equivalents.
     "explorer": "researcher.json",
     "librarian": "researcher.json",
     "evaluator": "quality.json",
@@ -33,15 +38,18 @@ _AGENT_FILE_MAP: dict[str, str] = {
     "ui_planner": "planner.json",
 }
 
-# The 6 canonical agent types used when loading all templates.
+# Compatibility export for older callers that inspect the previous consolidated set.
 _CONSOLIDATED_AGENTS = ("planner", "researcher", "oracle", "builder", "quality", "operations")
+_CANONICAL_AGENTS = ("foreman", "worker", "inspector")
 
 
 class TemplateLoader:
     """Load versioned prompt templates for Vetinari agents.
 
-    Templates are stored as JSON files under templates/{version}/{agent}.json.
-    A versions.json manifest lists available versions.
+    Templates are stored as JSON files under templates/{version}/{agent}.json. A
+    versions.json manifest lists available versions. Unfiltered loads return only
+    canonical Foreman, Worker, and Inspector templates; compatibility aliases are
+    loaded only when requested by name.
     """
 
     def __init__(self, base_path: Path | None = None):
@@ -71,7 +79,7 @@ class TemplateLoader:
 
         Args:
             version: Template version string (e.g. "v1").
-            agent_type: Agent name, supports both consolidated and legacy names.
+            agent_type: Canonical agent name or explicit compatibility alias.
 
         Returns:
             List of template dicts, or empty list if not found.
@@ -103,7 +111,7 @@ class TemplateLoader:
         if agent_type:
             return self.load_templates_for_agent(ver, agent_type)
         templates: list[dict] = []
-        for atype in _CONSOLIDATED_AGENTS:
+        for atype in _CANONICAL_AGENTS:
             templates.extend(self.load_templates_for_agent(ver, atype))
         return templates
 
@@ -117,4 +125,26 @@ class TemplateLoader:
         return versions[0] if versions else "v1"
 
 
-template_loader = TemplateLoader()
+_template_loader: TemplateLoader | None = None
+_template_loader_lock = threading.Lock()
+
+
+def get_template_loader() -> TemplateLoader:
+    """Return the process singleton TemplateLoader, creating it on first use.
+
+    Returns:
+        Shared TemplateLoader instance.
+    """
+    global _template_loader
+    if _template_loader is None:
+        with _template_loader_lock:
+            if _template_loader is None:
+                _template_loader = TemplateLoader()
+    return _template_loader
+
+
+def __getattr__(name: str) -> object:
+    """Preserve lazy compatibility for legacy template_loader imports."""
+    if name == "template_loader":
+        return get_template_loader()
+    raise AttributeError(name)

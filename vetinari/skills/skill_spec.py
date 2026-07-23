@@ -18,6 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from vetinari.errors import FailClosedError, require_mapping
+from vetinari.types import TrustTier as _CoreTrustTier
 from vetinari.utils.serialization import dataclass_to_dict
 
 # ---------------------------------------------------------------------------
@@ -25,7 +27,15 @@ from vetinari.utils.serialization import dataclass_to_dict
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+class _SkillTrustTier:
+    VERIFIED = _CoreTrustTier.T2_VERIFIED
+    CORE = _CoreTrustTier.T4_CORE
+
+
+TrustTier = _SkillTrustTier
+
+
+@dataclass(frozen=True, slots=True)
 class SkillStandard:
     """A single quality standard that a skill must enforce.
 
@@ -56,7 +66,18 @@ class SkillStandard:
 
         Returns:
             A new SkillStandard instance.
+
+        Raises:
+            FailClosedError: If ``data`` is not a mapping or omits required
+                standard fields.
         """
+        data = require_mapping(data, "skill_standard.row", recovery="provide a JSON object for each standard")
+        if not data.get("id") or not data.get("category") or not data.get("rule"):
+            raise FailClosedError(
+                "skill_standard.required_fields",
+                "standard rows require id, category, and rule",
+                recovery="repair the skill registry row before loading",
+            )
         return cls(
             id=data.get("id", ""),
             category=data.get("category", ""),
@@ -66,7 +87,7 @@ class SkillStandard:
         )
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class SkillGuideline:
     """A best-practice guideline for skill consumers.
 
@@ -96,7 +117,18 @@ class SkillGuideline:
 
         Returns:
             A new SkillGuideline instance.
+
+        Raises:
+            FailClosedError: If ``data`` is not a mapping or omits required
+                guideline fields.
         """
+        data = require_mapping(data, "skill_guideline.row", recovery="provide a JSON object for each guideline")
+        if not data.get("id") or not data.get("category") or not data.get("recommendation"):
+            raise FailClosedError(
+                "skill_guideline.required_fields",
+                "guideline rows require id, category, and recommendation",
+                recovery="repair the skill registry row before loading",
+            )
         return cls(
             id=data.get("id", ""),
             category=data.get("category", ""),
@@ -105,7 +137,7 @@ class SkillGuideline:
         )
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class SkillConstraint:
     """A hard constraint on skill execution.
 
@@ -136,7 +168,18 @@ class SkillConstraint:
 
         Returns:
             A new SkillConstraint instance.
+
+        Raises:
+            FailClosedError: If ``data`` is not a mapping or omits required
+                constraint fields.
         """
+        data = require_mapping(data, "skill_constraint.row", recovery="provide a JSON object for each constraint")
+        if not data.get("id") or not data.get("category") or not data.get("description") or not data.get("limit"):
+            raise FailClosedError(
+                "skill_constraint.required_fields",
+                "constraint rows require id, category, description, and limit",
+                recovery="repair the skill registry row before loading",
+            )
         return cls(
             id=data.get("id", ""),
             category=data.get("category", ""),
@@ -151,7 +194,7 @@ class SkillConstraint:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SkillSpec:
     """Specification contract for all Vetinari skills — parallel to AgentSpec for agents.
 
@@ -163,8 +206,8 @@ class SkillSpec:
 
     # ── Identity ──────────────────────────────────────────────────────────
     skill_id: str  # Unique kebab-case identifier
-    name: str  # Human-readable name
-    description: str  # One-line purpose
+    name: str = ""  # Human-readable name
+    description: str = ""  # One-line purpose
     version: str = "1.0.0"  # Semantic version
     agent_type: str | None = None  # Owning agent type (AgentType.value)
     modes: list[str] = field(default_factory=list)  # Compatible agent modes
@@ -297,6 +340,9 @@ class SkillSpec:
             "standards": [s.to_dict() for s in self.standards],
             "guidelines": [g.to_dict() for g in self.guidelines],
             "constraints": [c.to_dict() for c in self.constraints],
+            "trust_tier": self.trust_tier,
+            "loading_level": self.loading_level,
+            "output_validators": self.output_validators,
             "author": self.author,
             "tags": self.tags,
             "enabled": self.enabled,
@@ -306,7 +352,30 @@ class SkillSpec:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SkillSpec:
-        """Deserialize from dictionary."""
+        """Deserialize a skill specification from a dictionary.
+
+        Args:
+            data: Dictionary with fields as produced by ``to_dict()``.
+
+        Returns:
+            A new SkillSpec instance.
+
+        Raises:
+            FailClosedError: If ``data`` is not a mapping or omits required
+                skill-spec fields.
+        """
+        data = require_mapping(data, "skill_spec.row", recovery="provide a JSON object for each skill spec")
+        missing = [
+            key
+            for key in ("skill_id", "name", "description", "modes", "input_schema", "output_schema")
+            if not data.get(key)
+        ]
+        if missing:
+            raise FailClosedError(
+                "skill_spec.required_fields",
+                f"skill spec missing required fields: {', '.join(missing)}",
+                recovery="repair the skill registry row before loading",
+            )
         return cls(
             skill_id=data.get("skill_id", ""),
             name=data.get("name", ""),
@@ -328,9 +397,23 @@ class SkillSpec:
             standards=[SkillStandard.from_dict(s) for s in data.get("standards", [])],
             guidelines=[SkillGuideline.from_dict(g) for g in data.get("guidelines", [])],
             constraints=[SkillConstraint.from_dict(c) for c in data.get("constraints", [])],
+            trust_tier=data.get("trust_tier", "t4_core"),
+            loading_level=data.get("loading_level", 1),
+            output_validators=data.get("output_validators", ()),
             author=data.get("author", "vetinari"),
             tags=data.get("tags", []),
             enabled=data.get("enabled", True),
             deprecated=data.get("deprecated", False),
             deprecated_by=data.get("deprecated_by", ""),
         )
+
+    def model_dump(self, *, by_alias: bool = False) -> dict[str, Any]:
+        """Pydantic-compatible serialization alias used by runtime contract tests.
+
+        Returns:
+            A dictionary representation of this skill specification.
+        """
+        data = self.to_dict()
+        if not by_alias:
+            data.pop("id", None)
+        return data

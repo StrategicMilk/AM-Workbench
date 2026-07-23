@@ -16,8 +16,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from vetinari.constants import VETINARI_STATE_DIR
+from vetinari.learning.atomic_writers import _write_text_atomic
+from vetinari.utils.bounded_collections import bounded_rglob
 
 logger = logging.getLogger(__name__)
+
 
 # Results larger than this threshold are offloaded to disk
 LARGE_RESULT_THRESHOLD = 50_000  # chars
@@ -27,6 +30,9 @@ PREVIEW_SIZE = 2_048  # chars
 
 # Characters forbidden in tool_name to prevent path traversal in filenames
 _TOOL_NAME_FORBIDDEN = frozenset(("/", "\\", ".."))
+_KEY_FORBIDDEN = frozenset("*?[]/\\")
+DEFAULT_MAX_CACHE_FILES = 1024
+_CACHE_PRUNE_SCAN_LIMIT = DEFAULT_MAX_CACHE_FILES * 2
 
 
 class ToolResultStore:
@@ -47,16 +53,20 @@ class ToolResultStore:
         # preview is <=2KB; full content retrievable via store.load(key)
     """
 
-    def __init__(self, cache_dir: Path | None = None) -> None:
+    def __init__(self, cache_dir: Path | None = None, *, max_cache_files: int = DEFAULT_MAX_CACHE_FILES) -> None:
         """Configure store directory.
 
         Args:
             cache_dir: Directory for persisted results. Defaults to
                 .vetinari/tool_results/ relative to cwd.
+            max_cache_files: Maximum persisted result files to retain.
         """
+        if max_cache_files < 1:
+            raise ValueError("max_cache_files must be >= 1")
         if cache_dir is None:
             cache_dir = VETINARI_STATE_DIR / "tool_results"
         self._cache_dir = cache_dir
+        self._max_cache_files = max_cache_files
         self._lock = threading.Lock()
 
     def store(self, content: str, tool_name: str = "") -> tuple[str, str]:
@@ -96,7 +106,8 @@ class ToolResultStore:
         with self._lock:
             self._cache_dir.mkdir(parents=True, exist_ok=True)
             dest = self._cache_dir / filename
-            dest.write_text(content, encoding="utf-8")
+            _write_text_atomic(dest, content)
+            self._prune_cache_locked()
 
         preview = content[:PREVIEW_SIZE]
         if len(content) > PREVIEW_SIZE:
@@ -122,11 +133,44 @@ class ToolResultStore:
 
         Returns:
             Full content string, or None if no file matching the key is found.
+
+        Raises:
+            ValueError: If ``key`` is not an exact persisted cache key.
+            OSError: If the matching cache file cannot be read.
         """
         if not key:
             return None
+        if any(bad in key for bad in _KEY_FORBIDDEN) or len(key) != 16:
+            raise ValueError("retrieval key must be the exact 16-character cache key")
         if not self._cache_dir.exists():
             return None
-        for path in self._cache_dir.glob(f"*{key}*.txt"):
+        for path in bounded_rglob(
+            self._cache_dir,
+            f"*{key}*.txt",
+            max_depth=1,
+            max_files=self._max_cache_files,
+        ):
             return path.read_text(encoding="utf-8")
         return None
+
+    def _prune_cache_locked(self) -> None:
+        """Remove oldest cached result files when the store exceeds its retention cap."""
+        cached_files = list(bounded_rglob(self._cache_dir, "*.txt", max_depth=1, max_files=_CACHE_PRUNE_SCAN_LIMIT))
+        if len(cached_files) <= self._max_cache_files:
+            return
+
+        def sort_key(path: Path) -> tuple[float, str]:
+            try:
+                return (path.stat().st_mtime, path.name)
+            except OSError as exc:
+                logger.warning("Could not stat cached tool result %s for pruning order: %s", path, exc)
+                return (0.0, path.name)
+
+        for path in sorted(cached_files, key=sort_key)[: len(cached_files) - self._max_cache_files]:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                logger.debug("Cached tool result already removed before prune: %s", path)
+                continue
+            except OSError:
+                logger.warning("Could not prune cached tool result %s", path, exc_info=True)

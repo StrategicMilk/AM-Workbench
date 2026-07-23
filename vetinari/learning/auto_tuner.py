@@ -10,6 +10,7 @@ import json
 import logging
 import threading
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,7 +29,7 @@ from vetinari.constants import (
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class TuningAction:
     """A recorded auto-tuning adjustment."""
 
@@ -87,6 +88,7 @@ class AutoTuner:
         # instance always points to the correct user state directory.
         self._config_path: Path = get_user_dir() / "auto_tuner_config.json"
         self._actions: deque[TuningAction] = deque(maxlen=1000)
+        self._lock = threading.Lock()
         self._current_config: dict[str, Any] = self._load_config()
 
     def _load_config(self) -> dict[str, Any]:
@@ -119,24 +121,27 @@ class AutoTuner:
         Returns:
             List of TuningActions applied in this cycle.
         """
-        applied: list[TuningAction] = []
+        # Keep the check/mutate/persist sequence atomic, matching the
+        # lock-around-mutate pattern used by vetinari.events.
+        with self._lock:
+            applied: list[TuningAction] = []
 
-        # Check SLA compliance
-        applied.extend(self._tune_from_sla())
+            # Check SLA compliance
+            applied.extend(self._tune_from_sla())
 
-        # Check anomaly patterns
-        applied.extend(self._tune_from_anomalies())
+            # Check anomaly patterns
+            applied.extend(self._tune_from_anomalies())
 
-        # Check cost trends
-        applied.extend(self._tune_from_costs())
+            # Check cost trends
+            applied.extend(self._tune_from_costs())
 
-        # Tune inference parameters from quality scores and Thompson data
-        applied.extend(self._tune_inference_params())
+            # Tune inference parameters from quality scores and Thompson data
+            applied.extend(self._tune_inference_params())
 
-        if applied:
-            logger.info("[AutoTuner] Applied %s tuning actions", len(applied))
-            self._persist_config()
-        return applied
+            if applied:
+                logger.info("[AutoTuner] Applied %s tuning actions", len(applied))
+                self._persist_config()
+            return applied
 
     def _tune_from_sla(self) -> list[TuningAction]:
         """Adjust concurrency based on SLA compliance."""
@@ -186,7 +191,7 @@ class AutoTuner:
             logger.warning("SLA tuning failed: %s", e)
         return actions
 
-    def _tune_from_anomalies(self) -> list[TuningAction]:
+    def _tune_from_anomalies(self, *, now: datetime | None = None) -> list[TuningAction]:
         """Adjust anomaly thresholds based on false-positive rate."""
         actions: list[TuningAction] = []
         try:
@@ -194,17 +199,14 @@ class AutoTuner:
 
             detector = get_anomaly_detector()
             history = getattr(detector, "_anomaly_history", [])
+            now_ts = (now or datetime.now(timezone.utc)).timestamp()
 
             # If too many recent anomalies, threshold is too sensitive
             recent = [
                 a
                 for a in history
                 if isinstance(a, dict)
-                and (
-                    datetime.now(timezone.utc).timestamp()
-                    - datetime.fromisoformat(a.get("detected_at", "2000-01-01")).timestamp()
-                )
-                < 3600
+                and (now_ts - datetime.fromisoformat(a.get("detected_at", "2000-01-01")).timestamp()) < 3600
             ]
 
             current_thresh = self._current_config["anomaly_threshold"]
@@ -265,6 +267,9 @@ class AutoTuner:
         Thompson bandit arm performance data to adjust parameters that correlate
         with reward.
         """
+        return [*self._quality_score_tuning_actions(), *self._thompson_inference_actions()]
+
+    def _quality_score_tuning_actions(self) -> list[TuningAction]:
         actions: list[TuningAction] = []
         try:
             from vetinari.learning.quality_scorer import get_quality_scorer
@@ -276,93 +281,109 @@ class AutoTuner:
 
             avg_score = sum(recent_scores) / len(recent_scores)
             score_variance = sum((s - avg_score) ** 2 for s in recent_scores) / len(recent_scores)
-
-            # Temperature tuning: high variance => reduce, low scores => increase slightly
-            current_temp_offset = self._current_config.get("temperature_offset", 0.0)
             bounds = self._INFERENCE_PARAM_BOUNDS["temperature"]
-            if score_variance > 0.15 and current_temp_offset > -0.2:
-                # High variance — reduce temperature
-                new_offset = round(current_temp_offset - bounds["step"], 3)
-                action = self._apply(
-                    "High quality variance",
-                    "temperature_offset",
-                    current_temp_offset,
-                    new_offset,
-                    f"Quality score variance {score_variance:.3f} > 0.15 — lowering temperature offset",
-                    auto=True,
-                )
-                actions.append(action)
-            elif avg_score < 0.4 and current_temp_offset < 0.2:
-                # Low average quality — bump temperature slightly for diversity
-                new_offset = round(current_temp_offset + bounds["step"], 3)
-                action = self._apply(
-                    "Low quality average",
-                    "temperature_offset",
-                    current_temp_offset,
-                    new_offset,
-                    f"Quality avg {avg_score:.3f} < 0.4 — raising temperature offset for diversity",
-                    auto=True,
-                )
-                actions.append(action)
-
-            # min_p tuning: if too many low-quality outputs, tighten min_p
-            current_min_p = self._current_config.get("min_p_override", 0.05)
-            if avg_score < 0.35 and current_min_p < 0.15:
-                new_min_p = round(current_min_p + 0.01, 3)
-                action = self._apply(
-                    "Low quality — tighten min_p",
-                    "min_p_override",
-                    current_min_p,
-                    new_min_p,
-                    f"Quality avg {avg_score:.3f} — raising min_p to filter low-prob tokens",
-                    auto=True,
-                )
-                actions.append(action)
-
-            # max_tokens tuning: if outputs are consistently truncated, increase
-            truncated_count = sum(1 for s in recent_scores if s < 0.3)
-            current_max_tokens_offset = self._current_config.get("max_tokens_offset", 0)
-            if truncated_count > len(recent_scores) * 0.3 and current_max_tokens_offset < 2048:
-                new_offset = current_max_tokens_offset + int(bounds["step"])
-                action = self._apply(
-                    "Possible truncation",
-                    "max_tokens_offset",
-                    current_max_tokens_offset,
-                    new_offset,
-                    f"{truncated_count}/{len(recent_scores)} low scores — increasing max_tokens offset",
-                    auto=True,
-                )
-                actions.append(action)
+            actions.extend(self._temperature_quality_actions(avg_score, score_variance, bounds))
+            min_p_action = self._min_p_quality_action(avg_score)
+            if min_p_action is not None:
+                actions.append(min_p_action)
+            max_tokens_action = self._max_tokens_quality_action(recent_scores, bounds)
+            if max_tokens_action is not None:
+                actions.append(max_tokens_action)
 
         except Exception as e:
             logger.warning("Inference param tuning failed: %s", e)
+        return actions
 
-        # Thompson bandit data for repeat_penalty and frequency_penalty
+    def _temperature_quality_actions(
+        self,
+        avg_score: float,
+        score_variance: float,
+        bounds: dict[str, float],
+    ) -> list[TuningAction]:
+        current_temp_offset = self._current_config.get("temperature_offset", 0.0)
+        if score_variance > 0.15 and current_temp_offset > -0.2:
+            return [
+                self._apply(
+                    "High quality variance",
+                    "temperature_offset",
+                    current_temp_offset,
+                    round(current_temp_offset - bounds["step"], 3),
+                    f"Quality score variance {score_variance:.3f} > 0.15 — lowering temperature offset",
+                    auto=True,
+                )
+            ]
+        if avg_score < 0.4 and current_temp_offset < 0.2:
+            return [
+                self._apply(
+                    "Low quality average",
+                    "temperature_offset",
+                    current_temp_offset,
+                    round(current_temp_offset + bounds["step"], 3),
+                    f"Quality avg {avg_score:.3f} < 0.4 — raising temperature offset for diversity",
+                    auto=True,
+                )
+            ]
+        return []
+
+    def _min_p_quality_action(self, avg_score: float) -> TuningAction | None:
+        current_min_p = self._current_config.get("min_p_override", 0.05)
+        if avg_score >= 0.35 or current_min_p >= 0.15:
+            return None
+        return self._apply(
+            "Low quality — tighten min_p",
+            "min_p_override",
+            current_min_p,
+            round(current_min_p + 0.01, 3),
+            f"Quality avg {avg_score:.3f} — raising min_p to filter low-prob tokens",
+            auto=True,
+        )
+
+    def _max_tokens_quality_action(
+        self,
+        recent_scores: Sequence[float],
+        bounds: dict[str, float],
+    ) -> TuningAction | None:
+        truncated_count = sum(1 for score in recent_scores if score < 0.3)
+        current_max_tokens_offset = self._current_config.get("max_tokens_offset", 0)
+        if truncated_count <= len(recent_scores) * 0.3 or current_max_tokens_offset >= 2048:
+            return None
+        return self._apply(
+            "Possible truncation",
+            "max_tokens_offset",
+            current_max_tokens_offset,
+            current_max_tokens_offset + int(bounds["step"]),
+            f"{truncated_count}/{len(recent_scores)} low scores — increasing max_tokens offset",
+            auto=True,
+        )
+
+    def _thompson_inference_actions(self) -> list[TuningAction]:
+        actions: list[TuningAction] = []
         try:
             from vetinari.learning.model_selector import get_model_selector
 
             selector = get_model_selector()
-            if hasattr(selector, "get_arm_stats"):
-                arm_stats = selector.get_arm_stats()
-                # Use Thompson reward data to adjust repeat_penalty
-                if arm_stats:
-                    avg_reward = sum(s.get("mean_reward", 0.5) for s in arm_stats.values()) / max(len(arm_stats), 1)
-                    current_rp_offset = self._current_config.get("repeat_penalty_offset", 0.0)
-                    if avg_reward < 0.4 and current_rp_offset < 0.2:
-                        new_rp = round(current_rp_offset + 0.05, 3)
-                        action = self._apply(
-                            "Low Thompson reward",
-                            "repeat_penalty_offset",
-                            current_rp_offset,
-                            new_rp,
-                            f"Thompson avg reward {avg_reward:.3f} — increasing repeat penalty",
-                            auto=True,
-                        )
-                        actions.append(action)
+            if not hasattr(selector, "get_arm_stats"):
+                return actions
+            arm_stats = selector.get_arm_stats()
+            if not arm_stats:
+                return actions
+            avg_reward = sum(s.get("mean_reward", 0.5) for s in arm_stats.values()) / max(len(arm_stats), 1)
+            current_rp_offset = self._current_config.get("repeat_penalty_offset", 0.0)
+            if avg_reward < 0.4 and current_rp_offset < 0.2:
+                actions.append(self._thompson_repeat_penalty_action(avg_reward, current_rp_offset))
         except Exception as e:
             logger.warning("Thompson-based inference tuning failed: %s", e)
-
         return actions
+
+    def _thompson_repeat_penalty_action(self, avg_reward: float, current_rp_offset: float) -> TuningAction:
+        return self._apply(
+            "Low Thompson reward",
+            "repeat_penalty_offset",
+            current_rp_offset,
+            round(current_rp_offset + 0.05, 3),
+            f"Thompson avg reward {avg_reward:.3f} — increasing repeat penalty",
+            auto=True,
+        )
 
     def _apply(
         self,

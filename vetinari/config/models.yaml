@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2024-2026 Vetinari Contributors
+# SPDX-License-Identifier: Apache-2.0
 models:
 - capabilities:
   - coding
@@ -75,3 +77,17 @@ policy:
   max_cost_per_1k_tokens: 0.0
   preferred_providers: []
   privacy_weight: 1.0
+  allow_cloud_fallback: false
+  cloud_fallback_trigger: disabled
+  cloud_egress_mode: local_only
+task_defaults:
+  coding: qwen2.5-coder-7b
+  research: qwen2.5-72b
+  reasoning: qwen2.5-72b
+  planning: qwen2.5-72b
+  review: qwen2.5-72b
+  security: qwen2.5-72b
+  documentation: qwen2.5-coder-7b
+  creative: qwen2.5-72b
+  classification: qwen2.5-72b
+  general: qwen2.5-72b

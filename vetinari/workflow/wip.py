@@ -21,7 +21,7 @@ from vetinari.types import AgentType
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class WIPConfig:
     """Work-in-progress limits per agent type.
 
@@ -41,6 +41,7 @@ class WIPConfig:
             "default": 4,
         },
     )
+    max_queue_depth: int = 1000
 
     def get_limit(self, agent_type: str) -> int:
         """Return the WIP limit for *agent_type*."""
@@ -61,6 +62,8 @@ class WIPTracker:
 
     def __init__(self, config: WIPConfig | None = None) -> None:
         self._config = config or WIPConfig()
+        if self._config.max_queue_depth < 1:
+            raise ValueError(f"max_queue_depth must be >= 1, got {self._config.max_queue_depth!r}")
         self._active: dict[str, list[str]] = {}  # agent_type -> [task_ids]
         self._queued: list[dict[str, Any]] = []  # waiting for capacity
         self._state_lock = threading.Lock()
@@ -147,7 +150,7 @@ class WIPTracker:
                     task_id,
                 )
                 return False
-            active.append(task_id)
+            active += [task_id]
         logger.debug("WIP started %s for %s", task_id, agent_type)
         return True
 
@@ -209,14 +212,24 @@ class WIPTracker:
         logger.debug("WIP released %s for %s", task_id, agent_type)
         return True
 
-    def enqueue(self, agent_type: str, task_id: str, **extra: Any) -> None:
+    def enqueue(self, agent_type: str, task_id: str, **extra: Any) -> bool:
         """Place a task in the waiting queue.
 
         Args:
             agent_type: The agent type.
             task_id: The task id.
             **extra: Additional key-value pairs to store with the entry.
+
+        Returns:
+            True when the task was queued, False when the queue rejected it.
         """
+        if not agent_type or not task_id:
+            logger.warning("WIP enqueue rejected invalid task %r/%r", agent_type, task_id)
+            return False
+        reserved_keys = {"agent_type", "task_id", "enqueued_at"}
+        if reserved_keys.intersection(extra):
+            logger.warning("WIP enqueue rejected reserved metadata keys for %s/%s", agent_type, task_id)
+            return False
         entry: dict[str, Any] = {
             "agent_type": agent_type,
             "task_id": task_id,
@@ -224,8 +237,18 @@ class WIPTracker:
         }
         entry.update(extra)
         with self._state_lock:
-            self._queued.append(entry)
+            if len(self._queued) >= self._config.max_queue_depth:
+                logger.warning(
+                    "WIP queue at capacity (%d/%d) -- cannot enqueue %s for %s",
+                    len(self._queued),
+                    self._config.max_queue_depth,
+                    task_id,
+                    agent_type,
+                )
+                return False
+            self._queued += [entry]
         logger.debug("WIP enqueued %s for %s", task_id, agent_type)
+        return True
 
     # -- per-pool API -------------------------------------------------------
 
@@ -282,7 +305,7 @@ class WIPTracker:
                     task_id,
                 )
                 return False
-            active.append(task_id)
+            active += [task_id]
 
         logger.debug("WIP pool %r started task %s", pool_id, task_id)
         return True

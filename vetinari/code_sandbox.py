@@ -27,7 +27,6 @@ from __future__ import annotations
 import logging
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -38,17 +37,22 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from vetinari.code_sandbox_lifecycle import ApplyChangesResult, CodeSandboxLifecycleMixin
+from vetinari.code_sandbox_shell import prepare_shell_command
 from vetinari.constants import SUBPROCESS_TIMEOUT
+from vetinari.learning.atomic_writers import _write_text_atomic
 from vetinari.sandbox_manager import SandboxManager, get_sandbox_manager
-from vetinari.sandbox_policy import _ALLOWED_COMMANDS, _SAFE_ENV_VARS
+from vetinari.sandbox_policy import _SAFE_ENV_VARS
 from vetinari.sandbox_subprocess import parse_sandbox_output, wrap_python_code
 from vetinari.sandbox_types import ExecutionResult, SandboxAuditEntry, SandboxResult, SandboxStatus, SandboxType
 
 logger = logging.getLogger(__name__)
+
+
 _ALLOWED_LINTERS = {"ruff"}
 
 
-class CodeSandbox:
+class CodeSandbox(CodeSandboxLifecycleMixin):
     """Sandboxed code execution environment using subprocess isolation.
 
     Provides subprocess-isolated execution with module blocking, filesystem
@@ -88,9 +92,9 @@ class CodeSandbox:
         self.max_execution_time = max_execution_time
         self.max_memory_mb = max_memory_mb
         self.allow_network = allow_network
-        self.filesystem_allowlist: list[str] = filesystem_allowlist or []  # noqa: VET112 - empty fallback preserves optional request metadata contract
+        self.filesystem_allowlist: list[str] = filesystem_allowlist or []
         self.network_isolation = network_isolation
-        self.allowed_modules = allowed_modules or []  # noqa: VET112 - empty fallback preserves optional request metadata contract
+        self.allowed_modules = allowed_modules or []
 
         _network_modules = {"socket", "urllib", "requests", "httpx", "aiohttp"}
         if blocked_modules is not None:
@@ -127,7 +131,8 @@ class CodeSandbox:
             )
         return None
 
-    def _get_safe_env(self) -> dict[str, str]:
+    @staticmethod
+    def _get_safe_env() -> dict[str, str]:
         """Build a minimal environment, passing only whitelisted variables to prevent secret leakage.
 
         Returns:
@@ -166,18 +171,14 @@ class CodeSandbox:
     ) -> ExecutionResult:
         """Execute Python code in the sandbox subprocess.
 
-        Wraps the code with output capture, module blocking, and filesystem
-        allowlist enforcement, then runs it via subprocess and parses the
-        structured output block.
-
         Args:
-            code: Python code to execute.
-            input_data: Input data dict injected as ``INPUT_DATA`` in the subprocess.
-            env_vars: Additional environment variables for the subprocess.
-            timeout: Timeout in seconds; defaults to max_execution_time.
+            code: Code value consumed by execute_python().
+            input_data: Structured data consumed by the operation.
+            env_vars: Env vars value consumed by execute_python().
+            timeout: Timeout value controlling how long the operation may wait.
 
         Returns:
-            ExecutionResult with success flag, output, error, and timing metadata.
+            Value produced for the caller.
         """
         timeout = timeout or self.max_execution_time
         execution_id = str(uuid.uuid4())[:8]
@@ -187,52 +188,15 @@ class CodeSandbox:
         if working_dir_error is not None:
             return working_dir_error
 
-        wrapped_code = self._wrap_python_code(code, input_data)
-
-        Path(script_file).write_text(wrapped_code, encoding="utf-8")
-
-        env = self._get_safe_env()
-        if env_vars:
-            env.update(env_vars)
-        env["PYTHONPATH"] = str(self.working_dir)
+        _write_text_atomic(Path(script_file), self._wrap_python_code(code, input_data))
+        env = self._python_execution_env(env_vars)
 
         start_time = time.time()
 
         try:
-            result = subprocess.run(  # noqa: S603 - argv is controlled and shell interpolation is not used
-                [sys.executable, str(script_file)],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=env,
-                cwd=str(self.working_dir),
-            )
-
+            result = self._run_python_script(script_file, timeout, env)
             execution_time = int((time.time() - start_time) * 1000)
-            _user_success, _user_output, _user_error = parse_sandbox_output(result.stdout)
-
-            if _user_success is not None:
-                return ExecutionResult(
-                    success=_user_success,
-                    output=_user_output,
-                    error=_user_error,
-                    execution_time_ms=execution_time,
-                    return_code=result.returncode,
-                    stdout=result.stdout,
-                    stderr=result.stderr,
-                    metadata={"execution_id": execution_id, "script": str(script_file)},
-                )
-
-            return ExecutionResult(
-                success=result.returncode == 0,
-                output=result.stdout,
-                error=result.stderr,
-                execution_time_ms=execution_time,
-                return_code=result.returncode,
-                stdout=result.stdout,
-                stderr=result.stderr,
-                metadata={"execution_id": execution_id, "script": str(script_file)},
-            )
+            return self._python_execution_result(result, execution_time, execution_id, script_file)
 
         except subprocess.TimeoutExpired:
             execution_time = int((time.time() - start_time) * 1000)
@@ -265,6 +229,59 @@ class CodeSandbox:
                 except OSError:
                     logger.warning("Failed to clean up temporary script file %s", script_file, exc_info=True)
 
+    def _python_execution_env(self, env_vars: dict[str, str] | None) -> dict[str, str]:
+        env = self._get_safe_env()
+        if env_vars:
+            env.update(env_vars)
+        env["PYTHONPATH"] = str(self.working_dir)
+        return env
+
+    def _run_python_script(
+        self,
+        script_file: Path,
+        timeout: int,
+        env: dict[str, str],
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(script_file)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            cwd=str(self.working_dir),
+        )
+
+    @staticmethod
+    def _python_execution_result(
+        result: subprocess.CompletedProcess[str],
+        execution_time: int,
+        execution_id: str,
+        script_file: Path,
+    ) -> ExecutionResult:
+        user_success, user_output, user_error = parse_sandbox_output(result.stdout)
+        metadata = {"execution_id": execution_id, "script": str(script_file)}
+        if user_success is not None:
+            return ExecutionResult(
+                success=user_success,
+                output=user_output,
+                error=user_error,
+                execution_time_ms=execution_time,
+                return_code=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                metadata=metadata,
+            )
+        return ExecutionResult(
+            success=result.returncode == 0,
+            output=result.stdout,
+            error=result.stderr,
+            execution_time_ms=execution_time,
+            return_code=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            metadata=metadata,
+        )
+
     def execute(self, code: str, **kwargs: Any) -> ExecutionResult:
         """Convenience alias for ``execute_python()``.
 
@@ -288,56 +305,15 @@ class CodeSandbox:
             ExecutionResult with output, error, and return code.
         """
         timeout = timeout or self.max_execution_time
-
-        parts = shlex.split(command)
-        if not parts:
-            return ExecutionResult(success=False, output="", error="Empty command", return_code=-1)
-        cmd_name = Path(parts[0]).name
-        if cmd_name not in _ALLOWED_COMMANDS:
-            logger.warning("Blocked shell command not in allowlist: %s", cmd_name)
-            return ExecutionResult(
-                success=False,
-                output="",
-                error=f"Command '{cmd_name}' not in sandbox allowlist",
-                execution_time_ms=0,
-                return_code=-1,
-            )
-
-        # Reject any argument that is an absolute path pointing outside the sandbox
-        # root. This prevents whitelisted commands like `python` from being used to
-        # read or write arbitrary filesystem locations.
-        sandbox_root = self.working_dir.resolve()
-        for arg in parts[1:]:
-            arg_path = Path(arg)
-            # Only inspect arguments that look like paths (absolute or relative with
-            # directory separators). Plain flags such as `-v` are ignored.
-            if arg_path.is_absolute() or (len(arg_path.parts) > 1 and not arg.startswith("-")):
-                try:
-                    resolved_arg = (
-                        arg_path.resolve() if arg_path.is_absolute() else (self.working_dir / arg_path).resolve()
-                    )
-                except OSError:
-                    resolved_arg = arg_path
-                if not resolved_arg.is_relative_to(sandbox_root):
-                    logger.warning(
-                        "Blocked shell command '%s' — argument '%s' resolves outside sandbox root %s",
-                        cmd_name,
-                        arg,
-                        sandbox_root,
-                    )
-                    return ExecutionResult(
-                        success=False,
-                        output="",
-                        error=f"Argument '{arg}' points outside the sandbox root — access denied",
-                        execution_time_ms=0,
-                        return_code=-1,
-                    )
+        prepared = prepare_shell_command(command, self.working_dir, split_command=shlex.split)
+        if prepared.rejection is not None:
+            return prepared.rejection
 
         start_time = time.time()
 
         try:
-            result = subprocess.run(  # noqa: S603 - argv is controlled and shell interpolation is not used
-                parts,
+            result = subprocess.run(
+                prepared.parts,
                 shell=False,
                 capture_output=True,
                 text=True,
@@ -430,7 +406,7 @@ class CodeSandbox:
         start_time = time.time()
 
         try:
-            result = subprocess.run(  # noqa: S603 - argv is controlled and shell interpolation is not used
+            result = subprocess.run(
                 [sys.executable, *args],
                 capture_output=True,
                 text=True,
@@ -465,11 +441,11 @@ class CodeSandbox:
         """Lint code with the specified linter.
 
         Args:
-            code: Source code to lint.
-            linter: Linter executable name (default: ruff).
+            code: Code value consumed by lint_code().
+            linter: Linter value consumed by lint_code().
 
         Returns:
-            ExecutionResult with linter output and return code.
+            Value produced for the caller.
         """
         cmd_name = Path(linter).name
         if cmd_name != linter or cmd_name not in _ALLOWED_LINTERS:
@@ -483,7 +459,7 @@ class CodeSandbox:
 
         execution_id = str(uuid.uuid4())[:8]
         script_file = self.working_dir / f"lint_{execution_id}.py"
-        Path(script_file).write_text(code, encoding="utf-8")
+        _write_text_atomic(Path(script_file), code)
         sandbox_root = self.working_dir.resolve()
         try:
             resolved_script = script_file.resolve()
@@ -494,7 +470,7 @@ class CodeSandbox:
             return ExecutionResult(success=False, output="", error="Lint script escaped sandbox root", return_code=-1)
 
         try:
-            result = subprocess.run(  # noqa: S603 - argv is controlled and shell interpolation is not used
+            result = subprocess.run(
                 [cmd_name, "check", str(resolved_script)],
                 capture_output=True,
                 text=True,
@@ -513,7 +489,7 @@ class CodeSandbox:
             )
 
         except FileNotFoundError:
-            logger.warning("Linter '%s' not found on PATH — install it or check PATH configuration", linter)
+            logger.warning("Linter '%s' not found on PATH - install it or check PATH configuration", linter)
             return ExecutionResult(
                 success=False,
                 output="",
@@ -521,7 +497,7 @@ class CodeSandbox:
                 return_code=-1,
             )
         except Exception as e:
-            logger.warning("Sandbox execution failed — returning error result: %s", e)
+            logger.warning("Sandbox execution failed - returning error result: %s", e)
             return ExecutionResult(
                 success=False,
                 output="",
@@ -532,36 +508,12 @@ class CodeSandbox:
             if script_file.exists():
                 script_file.unlink()
 
-    def cleanup(self) -> None:
-        """Remove the sandbox working directory and all temporary files."""
-        if self.working_dir.exists():
-            try:
-                shutil.rmtree(self.working_dir)
-                logger.info("Cleaned up sandbox: %s", self.working_dir)
-            except Exception as e:
-                logger.warning("Failed to cleanup sandbox: %s", e)
-
     def __enter__(self) -> CodeSandbox:
         """Enter context manager — returns self for use in ``with`` blocks."""
         return self
 
-    def __exit__(self, *args: object) -> None:
-        """Exit context manager — calls cleanup() to remove the working directory."""
-        self.cleanup()
 
-    def get_stats(self) -> dict[str, Any]:
-        """Return sandbox usage statistics (working_dir, execution_count, limits, allow_network)."""
-        return {
-            "working_dir": str(self.working_dir),
-            "execution_count": self._execution_count,
-            "max_execution_time": self.max_execution_time,
-            "max_memory_mb": self.max_memory_mb,
-            "allow_network": self.allow_network,
-        }
-
-
-# ── Module-level singleton (double-checked locking) ──────────────────────────
-
+# Module-level singleton retained as public compatibility state.
 _code_executor: Any = None
 _code_executor_lock = threading.Lock()
 
@@ -569,10 +521,8 @@ _code_executor_lock = threading.Lock()
 def get_subprocess_executor() -> Any:
     """Get or create the global subprocess-based code executor.
 
-    Uses double-checked locking for thread-safe lazy construction.
-
     Returns:
-        The shared CodeExecutor singleton.
+        Value produced for the caller.
     """
     global _code_executor
     if _code_executor is None:
@@ -585,23 +535,21 @@ def get_subprocess_executor() -> Any:
 
 
 def init_code_executor(**kwargs: Any) -> Any:
-    """Create a fresh CodeExecutor backed by a new CodeSandbox, replacing the module singleton.
-
-    Args:
-        **kwargs: Forwarded to CodeSandbox (working_dir, max_execution_time, etc.).
+    """Create a fresh CodeExecutor backed by a new CodeSandbox.
 
     Returns:
-        The newly created CodeExecutor instance.
+        Value produced for the caller.
     """
     global _code_executor
     from vetinari.sandbox_manager import CodeExecutor as _CodeExecutor
 
     sandbox = CodeSandbox(**kwargs)
-    _code_executor = _CodeExecutor(sandbox)  # noqa: VET111 - stateful fallback preserves legacy compatibility
+    _code_executor = _CodeExecutor(sandbox)
     return _code_executor
 
 
 __all__ = [
+    "ApplyChangesResult",
     "CodeSandbox",
     "ExecutionResult",
     "SandboxAuditEntry",

@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://am-workbench.local/schemas/language_boundary.schema.json",
+  "title": "AM Workbench Language Boundary Inventory",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "source_manifests",
+    "summary",
+    "files"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "language-boundary.v1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "source_manifests": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "sha256",
+          "total"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "total",
+        "source_total",
+        "changed_file_total",
+        "by_runtime_disposition",
+        "by_final_owner"
+      ],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_total": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "changed_file_total": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "by_runtime_disposition": {
+          "type": "object"
+        },
+        "by_final_owner": {
+          "type": "object"
+        },
+        "by_status": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "status",
+          "source_status",
+          "baseline_disposition",
+          "migration_owner",
+          "runtime_disposition",
+          "final_owner",
+          "preservation_rule",
+          "wiring_proof_expected"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "old_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "enum": [
+              "A",
+              "D",
+              "M",
+              "R"
+            ]
+          },
+          "source_status": {
+            "type": "string",
+            "minLength": 1
+          },
+          "baseline_disposition": {
+            "type": "string",
+            "minLength": 1
+          },
+          "migration_owner": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "runtime_disposition": {
+            "enum": [
+              "rust-owned",
+              "python-worker",
+              "compatibility-retired",
+              "intentionally-retained",
+              "retained-test",
+              "retained-doc-config",
+              "retained-ai-workflow",
+              "retained-generated-asset",
+              "preserved-deletion"
+            ]
+          },
+          "final_owner": {
+            "type": "string",
+            "minLength": 1
+          },
+          "preservation_rule": {
+            "type": "string",
+            "minLength": 1
+          },
+          "wiring_proof_expected": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_handling": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "contract": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false
+}
